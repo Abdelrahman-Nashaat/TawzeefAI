@@ -82,8 +82,8 @@ def _owned(db, conversation_id: int, user: User, request: Request):
     if row is None:
         # Avoid revealing another user's conversation existence.
         raise HTTPException(status_code=404, detail='Conversation not found')
-    current = db.execute('SELECT role,username FROM users WHERE id = ?', (user.id,)).fetchone()
-    if current is None or current['role'] != user.role or current['username'] != user.username:
+    current = db.execute('SELECT role,username,active FROM users WHERE id = ?', (user.id,)).fetchone()
+    if current is None or not current['active'] or current['role'] != user.role or current['username'] != user.username:
         raise HTTPException(status_code=403, detail='Account permissions changed')
     token = request.cookies.get(COOKIE_NAME, '')
     session = db.execute('SELECT 1 FROM sessions WHERE token_hash = ? AND user_id = ? AND expires_at > ?',

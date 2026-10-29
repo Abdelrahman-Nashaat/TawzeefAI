@@ -88,6 +88,11 @@ function showWorkspace(user) {
     card.append(mark, heading, copy, status);
     grid.append(card);
   }
+  setupLogout();
+  setupAdminAccess(user);
+}
+
+function setupLogout() {
   document.getElementById("logout").addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
@@ -121,7 +126,7 @@ function element(tag, className, text) {
   return node;
 }
 
-async function api(path, options = {}, { allowNotFound = false } = {}) {
+async function api(path, options = {}, { allowNotFound = false, errorMessages = {} } = {}) {
   const generation = screenGeneration;
   const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...options });
   if (generation !== screenGeneration) throw new Error("stale-request");
@@ -132,7 +137,7 @@ async function api(path, options = {}, { allowNotFound = false } = {}) {
     try { body = await response.json(); } catch { /* Non-JSON error response. */ }
     if (generation !== screenGeneration) throw new Error("stale-request");
     const code = body?.detail?.code;
-    const message = documentErrors[code] || (response.status === 413 ? "حجم الملف أكبر من 5 ميجابايت." : response.status === 403 ? "ليس لديك صلاحية لهذا الإجراء." : response.status === 409 ? "تعذّر تنفيذ الإجراء بسبب حالة الطلب أو تعارض الموعد. حدّث البيانات وتحقق منها." : response.status === 422 ? "تحقق من صحة البيانات المدخلة." : "تعذّر إتمام الطلب. حاول مرة أخرى.");
+    const message = errorMessages[response.status] || documentErrors[code] || (response.status === 413 ? "حجم الملف أكبر من 5 ميجابايت." : response.status === 403 ? "ليس لديك صلاحية لهذا الإجراء." : response.status === 409 ? "تعذّر تنفيذ الإجراء بسبب حالة الطلب أو تعارض الموعد. حدّث البيانات وتحقق منها." : response.status === 422 ? "تحقق من صحة البيانات المدخلة." : "تعذّر إتمام الطلب. حاول مرة أخرى.");
     throw new Error(message);
   }
   const result = response.status === 204 ? null : await response.json();
@@ -154,6 +159,154 @@ function section(title) {
   const box = element("section", "data-section");
   box.append(element("h3", "", title));
   return box;
+}
+
+async function setupAdminAccess(user) {
+  try {
+    const access = await api("/api/admin/access");
+    if (!access.is_admin) return;
+    const nav = document.querySelector("nav[aria-label='التنقل الرئيسي']");
+    if (!nav) return;
+    const link = element("a", "nav-item", "إدارة الحسابات المحلية"); link.href = "#admin";
+    link.addEventListener("click", (event) => { event.preventDefault(); showAdminWorkspace(user); });
+    nav.append(link);
+  } catch (error) {
+    if (!isStale(error)) {
+      const sidebar = document.querySelector(".sidebar");
+      if (sidebar) sidebar.append(element("p", "subtle-note", "تعذّر التحقق من صلاحية إدارة الحسابات. أعد تحميل الصفحة للمحاولة مجددًا."));
+    }
+  }
+}
+
+function showAdminWorkspace(user) {
+  showTemplate("shell-template");
+  document.getElementById("role-badge").textContent = "إدارة الحسابات";
+  document.querySelector(".header-path").textContent = "إدارة الحسابات المحلية";
+  const nav = document.querySelector("nav[aria-label='التنقل الرئيسي']");
+  const back = element("a", "nav-item", "العودة لمساحة العمل"); back.href = "#overview";
+  back.addEventListener("click", (event) => { event.preventDefault(); showWorkspace(user); });
+  nav.replaceChildren(back); setupLogout();
+  const content = document.querySelector(".workspace-content");
+  const sectionNode = element("section", "knowledge-section"); sectionNode.setAttribute("aria-label", "إدارة الحسابات المحلية");
+  const heading = element("div", "section-heading"); heading.append(element("h2", "", "إدارة الحسابات المحلية"));
+  const panel = element("div", "knowledge-panel");
+  panel.append(element("p", "subtle-note", "صلاحية إدارة الحسابات مستقلة عن دور الموارد البشرية. تغيير الدور أو الحالة أو الصلاحية، أو إعادة ضبط كلمة المرور، ينهي جلسات الحساب المتأثر."));
+  const message = element("p", "inline-message"); message.setAttribute("role", "status"); message.hidden = true;
+  const create = element("form", "decision-form"); create.setAttribute("aria-label", "إنشاء حساب محلي");
+  create.append(element("h3", "", "إنشاء حساب"));
+  function textField(labelText, type, maxLength, autocomplete) {
+    const label = element("label", "", labelText), input = element("input");
+    input.type = type; input.required = true; input.maxLength = maxLength;
+    if (autocomplete) input.autocomplete = autocomplete;
+    label.append(input); return { label, input };
+  }
+  function roleSelect(value) {
+    const select = element("select");
+    select.setAttribute("aria-label", "الدور");
+    for (const [key, label] of [["candidate", "مرشح"], ["employee", "موظف"], ["hr", "موارد بشرية"]]) {
+      const option = element("option", "", label); option.value = key; select.append(option);
+    }
+    if (value) select.value = value;
+    return select;
+  }
+  const username = textField("اسم المستخدم (حروف لاتينية وأرقام و _ . -)", "text", 128, "off");
+  username.input.pattern = "[A-Za-z0-9_.-]+";
+  const display = textField("الاسم الظاهر", "text", 128, "off");
+  const password = textField("كلمة المرور الأولية (12 حرفًا على الأقل)", "password", 256, "new-password"); password.input.minLength = 12;
+  const roleLabel = element("label", "", "الدور"); const role = roleSelect("candidate"); roleLabel.append(role);
+  const adminLabel = element("label", "admin-checkbox"); const admin = element("input"); admin.type = "checkbox";
+  adminLabel.append(admin, document.createTextNode(" منح صلاحية إدارة الحسابات"));
+  const createButton = element("button", "small-button", "إنشاء الحساب"); createButton.type = "submit";
+  create.append(username.label, display.label, password.label, roleLabel, adminLabel, createButton);
+  const list = element("div", "data-list"); list.setAttribute("aria-live", "polite");
+  const auditButton = element("button", "outline-button", "عرض سجل إدارة الحسابات"); auditButton.type = "button";
+  const audit = element("div"); audit.setAttribute("aria-live", "polite");
+  panel.append(message, create, element("h3", "", "الحسابات"), list, auditButton, audit);
+  sectionNode.append(heading, panel); content.replaceChildren(sectionNode);
+  function report(text, isError = false) { message.textContent = text; message.classList.toggle("error", isError); message.hidden = !text; }
+  const validationError = "تحقق من اسم المستخدم والاسم والدور وكلمة المرور.";
+  async function refreshUsers() {
+    const users = await api("/api/admin/users");
+    if (!sectionNode.isConnected) return;
+    list.replaceChildren();
+    if (!users.length) list.append(element("p", "empty-note", "لا توجد حسابات."));
+    for (const account of users) {
+      const card = element("article", "job-card");
+      card.append(element("h4", "", `${account.display_name} (${account.username}) · #${account.id}`));
+      const form = element("form", "decision-form");
+      const label = element("label", "", "الدور"); const accountRole = roleSelect(account.role); label.append(accountRole);
+      const activeLabel = element("label", "admin-checkbox"); const active = element("input"); active.type = "checkbox"; active.checked = account.active;
+      activeLabel.append(active, document.createTextNode(" الحساب نشط"));
+      const capabilityLabel = element("label", "admin-checkbox"); const capability = element("input"); capability.type = "checkbox"; capability.checked = account.is_admin;
+      capabilityLabel.append(capability, document.createTextNode(" لديه صلاحية إدارة الحسابات"));
+      const save = element("button", "outline-button", "حفظ التغييرات"); save.type = "submit";
+      form.append(label, activeLabel, capabilityLabel, save);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const changes = {};
+        if (accountRole.value !== account.role) changes.role = accountRole.value;
+        if (active.checked !== account.active) changes.active = active.checked;
+        if (capability.checked !== account.is_admin) changes.is_admin = capability.checked;
+        if (!Object.keys(changes).length) { report("لم تتغير إعدادات الحساب."); return; }
+        if (!window.confirm(`حفظ تغييرات الحساب ${account.username}؟ ستنتهي جلساته الحالية.`)) return;
+        save.disabled = true; accountRole.disabled = true; active.disabled = true; capability.disabled = true;
+        try {
+          await api(`/api/admin/users/${encodeURIComponent(account.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(changes) }, { errorMessages: { 409: "لا يمكن تعطيل أو إزالة صلاحية آخر مشرف نشط.", 422: validationError } });
+          if (account.id === user.id) { showLogin("تم تحديث حسابك وإنهاء جلساتك. سجل الدخول مرة أخرى."); return; }
+          if (!sectionNode.isConnected) return;
+          report("تم تحديث الحساب وإنهاء جلساته.");
+          try { await refreshUsers(); } catch (error) { if (!isStale(error) && sectionNode.isConnected) report("تم تحديث الحساب، لكن تعذّر تحديث القائمة. أعد تحميل الصفحة.", true); }
+        } catch (error) { if (!isStale(error) && sectionNode.isConnected) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
+        finally { save.disabled = false; accountRole.disabled = false; active.disabled = false; capability.disabled = false; }
+      });
+      const reset = element("form", "decision-form"); reset.setAttribute("aria-label", `إعادة ضبط كلمة مرور ${account.username}`);
+      const newPassword = textField("كلمة المرور الجديدة (12 حرفًا على الأقل)", "password", 256, "new-password"); newPassword.input.minLength = 12;
+      const resetButton = element("button", "outline-button", "إعادة ضبط كلمة المرور"); resetButton.type = "submit";
+      reset.append(newPassword.label, resetButton);
+      reset.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (Array.from(newPassword.input.value).length < 12) { report("كلمة المرور يجب أن تحتوي 12 حرفًا على الأقل.", true); return; }
+        if (!window.confirm(`إعادة ضبط كلمة مرور ${account.username}؟ ستنتهي جلساته الحالية.`)) return;
+        resetButton.disabled = true;
+        try {
+          await api(`/api/admin/users/${encodeURIComponent(account.id)}/password`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: newPassword.input.value }) }, { errorMessages: { 422: validationError } });
+          if (account.id === user.id) { showLogin("تم تغيير كلمة مرورك وإنهاء جلساتك. سجل الدخول مجددًا."); return; }
+          if (sectionNode.isConnected) report("تم تغيير كلمة المرور وإنهاء جلسات الحساب.");
+        } catch (error) { if (!isStale(error) && sectionNode.isConnected) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
+        finally { newPassword.input.value = ""; resetButton.disabled = false; }
+      });
+      card.append(form, reset); list.append(card);
+    }
+  }
+  create.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (Array.from(password.input.value).length < 12) { report("كلمة المرور يجب أن تحتوي 12 حرفًا على الأقل.", true); return; }
+    createButton.disabled = true;
+    try {
+      await api("/api/admin/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: username.input.value.trim(), display_name: display.input.value.trim(), password: password.input.value, role: role.value, is_admin: admin.checked }) }, { errorMessages: { 409: "تعذّر إنشاء الحساب؛ قد يكون اسم المستخدم مستخدمًا بالفعل.", 422: validationError } });
+      if (!sectionNode.isConnected) return;
+      create.reset(); report("تم إنشاء الحساب المحلي.");
+      try { await refreshUsers(); } catch (error) { if (!isStale(error) && sectionNode.isConnected) report("تم إنشاء الحساب، لكن تعذّر تحديث القائمة. أعد تحميل الصفحة.", true); }
+    } catch (error) { if (!isStale(error) && sectionNode.isConnected) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
+    finally { password.input.value = ""; createButton.disabled = false; }
+  });
+  auditButton.addEventListener("click", async () => {
+    auditButton.disabled = true;
+    try {
+      const events = await api("/api/admin/audit");
+      if (!sectionNode.isConnected) return;
+      audit.replaceChildren(element("h3", "", "آخر إجراءات إدارة الحسابات"));
+      if (!events.length) audit.append(element("p", "subtle-note", "لا توجد إجراءات مسجلة."));
+      else {
+        const entries = element("ul", "evidence-list");
+        const actions = { bootstrap: "إنشاء المشرف الأول", created: "إنشاء حساب", updated: "تحديث حساب", password_reset: "إعادة ضبط كلمة مرور" };
+        for (const event of events) entries.append(element("li", "", `${displayDate(event.created_at)} · ${actions[event.action] || event.action} · الحساب #${event.target_id} · المنفذ #${event.actor_id ?? "—"}`));
+        audit.append(entries);
+      }
+    } catch (error) { if (!isStale(error) && sectionNode.isConnected) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
+    finally { auditButton.disabled = false; }
+  });
+  refreshUsers().catch((error) => { if (!isStale(error) && sectionNode.isConnected) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم لتحميل الحسابات." : error.message, true); });
 }
 
 async function loadRecruitment(role) {
@@ -977,11 +1130,43 @@ function knowledgeSourceLabel(source) {
 function setupKnowledge() {
   const form = document.getElementById("knowledge-form");
   const result = document.getElementById("knowledge-result");
+  const submit = form.querySelector("button");
+  let hybridButton = null;
+  api("/api/knowledge/hybrid-status").then((status) => {
+    if (!status.configured || !form.isConnected) return;
+    hybridButton = element("button", "outline-button", "تجربة البحث الهجين");
+    hybridButton.type = "button";
+    hybridButton.disabled = submit.disabled;
+    form.append(element("p", "subtle-note", "تجربة محلية على مستندات السياسات المضافة فقط؛ المقتطفات المرشحة قد لا تدعم السؤال، ولا تمثل إجابة متحققًا منها."), hybridButton);
+    hybridButton.addEventListener("click", async () => {
+      const question = document.getElementById("knowledge-question").value.trim();
+      if (!question) return;
+      submit.disabled = true; hybridButton.disabled = true;
+      result.className = "knowledge-result";
+      result.replaceChildren(element("p", "", "جاري البحث التجريبي..."));
+      try {
+        const answer = await api("/api/knowledge/experimental-hybrid", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) }, { errorMessages: { 429: "البحث مشغول؛ حاول مرة أخرى.", 503: "البحث التجريبي غير متاح؛ تحقق من إعداد النموذج وقاعدة البيانات." } });
+        result.replaceChildren(element("h3", "", "مقتطفات تجريبية"), element("p", "subtle-note", "تحقق من كل مصدر؛ التشابه لا يثبت أن المقتطف يجيب عن السؤال."));
+        if (!answer.sources?.length) result.append(element("p", "", "لم يُعثر على مقتطف مناسب في المستندات المضافة."));
+        else {
+          const list = element("ul");
+          for (const source of answer.sources) {
+            const item = element("li");
+            item.append(element("strong", "", knowledgeSourceLabel(source)), element("p", "", source.text));
+            list.append(item);
+          }
+          result.append(list);
+        }
+      } catch (error) {
+        if (!isStale(error) && result.isConnected) result.replaceChildren(element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message));
+      } finally { submit.disabled = false; hybridButton.disabled = false; }
+    });
+  }).catch((error) => { if (!isStale(error)) console.warn("Could not check experimental search availability."); });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const question = document.getElementById("knowledge-question").value.trim();
     if (!question) return;
-    const button = form.querySelector("button"); button.disabled = true;
+    const button = submit; button.disabled = true; if (hybridButton) hybridButton.disabled = true;
     result.className = "knowledge-result";
     result.replaceChildren(element("p", "", "جاري البحث..."));
     try {
@@ -1002,7 +1187,7 @@ function setupKnowledge() {
       }
     } catch (error) {
       if (!isStale(error)) result.replaceChildren(element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message));
-    } finally { button.disabled = false; }
+    } finally { button.disabled = false; if (hybridButton) hybridButton.disabled = false; }
   });
 }
 
@@ -1134,6 +1319,39 @@ function renderDashboard(data) {
   const pipeline = element("ul", "evidence-list");
   for (const item of data.pipeline || []) pipeline.append(element("li", "", `${statusLabels[item.status] || item.status}: ${item.count}`));
   if (pipeline.childNodes.length) box.append(element("h3", "", "الطلبات حسب المرحلة"), pipeline);
+  const evaluation = element("section", "application-detail");
+  evaluation.setAttribute("aria-label", "التقييم الاصطناعي");
+  evaluation.append(element("h4", "", "تقييم المشروع ببيانات اصطناعية"),
+    element("p", "subtle-note", "اختبارات محدودة على بيانات وتسميات اصطناعية. استرجاع المصدر ليس قياسًا لدقة الإجابة؛ هذه الاختبارات لا تقيس زمن الاستجابة أو الإنصاف."));
+  const run = element("button", "outline-button", "تشغيل التقييم الاصطناعي"); run.type = "button";
+  const output = element("div"); output.setAttribute("aria-live", "polite");
+  run.addEventListener("click", async () => {
+    run.disabled = true; output.replaceChildren(element("p", "subtle-note", "جارٍ تشغيل الاختبارات..."));
+    try {
+      const report = await api("/api/evaluation/capstone");
+      if (!output.isConnected) return;
+      const summary = report.summary;
+      output.replaceChildren(element("h4", "", "نتائج الاختبارات الاصطناعية"));
+      const results = element("ul", "evidence-list");
+      for (const [label, passed, total] of [
+        ["حالات ترتيب المطابقة الصحيحة", summary.ranking_correct, summary.ranking_total],
+        ["حالات وجود المصدر المتوقع ضمن أول 3 نتائج", summary.retrieval_recall_at_3, summary.retrieval_total],
+        ["حالات الاختبارات السلبية المجتازة", summary.negative_passed, summary.negative_total]
+      ]) results.append(element("li", "", `${label}: ${passed} من ${total}`));
+      output.append(results);
+      for (const [title, cases] of [
+        ["حالات لم يُسترجع فيها المصدر المتوقع", report.missed_retrieval_cases],
+        ["حالات ترتيب لم تجتز الاختبار", report.failed_ranking_cases],
+        ["حالات سلبية لم تجتز الاختبار", report.failed_negative_cases]
+      ]) {
+        if (Array.isArray(cases) && cases.length) output.append(element("p", "form-error", `${title}: ${cases.join("، ")}`));
+      }
+      output.append(element("p", "subtle-note", "التقييم لا يتحقق من صحة الإجابة أو جودة الاستشهاد على صفحات فعلية، ولا يثبت الأداء على بيانات حقيقية."));
+    } catch (error) {
+      if (!isStale(error) && output.isConnected) output.replaceChildren(element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم لتشغيل التقييم." : error.message));
+    } finally { run.disabled = false; }
+  });
+  evaluation.append(run, output); box.append(evaluation);
   target.replaceChildren(box);
 }
 
@@ -1145,13 +1363,33 @@ function displayDate(value) {
 function renderInterviews(interviews, role, applications, slots) {
   const target = document.getElementById("interviews-area");
   const box = section(role === "hr" ? "المقابلات" : "مقابلاتي");
-  box.append(element("p", "subtle-note", "المواعيد مسجلة محليًا داخل التطبيق؛ لا يتم إرسال دعوات أو ربط تقويم خارجي."));
+  box.append(element("p", "subtle-note", "المواعيد مسجلة محليًا داخل التطبيق؛ لا يتم إرسال دعوات أو ربط تقويم خارجي. يمكن إضافة ملف التقويم يدويًا، ولن يتحدث تلقائيًا عند تغيير الموعد أو إلغائه."));
   const list = element("div", "data-list");
   if (!interviews.length) list.append(element("p", "empty-note", "لا توجد مقابلات مسجلة حتى الآن."));
   for (const interview of interviews) {
     const card = element("article", "job-card");
     const interviewStatus = interview.status === "scheduled" ? "مجدولة" : interview.status === "cancelled" ? "ملغاة" : "حالة غير معروفة";
     card.append(element("h4", "", `مقابلة الطلب #${interview.application_id}`), element("p", "", `من ${displayDate(interview.start_at)} إلى ${displayDate(interview.end_at)}`), element("p", "", `المحاور: ${interview.interviewer}`), element("p", "", `الحالة: ${interviewStatus}`));
+    if (interview.status === "scheduled") {
+      const calendar = element("button", "outline-button", "تنزيل ملف التقويم"); calendar.type = "button";
+      calendar.addEventListener("click", async () => {
+        calendar.disabled = true; const generation = screenGeneration;
+        try {
+          const response = await fetch(`/api/interviews/${encodeURIComponent(interview.id)}/calendar`, { credentials: "same-origin", cache: "no-store" });
+          if (generation !== screenGeneration || !card.isConnected) return;
+          if (response.status === 401) { showLogin("انتهت الجلسة. سجل الدخول مرة أخرى."); return; }
+          if (!response.ok) throw new Error(response.status === 403 ? "ليس لديك صلاحية لتنزيل هذا الموعد." : response.status === 409 ? "تعذّر إنشاء ملف التقويم لهذا الموعد. حدّث القائمة وتحقق من حالته ووقته." : "تعذّر تنزيل ملف التقويم. حدّث القائمة وحاول مرة أخرى.");
+          if (!response.headers.get("content-type")?.toLowerCase().startsWith("text/calendar")) throw new Error("تعذّر قراءة ملف التقويم من الخادم.");
+          const blob = await response.blob();
+          if (generation !== screenGeneration || !card.isConnected) return;
+          const url = URL.createObjectURL(blob), link = element("a"); link.href = url; link.download = `interview-${interview.id}.ics`;
+          document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+          operationsMessage("تم تنزيل الملف؛ أضفه يدويًا إلى تقويمك. لن يتحدث تلقائيًا بعد تغيير الموعد أو إلغائه.");
+        } catch (error) { if (generation === screenGeneration && card.isConnected) operationsMessage(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
+        finally { calendar.disabled = false; }
+      });
+      card.append(calendar);
+    }
     if (role === "hr" && interview.status === "scheduled") {
       const cancel = element("button", "outline-button", "إلغاء الموعد"); cancel.type = "button";
       cancel.addEventListener("click", async () => {

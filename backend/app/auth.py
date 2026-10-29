@@ -46,9 +46,13 @@ def token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def create_session(request: Request, user_id: int) -> str:
+def create_session(request: Request, user_id: int, *, expected_password_hash: str) -> str:
     token = secrets.token_urlsafe(32)
     with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        account = db.execute('SELECT active,password_hash FROM users WHERE id = ?', (user_id,)).fetchone()
+        if not account or not account['active'] or account['password_hash'] != expected_password_hash:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid credentials')
         now = int(time.time())
         db.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
         db.execute(
@@ -65,7 +69,7 @@ def get_current_user(request: Request) -> User:
             row = db.execute(
                 """SELECT u.id, u.username, u.display_name, u.role
                    FROM sessions s JOIN users u ON u.id = s.user_id
-                   WHERE s.token_hash = ? AND s.expires_at > ?""",
+                   WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1""",
                 (token_digest(token), int(time.time())),
             ).fetchone()
         if row:

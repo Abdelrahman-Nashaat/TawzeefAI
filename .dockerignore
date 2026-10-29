@@ -1,0 +1,14 @@
+.git
+.tooling
+.playwright-cli
+.playwright-mcp
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.graph-review-locks
+**/*.sqlite3
+**/*.sqlite3-wal
+**/*.sqlite3-shm
+.env
+.env.*

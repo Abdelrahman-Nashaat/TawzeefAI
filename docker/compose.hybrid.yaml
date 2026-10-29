@@ -1,0 +1,18 @@
+services:
+  app:
+    build:
+      args:
+        INSTALL_HYBRID: "1"
+    environment:
+      TAWZEEF_ENABLE_HYBRID: "1"
+      TAWZEEF_EMBEDDING_MODEL_DIR: /model
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: tawzeefai
+      PGUSER: tawzeefai
+      PGPASSWORD: ${TAWZEEF_POSTGRES_PASSWORD:?Set TAWZEEF_POSTGRES_PASSWORD}
+    volumes:
+      - ./.tooling/multilingual-e5-small:/model:ro
+    depends_on:
+      postgres:
+        condition: service_healthy

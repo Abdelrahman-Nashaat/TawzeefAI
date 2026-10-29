@@ -13,6 +13,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app.admin_users import initialize_admin_users
+from app.admin_users import router as admin_users_router
 from app.agent import AgentError, run_agent
 from app.auth import (
     COOKIE_NAME,
@@ -28,7 +30,10 @@ from app.conversations import initialize_conversations
 from app.conversations import router as conversations_router
 from app.dashboard import router as dashboard_router
 from app.db import connect, initialize
+from app.evaluation_dashboard import router as evaluation_router
 from app.graph_orchestrator import router as graph_reviews_router
+from app.hybrid_api import router as hybrid_router
+from app.interview_calendar import router as interview_calendar_router
 from app.jobs_admin import initialize_jobs_admin
 from app.jobs_admin import router as jobs_admin_router
 from app.knowledge import answer_question
@@ -70,6 +75,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
     async def lifespan(application: FastAPI):
         path.parent.mkdir(parents=True, exist_ok=True)
         initialize(path)
+        initialize_admin_users(path)
         initialize_scheduling(path)
         initialize_slots(path)
         initialize_workflows(path)
@@ -111,6 +117,10 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
     application.include_router(rubric_comparison_router)
     application.include_router(conversations_router)
     application.include_router(graph_reviews_router)
+    application.include_router(evaluation_router)
+    application.include_router(admin_users_router)
+    application.include_router(interview_calendar_router)
+    application.include_router(hybrid_router)
 
     @application.middleware("http")
     async def check_origin(request: Request, call_next):
@@ -138,7 +148,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         if old:
             with connect(path) as db:
                 db.execute("DELETE FROM sessions WHERE token_hash = ?", (token_digest(old),))
-        token = create_session(request, row["id"])
+        token = create_session(request, row["id"], expected_password_hash=row["password_hash"])
         response.set_cookie(
             COOKIE_NAME, token, max_age=SESSION_SECONDS, httponly=True, samesite="strict", path="/"
         )
