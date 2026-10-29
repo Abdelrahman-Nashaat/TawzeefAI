@@ -1,6 +1,7 @@
 """Local-only API entry point. Do not expose demo credentials on a network."""
 
 import os
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -109,6 +110,13 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"],
     )
     application.state.database_path = path
+    if os.environ.get('TAWZEEF_ENABLE_GOOGLE') == '1':
+        if sys.platform != 'win32':
+            raise RuntimeError('Google local integration requires Windows Credential Manager')
+        from app.google_dispatch import prepare_calendar_removal, prepare_dispatch
+
+        application.state.google_preflight = prepare_dispatch
+        application.state.google_calendar_removal_preflight = prepare_calendar_removal
     application.include_router(recruitment_router)
     application.include_router(scheduling_router)
     application.include_router(slots_router)

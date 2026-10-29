@@ -2,16 +2,35 @@
 
 This is an unfinished local integration. OAuth credentials can be authorized on
 Windows, and provider calls and a durable delivery outbox are covered by tests
-with fake Google responses. The application does **not** configure a live
-dispatcher yet. No real Calendar event or email has been tested by this code.
+with fake Google responses. An explicitly enabled Windows host can configure a
+live dispatcher using the current Windows user's credentials. A private synthetic
+Calendar event was created and removed with the service adapter on 30 October
+2026. The complete UI-to-provider flow and real Gmail delivery have not yet
+been tested end-to-end.
 
-Before enabling live dispatch, implement and test reconciliation of Calendar
-events after confirmation or an ambiguous result, recovery from interrupted
-delivery, editing or replacing safely rejected drafts, and a clear cancellation
-notification workflow. A confirmed Calendar delivery currently blocks local
-cancellation because no reconciliation path exists. An email already sent is not
-automatically retracted or followed by a cancellation notice. Never retry an
-ambiguous Gmail send automatically: the first attempt may have succeeded.
+The backend has an experimental, explicit Calendar removal API for newly
+confirmed deliveries with saved event version and credential binding. It checks
+the original identity, private event marker, content, and version before a
+conditional delete; failures and lost results block local cancellation. An old
+unbound delivery, an interrupted or ambiguous send, and an ambiguous deletion
+remain unresolved. Removing an event is a separate explicit HR operation; it
+does not itself cancel the local interview or notify a recipient.
+
+Before enabling live dispatch, implement and test recovery from interrupted or
+ambiguous delivery, editing or replacing safely rejected drafts, and a clear
+cancellation notification workflow. A sent email is not automatically retracted
+or followed by a cancellation notice. Never retry an ambiguous Gmail send
+automatically: the first attempt may have succeeded. Google may send some
+notifications even when an event write requests `sendUpdates=none`.
+
+For opt-in host configuration, `app.google_dispatch.prepare_dispatch`
+and `app.google_dispatch.prepare_calendar_removal` return request-local actions
+bound to a fingerprint derived from the client ID and refresh token. Changing
+credentials causes old events to fail closed; it does not prove the Google
+account changed. Both factories are dormant unless the Windows host opts in. The
+`POST /api/google/deliveries/{id}/calendar-removal` endpoint requires HR access
+and an explicit confirmation, and does not automatically cancel the local
+interview after deleting the provider event.
 
 ## Preparing a test account
 
@@ -35,7 +54,10 @@ uv run python -m app.google_auth gmail --client-file "C:\private\client.json"
 ```
 
 The user must finish each consent in their browser. Granting consent alone does
-not enable the app's live dispatcher. The credentials are shared by the local
+not enable the app's live dispatcher. Start `start-demo.ps1 -Google` from the
+repository root to enable it on the Windows host; normal startup and Docker
+remain disabled. Explicit HR actions may create events or send messages when
+the provider is enabled. The credentials are shared by the local
 application, not per HR user, and are unavailable to the Linux Docker container;
 do not use the demo account system or this integration as production access
 control. Revoke access through the Google account if the connection is no longer

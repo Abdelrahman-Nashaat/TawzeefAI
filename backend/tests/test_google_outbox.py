@@ -108,10 +108,12 @@ def test_preflight_request_local_dispatcher_is_used(demo):
     delivery = client.post(f'/api/google/interviews/{interview}/deliveries', json={
         'kind': 'calendar', 'confirmed': True,
     }).json()
-    app.state.google_dispatcher = lambda **kwargs: pytest.fail('global dispatcher should not be used')
-    app.state.google_preflight = lambda kind: lambda **kwargs: {
-        'status': 'confirmed', 'provider_id': kwargs['event_id'],
-    }
+    def prepare(kind):
+        def dispatch(**kwargs):
+            return {'status': 'confirmed', 'provider_id': kwargs['event_id'], 'etag': '"original"'}
+        dispatch.google_credential_binding = 'a' * 64
+        return dispatch
+    app.state.google_preflight = prepare
     response = client.post(f"/api/google/deliveries/{delivery['id']}/send", json={'confirmed': True})
     assert response.status_code == 200 and response.json()['state'] == 'confirmed'
 

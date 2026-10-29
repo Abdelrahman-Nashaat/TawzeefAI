@@ -35,15 +35,24 @@ def provider():
 
 def test_calendar_creates_private_event_without_guests_or_notifications():
     module = provider()
-    session = Session(Response(200, {'id': 'abc123'}))
+    session = Session(Response(200, {'id': 'abc123', 'etag': '"event-version"'}))
     result = module.create_calendar_event(session, event_id='abc123',
         start='2026-11-01T09:00:00Z', end='2026-11-01T10:00:00Z')
-    assert result == {'status': 'confirmed', 'provider_id': 'abc123'}
+    assert result == {'status': 'confirmed', 'provider_id': 'abc123', 'etag': '"event-version"'}
     method, url, request = session.calls[0]
     assert method == 'POST' and url == 'https://www.googleapis.com/calendar/v3/calendars/primary/events'
     assert request['params'] == {'sendUpdates': 'none'} and request['allow_redirects'] is False
     assert request['json']['id'] == 'abc123' and 'attendees' not in request['json']
+    assert request['json']['extendedProperties']['private']['tawzeefai_delivery'] == 'abc123'
     assert request['json']['start']['dateTime'] == '2026-11-01T09:00:00Z'
+
+
+def test_calendar_success_without_usable_version_is_uncertain():
+    session = Session(Response(200, {'id':'abc123'}))
+    result = provider().create_calendar_event(session, event_id='abc123',
+        start='2026-11-01T09:00:00Z', end='2026-11-01T10:00:00Z')
+    assert result == {'status':'uncertain', 'provider_id':None}
+    assert len(session.calls) == 1
 
 
 def test_gmail_builds_one_explicit_recipient_and_protects_headers():
@@ -63,6 +72,69 @@ def test_gmail_builds_one_explicit_recipient_and_protects_headers():
         module.send_confirmation(session, recipient='candidate@example.test\r\nBcc: other@example.test',
                                  start='2026-11-01T09:00:00Z', end='2026-11-01T10:00:00Z')
     assert len(session.calls) == 1
+
+
+class SequenceSession:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def valid_event():
+    return {'id': 'abc123', 'etag': '"original"', 'summary': 'TawzeefAI interview',
+            'status': 'confirmed', 'visibility': 'private',
+            'start': {'dateTime': '2026-11-01T09:00:00Z'},
+            'end': {'dateTime': '2026-11-01T10:00:00Z'},
+            'extendedProperties': {'private': {'tawzeefai_delivery': 'abc123'}}}
+
+
+def remove(session):
+    return provider().remove_calendar_event(session, event_id='abc123', etag='"original"',
+        start='2026-11-01T09:00:00+00:00', end='2026-11-01T10:00:00+00:00')
+
+
+def test_remove_calendar_verifies_identity_then_conditionally_deletes():
+    session = SequenceSession(Response(200, valid_event()), Response(204, {}))
+    assert remove(session) == {'status': 'removed'}
+    assert [call[0] for call in session.calls] == ['GET', 'DELETE']
+    _, url, options = session.calls[1]
+    assert url.endswith('/events/abc123') and options['headers']['If-Match'] == '"original"'
+    assert options['params'] == {'sendUpdates': 'none'} and not options['allow_redirects']
+
+
+@pytest.mark.parametrize('changes', [
+    {'id': 'wrong'}, {'etag': '"changed"'}, {'summary': 'changed'},
+    {'start': {'dateTime': '2026-11-02T09:00:00Z'}},
+    {'extendedProperties': {'private': {'tawzeefai_delivery': 'wrong'}}},
+    {'attendees': [{'email': 'person@example.test'}]}, {'status': 'cancelled'}, {'visibility': 'public'},
+])
+def test_remove_calendar_refuses_changed_or_unverified_event(changes):
+    event = valid_event()
+    event.update(changes)
+    session = SequenceSession(Response(200, event))
+    assert remove(session) == {'status': 'uncertain'}
+    assert [call[0] for call in session.calls] == ['GET']
+
+
+@pytest.mark.parametrize('response', [Response(404, {}), Response(410, {}), TimeoutError('private')])
+def test_remove_calendar_does_not_assume_missing_event(response):
+    session = SequenceSession(response)
+    assert remove(session) == {'status': 'uncertain'}
+    assert [call[0] for call in session.calls] == ['GET']
+
+
+@pytest.mark.parametrize('response', [Response(412, {}), Response(500, {}), TimeoutError('private')])
+def test_remove_calendar_does_not_retry_ambiguous_deletion(response):
+    session = SequenceSession(Response(200, valid_event()), response)
+    assert remove(session) == {'status': 'uncertain'}
+    assert [call[0] for call in session.calls] == ['GET', 'DELETE']
 
 
 def test_ambiguous_google_failure_is_never_automatically_retried():

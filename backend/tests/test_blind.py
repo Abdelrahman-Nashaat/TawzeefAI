@@ -36,3 +36,20 @@ def test_phone_in_text_is_masked_without_removing_skill_line():
     result = redact_resume('Python developer; call +20 100 123 4567 for details')
     assert '+20 100 123 4567' not in result.text
     assert 'Python developer' in result.text
+
+
+def test_markdown_and_bulleted_identity_fields_are_removed_before_screening():
+    result = redact_resume(
+        '- Name: Python SQL\n'
+        '• **Gender:** Male\n'
+        '* **الاسم الكامل**: أحمد مثال\n'
+        '1. **Address**: القاهرة\n'
+        '### Date of Birth: 1990-01-01\n'
+        '- Skills: Docker and FastAPI\n'
+        'Built FastAPI applications.'
+    )
+    for identity in ('Python SQL', 'Male', 'أحمد مثال', 'القاهرة', '1990-01-01'):
+        assert identity not in result.text
+    assert '- Skills: Docker and FastAPI' in result.text
+    assert 'Built FastAPI applications.' in result.text
+    assert result.requires_review

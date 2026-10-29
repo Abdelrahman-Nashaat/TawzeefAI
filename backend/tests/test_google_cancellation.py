@@ -9,7 +9,10 @@ from app.main import create_app
 def test_confirmed_or_uncertain_external_calendar_blocks_local_cancellation(tmp_path):
     path = tmp_path / 'google-cancel.sqlite3'
     app = create_app(path, seed_demo=True)
-    app.state.google_dispatcher = lambda **kwargs: {'status': 'confirmed', 'provider_id': kwargs['event_id']}
+    def dispatcher(**kwargs):
+        return {'status': 'confirmed', 'provider_id': kwargs['event_id'], 'etag': '"original"'}
+    dispatcher.google_credential_binding = 'a' * 64
+    app.state.google_dispatcher = dispatcher
     with TestClient(app) as client:
         assert client.post('/api/auth/login', json={'username': 'hr', 'password': 'hr-demo-only'}).status_code == 200
         with connect(path) as db:

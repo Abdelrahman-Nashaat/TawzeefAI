@@ -1421,6 +1421,36 @@ function setupGoogleDeliveries(card, interview) {
         }
       }
       if (delivery.state === "confirmed" && delivery.kind === "email") entry.append(element("p", "subtle-note", "قبول Gmail للطلب لا يثبت تسليم الرسالة إلى المستلم."));
+      if (delivery.kind === "calendar" && delivery.state === "confirmed") {
+        const removal = delivery.calendar_removal_state;
+        const removalLabels = {
+          removing: "إزالة الحدث قيد التنفيذ أو تحتاج مراجعة بعد انقطاع.",
+          removed: "تأكدت إزالة الحدث من Google Calendar. يمكنك الآن إلغاء الموعد المحلي بشكل منفصل.",
+          rejected: "لم تكتمل محاولة الإزالة. راجع سجل العملية قبل إلغاء الموعد.",
+          uncertain: "نتيجة إزالة الحدث غير مؤكدة. راجع Google وسجل العملية؛ لن يعيد التطبيق المحاولة تلقائيًا."
+        };
+        if (removal === null) {
+          entry.append(element("p", "subtle-note", "إزالة الحدث من Google إجراء منفصل عن إلغاء الموعد المحلي، ولا ترسل إشعارًا بإلغاء المقابلة عبر Gmail."));
+          const confirmRemoval = element("input"); confirmRemoval.type = "checkbox";
+          const removalLabel = element("label", "admin-checkbox", "راجعت الحدث وأوافق على إزالته من Google Calendar الآن.");
+          removalLabel.prepend(confirmRemoval);
+          const remove = element("button", "outline-button", "إزالة حدث Google Calendar"); remove.type = "button";
+          remove.addEventListener("click", () => {
+            if (!confirmRemoval.checked) { report("يرجى مراجعة الحدث وتأكيد إزالته أولًا.", true); return; }
+            perform(async () => {
+              const result = await api(`/api/google/deliveries/${encodeURIComponent(delivery.id)}/calendar-removal`, {
+                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmed: true })
+              }, { errorMessages: { 409: "لا يمكن تسوية هذا الحدث تلقائيًا؛ راجع Google وسجل العملية.", 503: "تعذر الاتصال بربط Google؛ راجع حالة العملية قبل أي إجراء آخر." } });
+              return result.state === "removed" ? "تمت إزالة حدث Google. ألغِ الموعد المحلي بشكل منفصل عند الحاجة." : "نتيجة إزالة الحدث غير مؤكدة؛ راجع Google وسجل العملية.";
+            }, true);
+          });
+          entry.append(removalLabel, remove);
+        } else if (Object.hasOwn(removalLabels, removal)) {
+          entry.append(element("p", removal === "removed" ? "subtle-note" : "form-error", removalLabels[removal]));
+        } else {
+          entry.append(element("p", "form-error", "حالة إزالة الحدث غير متاحة؛ حدّث السجل وراجع Google قبل الإلغاء."));
+        }
+      }
       if (delivery.state === "sending" || delivery.state === "uncertain") entry.append(element("p", "form-error", "تحقق من Google ومن سجل العملية؛ لا يمكن إعادة الإرسال تلقائيًا."));
       if (delivery.state === "rejected") entry.append(element("p", "form-error", "راجع إعدادات Google وسجل العملية؛ لا توجد إعادة إرسال تلقائية."));
       if (delivery.state === "pending") {
@@ -1462,7 +1492,7 @@ function setupGoogleDeliveries(card, interview) {
     } catch (error) {
       if (!isStale(error) && details.isConnected) {
         try { await refresh(); } catch { loaded = false; }
-        report(error instanceof TypeError && isSend ? "تعذر معرفة نتيجة الإرسال؛ راجع سجل العملية وGoogle قبل أي إجراء آخر." : error instanceof TypeError ? "تعذّر الاتصال بالخادم؛ راجع سجل المسودات قبل المحاولة." : error.message, true);
+        report(error instanceof TypeError && isSend ? "تعذر معرفة نتيجة الإجراء؛ راجع سجل العملية وGoogle قبل أي إجراء آخر." : error instanceof TypeError ? "تعذّر الاتصال بالخادم؛ راجع سجل المسودات قبل المحاولة." : error.message, true);
       }
     } finally { busy = false; if (details.isConnected) synchronizeControls(); }
   }

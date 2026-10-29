@@ -25,6 +25,8 @@ from app.db import connect
 router = APIRouter(prefix='/api/google')
 HR = Annotated[User, Depends(require_roles('hr'))]
 _EMAIL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$')
+_BINDING = re.compile(r'^[a-f0-9]{64}$')
+_ETAG = re.compile(r'^"[^"\r\n]{1,256}"$')
 
 
 def initialize_google_outbox(path: str | Path) -> None:
@@ -49,7 +51,21 @@ def initialize_google_outbox(path: str | Path) -> None:
                 OR (kind='calendar' AND recipient IS NULL AND event_id IS NOT NULL))
         );
         CREATE INDEX IF NOT EXISTS google_deliveries_interview ON google_deliveries(interview_id, state);
+        CREATE TABLE IF NOT EXISTS google_calendar_removals (
+            delivery_id INTEGER PRIMARY KEY REFERENCES google_deliveries(id),
+            state TEXT NOT NULL CHECK(state IN ('removing','removed','rejected','uncertain')),
+            actor_id INTEGER NOT NULL REFERENCES users(id),
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
         ''')
+        # Backward-compatible migration for databases created before calendar
+        # provenance was recorded. Existing rows deliberately remain unbound.
+        db.execute('BEGIN IMMEDIATE')
+        columns = {row['name'] for row in db.execute('PRAGMA table_info(google_deliveries)')}
+        for name in ('calendar_binding', 'calendar_etag'):
+            if name not in columns:
+                db.execute(f'ALTER TABLE google_deliveries ADD COLUMN {name} TEXT')
 
 
 class Prepare(BaseModel):
@@ -130,7 +146,9 @@ def cancellation_block_reason(db, interview_id: int) -> str | None:
     an in-flight or uncertain message similarly cannot safely be treated as absent.
     """
     row = db.execute('''SELECT kind, state FROM google_deliveries WHERE interview_id = ?
-        AND (state IN ('sending','uncertain') OR (kind = 'calendar' AND state = 'confirmed'))
+        AND (state IN ('sending','uncertain') OR (kind = 'calendar' AND state = 'confirmed'
+             AND NOT EXISTS (SELECT 1 FROM google_calendar_removals r
+                             WHERE r.delivery_id = google_deliveries.id AND r.state = 'removed')))
         ORDER BY CASE WHEN state = 'sending' THEN 0 ELSE 1 END, id LIMIT 1''', (interview_id,)).fetchone()
     if row is None:
         return None
@@ -143,8 +161,13 @@ def list_deliveries(interview_id: int, request: Request, user: HR):
         db.execute('BEGIN')
         _actor(db, request, user)
         _interview(db, interview_id)
-        return [_public(row) for row in db.execute(
-            'SELECT * FROM google_deliveries WHERE interview_id=? ORDER BY id', (interview_id,))]
+        results = []
+        for row in db.execute('SELECT * FROM google_deliveries WHERE interview_id=? ORDER BY id', (interview_id,)):
+            item = _public(row)
+            removal = db.execute('SELECT state FROM google_calendar_removals WHERE delivery_id=?', (row['id'],)).fetchone()
+            item['calendar_removal_state'] = removal['state'] if removal else None
+            results.append(item)
+        return results
 
 
 @router.post('/interviews/{interview_id}/deliveries', status_code=201)
@@ -172,13 +195,13 @@ def prepare_delivery(interview_id: int, payload: Prepare, request: Request, user
 @router.post('/deliveries/{delivery_id}/send')
 def send_delivery(delivery_id: int, payload: Confirm, request: Request, user: HR):
     dispatcher = getattr(request.app.state, 'google_dispatcher', None)
-    if not callable(dispatcher):
+    preflight = getattr(request.app.state, 'google_preflight', None)
+    if not callable(dispatcher) and not callable(preflight):
         raise HTTPException(status_code=503, detail='Google delivery is not configured')
     path = request.app.state.database_path
     # Check credentials outside the write lock and before claiming the draft.
     # Revalidate everything under the lock afterwards because this can race a
     # cancellation, another sender, or session revocation.
-    preflight = getattr(request.app.state, 'google_preflight', None)
     if preflight is not None:
         with connect(path) as db:
             db.execute('BEGIN')
@@ -195,6 +218,8 @@ def send_delivery(delivery_id: int, payload: Confirm, request: Request, user: HR
                 if not callable(prepared):
                     raise ValueError('Invalid prepared dispatcher')
                 dispatcher = prepared
+            if not callable(dispatcher):
+                raise TypeError('Missing prepared dispatcher')
         except Exception as exc:
             raise HTTPException(status_code=503, detail='Google authorization is not available') from exc
     with connect(path) as db:
@@ -209,7 +234,15 @@ def send_delivery(delivery_id: int, payload: Confirm, request: Request, user: HR
         _eligible(interview)
         if row['start_at'] != interview['start_at'] or row['end_at'] != interview['end_at']:
             raise HTTPException(status_code=409, detail='Interview time changed; review the delivery')
-        db.execute("UPDATE google_deliveries SET state='sending', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?", (delivery_id,))
+        if row['kind'] == 'email' and db.execute('''SELECT 1 FROM google_calendar_removals r
+                JOIN google_deliveries d ON d.id=r.delivery_id WHERE d.interview_id=? LIMIT 1''',
+                (row['interview_id'],)).fetchone():
+            raise HTTPException(status_code=409, detail='Calendar removal requires interview review')
+        binding = getattr(dispatcher, 'google_credential_binding', None) if row['kind'] == 'calendar' else None
+        if row['kind'] == 'calendar' and (not isinstance(binding, str) or not _BINDING.fullmatch(binding)):
+            raise HTTPException(status_code=503, detail='Google calendar identity is not available')
+        db.execute("""UPDATE google_deliveries SET state='sending',calendar_binding=?,
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?""", (binding, delivery_id))
         _audit(db, row['application_id'], user.id, row['id'], row['kind'], 'google_delivery_started')
         arguments = {key: row[key] for key in ('kind', 'event_id', 'start_at', 'end_at', 'recipient')}
 
@@ -236,21 +269,26 @@ def send_delivery(delivery_id: int, payload: Confirm, request: Request, user: HR
         result = dispatcher(**arguments)
         state = result.get('status') if isinstance(result, dict) else None
         provider_id = result.get('provider_id') if isinstance(result, dict) else None
+        etag = result.get('etag') if isinstance(result, dict) and arguments['kind'] == 'calendar' else None
         if state not in ('confirmed', 'rejected', 'uncertain'):
             state = 'uncertain'
         if state == 'confirmed' and (not isinstance(provider_id, str) or not provider_id
                                      or len(provider_id) > 1024
                                      or (arguments['kind'] == 'calendar' and provider_id != arguments['event_id'])):
             state = 'uncertain'
+        if state == 'confirmed' and arguments['kind'] == 'calendar' and (
+                not isinstance(etag, str) or not _ETAG.fullmatch(etag)):
+            state = 'uncertain'
         if state != 'confirmed':
             provider_id = None
+            etag = None
     except Exception:  # noqa: BLE001 - any provider failure can leave an ambiguous side effect.
-        state, provider_id = 'uncertain', None
+        state, provider_id, etag = 'uncertain', None, None
     with connect(path) as db:
         db.execute('BEGIN IMMEDIATE')
-        db.execute('''UPDATE google_deliveries SET state=?,provider_id=?,
+        db.execute('''UPDATE google_deliveries SET state=?,provider_id=?,calendar_etag=?,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND state='sending' ''',
-            (state, provider_id, delivery_id))
+            (state, provider_id, etag, delivery_id))
         _audit(db, row['application_id'], user.id, row['id'], row['kind'], 'google_delivery_result')
         result = _public(db.execute('SELECT * FROM google_deliveries WHERE id=?', (delivery_id,)).fetchone())
     # Record the provider result even if access was revoked while it was in
@@ -259,3 +297,86 @@ def send_delivery(delivery_id: int, payload: Confirm, request: Request, user: HR
         db.execute('BEGIN')
         _actor(db, request, user)
         return result
+
+
+@router.post('/deliveries/{delivery_id}/calendar-removal')
+def remove_delivered_calendar_event(delivery_id: int, payload: Confirm, request: Request, user: HR):
+    """Explicitly remove one confirmed event, with a durable one-attempt claim.
+
+    The injected preflight must capture the authorized session used by the
+    remover and expose its credential-derived identity as
+    ``google_credential_binding``. Unbound legacy and ambiguous deliveries fail
+    closed: neither a provider 404 nor a crash proves the event was removed.
+    """
+    path = request.app.state.database_path
+    with connect(path) as db:
+        db.execute('BEGIN')
+        _actor(db, request, user)
+        row = db.execute('SELECT * FROM google_deliveries WHERE id=?', (delivery_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail='Delivery not found')
+        if (row['kind'] != 'calendar' or row['state'] != 'confirmed'
+                or row['provider_id'] != row['event_id']
+                or not row['calendar_binding'] or not _BINDING.fullmatch(row['calendar_binding'])
+                or not row['calendar_etag'] or not _ETAG.fullmatch(row['calendar_etag'])):
+            raise HTTPException(status_code=409, detail='Calendar delivery cannot be reconciled automatically')
+        if db.execute('SELECT 1 FROM google_calendar_removals WHERE delivery_id=?', (delivery_id,)).fetchone():
+            raise HTTPException(status_code=409, detail='Calendar removal already attempted')
+    preflight = getattr(request.app.state, 'google_calendar_removal_preflight', None)
+    if not callable(preflight):
+        raise HTTPException(status_code=503, detail='Google calendar removal is not configured')
+    try:
+        remover = preflight()
+        binding = getattr(remover, 'google_credential_binding', None)
+        if not callable(remover) or not isinstance(binding, str) or not _BINDING.fullmatch(binding):
+            raise ValueError('Invalid removal provider')
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail='Google authorization is not available') from exc
+    with connect(path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _actor(db, request, user)
+        current = db.execute('SELECT * FROM google_deliveries WHERE id=?', (delivery_id,)).fetchone()
+        if (current is None or current['kind'] != 'calendar' or current['state'] != 'confirmed'
+                or current['event_id'] != row['event_id'] or current['provider_id'] != row['event_id']
+                or current['calendar_binding'] != row['calendar_binding'] or binding != row['calendar_binding']
+                or current['calendar_etag'] != row['calendar_etag']):
+            raise HTTPException(status_code=409, detail='Google calendar identity or delivery changed')
+        if db.execute('SELECT 1 FROM google_calendar_removals WHERE delivery_id=?', (delivery_id,)).fetchone():
+            raise HTTPException(status_code=409, detail='Calendar removal already attempted')
+        if db.execute("""SELECT 1 FROM google_deliveries WHERE interview_id=? AND kind='email'
+                AND state IN ('sending','uncertain') LIMIT 1""", (row['interview_id'],)).fetchone():
+            raise HTTPException(status_code=409, detail='Resolve email delivery before calendar removal')
+        db.execute("INSERT INTO google_calendar_removals(delivery_id,state,actor_id) VALUES (?,'removing',?)",
+                   (delivery_id, user.id))
+        _audit(db, row['application_id'], user.id, delivery_id, 'calendar', 'google_calendar_removal_started')
+        arguments = {'event_id': row['event_id'], 'etag': row['calendar_etag'],
+                     'start': row['start_at'], 'end': row['end_at']}
+    try:
+        with connect(path) as db:
+            db.execute('BEGIN')
+            _actor(db, request, user)
+            interview = _interview(db, row['interview_id'])
+            _eligible(interview)
+            if interview['start_at'] != row['start_at'] or interview['end_at'] != row['end_at']:
+                raise HTTPException(status_code=409, detail='Interview time changed; review the delivery')
+    except HTTPException:
+        with connect(path) as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute("UPDATE google_calendar_removals SET state='rejected',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE delivery_id=? AND state='removing'", (delivery_id,))
+            _audit(db, row['application_id'], user.id, delivery_id, 'calendar', 'google_calendar_removal_preflight_rejected')
+        raise
+    try:
+        result = remover(**arguments)
+        state = result.get('status') if isinstance(result, dict) else None
+        if state != 'removed':
+            state = 'uncertain'
+    except Exception:  # noqa: BLE001 - a provider exception may follow a successful delete.
+        state = 'uncertain'
+    with connect(path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute("UPDATE google_calendar_removals SET state=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE delivery_id=? AND state='removing'", (state, delivery_id))
+        _audit(db, row['application_id'], user.id, delivery_id, 'calendar', 'google_calendar_removal_result')
+    with connect(path) as db:
+        db.execute('BEGIN')
+        _actor(db, request, user)
+        return {'delivery_id': delivery_id, 'state': state}

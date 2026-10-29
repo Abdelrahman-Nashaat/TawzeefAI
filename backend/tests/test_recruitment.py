@@ -122,6 +122,14 @@ def test_negated_and_instructional_mentions_are_not_evidence():
     assert [s["mentioned"] for s in mixed["required"]] == [True, True, False]
 
 
+def test_bulleted_and_bold_personal_fields_do_not_inflate_screening_score():
+    job = {"required_skills": ["Python", "SQL"], "preferred_skills": []}
+    result = score_resume(job, "- **Name:** Python\n• **Address**: SQL\nBuilt frontend interfaces.")
+    assert result["score"] == 0
+    assert result["evidence_status"] == "insufficient"
+    assert not any(skill["mentioned"] for skill in result["required"])
+
+
 def test_identity_lines_and_email_cannot_count_as_skills_or_leak_to_audit(client):
     login(client, "candidate")
     app_id = apply(client, "Name: Python SQL\nEmail: python.sql@example.com\nNo relevant experience.").json()["id"]

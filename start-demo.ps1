@@ -1,9 +1,11 @@
 # Local development demo. Do not expose this server to the public network.
+param([switch]$Google)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $credentialPath = Join-Path $projectRoot '.tooling\groq-key.dpapi'
 $env:TAWZEEF_DEMO = '1'
 $env:TAWZEEF_ENABLE_GROQ = '0'
+$env:TAWZEEF_ENABLE_GOOGLE = if ($Google) { '1' } else { '0' }
 if (Test-Path -LiteralPath $credentialPath) {
     try {
         $secureKey = (Get-Content -Raw -LiteralPath $credentialPath).Trim() | ConvertTo-SecureString
@@ -17,7 +19,12 @@ if (Test-Path -LiteralPath $credentialPath) {
 Push-Location (Join-Path $projectRoot 'backend')
 try {
     Write-Host 'Starting TawzeefAI at http://127.0.0.1:8000; press Ctrl+C to stop.'
-    uv run --locked uvicorn app.main:app --host 127.0.0.1 --port 8000
+    if ($Google) { Write-Host 'Google delivery enabled for explicit HR actions on this Windows account.' }
+    if ($Google) {
+        uv run --locked --extra google uvicorn app.main:app --host 127.0.0.1 --port 8000
+    } else {
+        uv run --locked uvicorn app.main:app --host 127.0.0.1 --port 8000
+    }
 } finally {
     Remove-Item Env:GROQ_API_KEY -ErrorAction SilentlyContinue
     Pop-Location

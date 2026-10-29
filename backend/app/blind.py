@@ -9,12 +9,16 @@ import re
 from dataclasses import dataclass
 
 _FIELD = re.compile(
-    r"^\s*(?:full\s*name|first\s*name|last\s*name|name|email|e-mail|phone|mobile|"
+    # CVs commonly format labels as bullets, numbered lists, Markdown headings,
+    # or bold text, with the colon inside or outside the bold markers.
+    r"^[ \t]*(?:(?:[-*+•▪◦‣]|\d+[.)]|#{1,6})[ \t]+)?(?:\*\*|__)?"
+    r"(?:full\s*name|first\s*name|last\s*name|name|email|e-mail|phone|mobile|"
     r"telephone|address|city|location|governorate|nationality|gender|sex|age|"
     r"date\s+of\s+birth|birth\s*date|dob|marital\s+status|university|"
     r"الاسم(?:\s+الكامل)?|اسم|البريد(?:\s+الإلكتروني)?|الايميل|البريد\s+الالكتروني|"
     r"الهاتف|هاتف|التليفون|الموبايل|رقم\s+الهاتف|العنوان|المحافظة|المدينة|الجنسية|"
-    r"الجنس|النوع|العمر|السن|تاريخ\s+الميلاد|الحالة\s+الاجتماعية|الجامعة)\s*[:：-]",
+    r"الجنس|النوع|العمر|السن|تاريخ\s+الميلاد|الحالة\s+الاجتماعية|الجامعة)"
+    r"[ \t]*(?:\*\*|__)?[ \t]*[:：-](?:\*\*|__)?",
     re.IGNORECASE,
 )
 _EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[a-zA-Z\u0600-\u06ff]{2,}(?!\w)", re.IGNORECASE)
