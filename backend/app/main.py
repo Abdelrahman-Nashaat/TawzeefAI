@@ -178,11 +178,17 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         ))
 
     @application.post("/api/agent/{application_id}/review")
-    def agent_review(application_id: int, user: Annotated[User, Depends(get_current_user)]):
+    def agent_review(application_id: int, request: Request, user: Annotated[User, Depends(get_current_user)]):
+        def authorize():
+            current = get_current_user(request)
+            if current.id != user.id or current.role != 'hr':
+                raise HTTPException(status_code=403, detail='HR access required')
+
         try:
             return run_agent(
                 path, application_id, user, 'prepare review',
                 enabled=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1',
+                authorize=authorize,
             )
         except AgentError as exc:
             code = {'forbidden': 403, 'invalid_application': 404}.get(exc.code, 400)

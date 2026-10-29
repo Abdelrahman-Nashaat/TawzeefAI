@@ -31,6 +31,63 @@ def login(client, username, password=None):
     assert response.status_code == 200
 
 
+def test_graph_uses_bounded_model_tools_and_saves_only_trace(tmp_path, monkeypatch):
+    path = tmp_path / 'model-graph.sqlite3'
+    monkeypatch.setenv('TAWZEEF_ENABLE_GROQ', '1')
+    monkeypatch.setenv('GROQ_API_KEY', 'synthetic-secret')
+    replies = [
+        {'role': 'assistant', 'content': None, 'tool_calls': [{
+            'id': 'call_1', 'type': 'function',
+            'function': {'name': 'job_requirements', 'arguments': '{}'},
+        }]},
+        {'role': 'assistant', 'content': 'Untrusted output with a private claim'},
+    ]
+    monkeypatch.setattr('app.agent._request_model', lambda messages, key: replies.pop(0))
+    with TestClient(app_with_graph(path)) as client:
+        login(client, 'hr')
+        with connect(path) as db:
+            candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
+            application = db.execute("""INSERT INTO applications(candidate_id,job_id,filename,resume_text)
+                VALUES (?, 'job-backend-python', 'resume.docx', 'PRIVATE RESUME')""", (candidate,)).lastrowid
+        response = client.post('/api/graph-reviews', json={'application_id': application})
+        assert response.status_code == 201
+        result = response.json()
+        assert result['awaiting_review']
+        assert result['state']['agent_review'] == {'status': 'ok', 'tool_trace': ['job_requirements']}
+        assert 'Untrusted output' not in str(result) and 'PRIVATE RESUME' not in str(result)
+        saved = client.get(f"/api/graph-reviews/{result['id']}").json()
+        assert saved['state']['agent_review'] == result['state']['agent_review']
+        assert client.post(f"/api/graph-reviews/{result['id']}/resume", json={'reviewed': True}).status_code == 200
+
+
+def test_graph_removes_partial_state_if_session_revoked_during_model_call(tmp_path, monkeypatch):
+    path = tmp_path / 'revoked-graph.sqlite3'
+    monkeypatch.setenv('TAWZEEF_ENABLE_GROQ', '1')
+    monkeypatch.setenv('GROQ_API_KEY', 'synthetic-secret')
+    with TestClient(app_with_graph(path)) as client:
+        login(client, 'hr')
+        with connect(path) as db:
+            candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
+            hr = db.execute("SELECT id FROM users WHERE username='hr'").fetchone()[0]
+            application = db.execute("""INSERT INTO applications(candidate_id,job_id,filename,resume_text)
+                VALUES (?, 'job-backend-python', 'resume.docx', 'synthetic')""", (candidate,)).lastrowid
+
+        def revoke(messages, key):
+            with connect(path) as db:
+                db.execute('DELETE FROM sessions WHERE user_id=?', (hr,))
+            return {'role': 'assistant', 'content': None, 'tool_calls': [{
+                'id': 'call_1', 'type': 'function',
+                'function': {'name': 'job_requirements', 'arguments': '{}'},
+            }]}
+
+        monkeypatch.setattr('app.agent._request_model', revoke)
+        response = client.post('/api/graph-reviews', json={'application_id': application})
+        assert response.status_code == 401
+        with connect(path) as db:
+            assert db.execute('SELECT count(*) FROM graph_review_owners').fetchone()[0] == 0
+            assert db.execute('SELECT count(*) FROM checkpoints').fetchone()[0] == 0
+
+
 def test_legacy_policy_checkpoint_is_redacted_from_response():
     legacy = SimpleNamespace(values={
         'application_id': 1, 'policy_question': 'private question',
@@ -230,7 +287,7 @@ def test_graph_review_persists_and_requires_owner_hr(tmp_path):
         body = created.json()
         thread_id = body['id']
         assert body['awaiting_review'] is True
-        assert body['state']['plan'] == ['parser', 'matching', 'policy', 'scheduler', 'status', 'human_review']
+        assert body['state']['plan'] == ['parser', 'matching', 'policy', 'scheduler', 'status', 'agent_review', 'human_review']
         assert body['state']['parsed']['text_available'] is True
         assert body['state']['parsed']['sections']['skills'] == 'mentioned'
         assert body['state']['parsed']['sections']['education'] == 'unknown'

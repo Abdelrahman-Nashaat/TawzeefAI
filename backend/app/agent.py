@@ -11,6 +11,7 @@ import json
 import os
 import re
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 from app.ai_provider import GROQ_MODEL, GROQ_URL
@@ -107,7 +108,7 @@ def _result(status: str, answer: str = '', evidence: dict | None = None,
 
 
 def run_agent(database_path: str | Path, application_id: int, user: User,
-              question: str, *, enabled: bool = False) -> dict:
+              question: str, *, enabled: bool = False, authorize: Callable[[], None] | None = None) -> dict:
     """Prepare a bounded read-only review. No model access unless opted in.
 
     ``question`` selects one of ACCEPTED_TASKS and is not sent to the provider.
@@ -119,9 +120,9 @@ def run_agent(database_path: str | Path, application_id: int, user: User,
     if not isinstance(application_id, int) or isinstance(application_id, bool) or application_id < 1:
         raise AgentError('invalid_application', 'Application is unavailable.')
     with connect(database_path) as db:
-        account = db.execute('SELECT role, username FROM users WHERE id = ?', (user.id,)).fetchone()
+        account = db.execute('SELECT role, username, active FROM users WHERE id = ?', (user.id,)).fetchone()
         application = db.execute('SELECT * FROM applications WHERE id = ?', (application_id,)).fetchone()
-        if not account or account['role'] != 'hr' or account['username'] != user.username:
+        if not account or not account['active'] or account['role'] != 'hr' or account['username'] != user.username:
             raise AgentError('forbidden', 'HR access required.')
         if application is None:
             raise AgentError('invalid_application', 'Application is unavailable.')
@@ -145,9 +146,20 @@ def run_agent(database_path: str | Path, application_id: int, user: User,
     trace: list[str] = []
     evidence: dict = {}
     result = _result('limit_reached')
+
+    def reauthorize() -> None:
+        if authorize is not None:
+            authorize()
+        with connect(database_path) as db:
+            account = db.execute('SELECT role, username, active FROM users WHERE id=?', (user.id,)).fetchone()
+            if not account or not account['active'] or account['role'] != 'hr' or account['username'] != user.username:
+                raise AgentError('forbidden', 'HR access required.')
+
     try:
         for _ in range(MAX_MODEL_REQUESTS):
+            reauthorize()
             message = _request_model(messages, key)
+            reauthorize()
             calls = message.get('tool_calls') or []
             if not isinstance(calls, list):
                 result = _result('rejected', evidence=evidence, trace=trace)
@@ -184,6 +196,7 @@ def run_agent(database_path: str | Path, application_id: int, user: User,
                 }})
             messages.append({'role': 'assistant', 'content': None, 'tool_calls': validated})
             for call in validated:
+                reauthorize()
                 name = call['function']['name']
                 with connect(database_path) as db:
                     application = db.execute('SELECT * FROM applications WHERE id = ?', (application_id,)).fetchone()
@@ -196,10 +209,13 @@ def run_agent(database_path: str | Path, application_id: int, user: User,
                                  'content': json.dumps(data, ensure_ascii=False)})
         else:
             result = _result('limit_reached', evidence=evidence, trace=trace)
+    except AgentError:
+        raise
     except ValueError:
         result = _result('rejected', evidence=evidence, trace=trace)
     except (OSError, KeyError, IndexError, TypeError, http.client.HTTPException):
         result = _result('unavailable', evidence=evidence, trace=trace)
+    reauthorize()
     with connect(database_path) as db:
         db.execute('INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)',
                    (application_id, user.id, 'agent_read', json.dumps({

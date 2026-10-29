@@ -663,7 +663,7 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
 function setupGraphReview(target, application) {
   const storageKey = `tawzeef-graph-${currentUserId}-${application.id}`;
   const title = element("h4", "", "مراجعة متعددة المراحل باستخدام LangGraph");
-  const note = element("p", "subtle-note", "تجمع المراجعة نتائج أدوات محلية وتتوقف لتأكيد بشري. لا تتخذ قرار توظيف، ولا تحجز موعدًا أو تربط تقويمًا أو ترسل دعوة. المواعيد المعروضة لقطة قد تتغير.");
+  const note = element("p", "subtle-note", "تجمع المراجعة نتائج أدوات محلية وتتوقف لتأكيد بشري. عند تفعيل Groq يختار المساعد أدوات قراءة محددة؛ لا تتخذ المراجعة قرار توظيف أو تحجز موعدًا أو ترسل دعوة. المواعيد لقطة قد تتغير.");
   const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
   const form = element("form", "decision-form");
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
@@ -677,7 +677,7 @@ function setupGraphReview(target, application) {
   restore.append(idLabel, open);
   const output = element("div"); output.setAttribute("aria-live", "polite");
   target.replaceChildren(title, note, message, form, restore, output);
-  const labels = { parser: "قراءة النص المستخرج", matching: "فحص المهارات المذكورة", policy: "بحث السياسة المحلي", scheduler: "استعراض المواعيد المحلية", status: "حالة الطلب", human_review: "مراجعة بشرية" };
+  const labels = { parser: "قراءة النص المستخرج", matching: "فحص المهارات المذكورة", policy: "بحث السياسة المحلي", scheduler: "استعراض المواعيد المحلية", status: "حالة الطلب", agent_review: "مساعد أدوات القراءة", human_review: "مراجعة بشرية" };
   function report(text, error = false) { message.textContent = text; message.className = error ? "form-error" : "subtle-note"; }
   function remember(id) { try { sessionStorage.setItem(storageKey, id); } catch { /* Manual restore remains available. */ } }
   function display(review) {
@@ -688,7 +688,7 @@ function setupGraphReview(target, application) {
     for (const step of review.state.plan || []) plan.append(element("li", "", labels[step] || step));
     output.append(element("h4", "", "مراحل المراجعة"), plan);
     const parsed = review.state.parsed;
-    if (parsed) output.append(element("p", "", parsed.text_available ? "يتوفر نص مستخرج من الملف؛ التحليل المنظم للبيانات غير متاح." : "لا يتوفر نص مستخرج من الملف."));
+    if (parsed) output.append(element("p", "", parsed.text_available ? "يتوفر نص مستخرج؛ تحليل الأقسام تقديري ويحتاج مراجعة في قسم السيرة المنظمة." : "لا يتوفر نص مستخرج من الملف."));
     if (review.state.matching) { const score = element("div"); renderScore(score, review.state.matching); output.append(score); }
     const policy = review.state.policy?.status;
     if (policy) output.append(element("p", "", policy === "searched_without_retaining_results" ? "أُجري بحث محلي في السياسات دون حفظ نتائجه؛ الإجابة والمصادر في قسم المعرفة." : policy === "not_requested" ? "لم يُطلب بحث في السياسات." : "تفاصيل بحث السياسات غير متاحة."));
@@ -701,7 +701,14 @@ function setupGraphReview(target, application) {
         output.append(slots);
       }
     }
-    if (review.state.status) output.append(element("p", "", `حالة الطلب وقت المراجعة: ${statusLabels[review.state.status.application_status] || review.state.status.application_status}`));
+    if (review.state.status) output.append(element("p", "", `الحالة الحالية للطلب: ${statusLabels[review.state.status.application_status] || review.state.status.application_status}`));
+    const agent = review.state.agent_review;
+    if (agent) {
+      const agentStatus = { ok: "اكتملت قراءة الأدوات", disabled: "المساعد غير مفعّل", unavailable: "المساعد غير متاح", rejected: "رُفض رد المساعد", limit_reached: "وصل المساعد للحد المسموح" };
+      output.append(element("p", "", `مساعد أدوات القراءة: ${agentStatus[agent.status] || "حالة غير معروفة"}.`));
+      const toolLabels = { job_requirements: "متطلبات الوظيفة", workflow_status: "حالة سير الطلب", screening_evidence: "مؤشرات الفحص" };
+      if (agent.tool_trace?.length) output.append(element("p", "subtle-note", `الأدوات المستخدمة: ${agent.tool_trace.map((tool) => toolLabels[tool] || "أداة غير معروفة").join("، ")}.`));
+    }
     if (review.awaiting_review) {
       output.append(element("p", "result-badge", "توقفت المراجعة بانتظار التأكيد البشري."));
       const resume = element("button", "small-button", "أؤكد أنني راجعت النتائج واستكمل المراجعة"); resume.type = "button";

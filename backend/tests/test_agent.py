@@ -170,3 +170,39 @@ def test_api_requires_hr_and_uses_server_identity(state, monkeypatch):
         }).status_code == 200
         assert client.post(endpoint).json()['status'] == 'disabled'
         assert client.post('/api/agent/999999/review').status_code == 404
+
+
+def test_deactivation_during_model_call_prevents_tool_execution(state, monkeypatch):
+    path, hr, application_id = state
+    monkeypatch.setenv('GROQ_API_KEY', 'synthetic-secret')
+
+    def deactivate(messages, key):
+        with connect(path) as db:
+            db.execute('UPDATE users SET active=0 WHERE id=?', (hr.id,))
+        return call('screening_evidence')
+
+    with patch('app.agent._request_model', side_effect=deactivate) as request, pytest.raises(AgentError) as error:
+        run_agent(path, application_id, hr, 'review', enabled=True)
+    assert error.value.code == 'forbidden'
+    assert request.call_count == 1
+
+
+def test_revoked_session_during_model_call_prevents_tool_execution(state, monkeypatch):
+    path, hr, application_id = state
+    monkeypatch.setenv('GROQ_API_KEY', 'synthetic-secret')
+    monkeypatch.setenv('TAWZEEF_ENABLE_GROQ', '1')
+
+    def revoke(messages, key):
+        with connect(path) as db:
+            db.execute('DELETE FROM sessions WHERE user_id=?', (hr.id,))
+        return call('screening_evidence')
+
+    with TestClient(create_app(path, seed_demo=True)) as client:
+        assert client.post('/api/auth/login', json={
+            'username': 'hr', 'password': 'hr-demo-only',
+        }).status_code == 200
+        with patch('app.agent._request_model', side_effect=revoke) as request:
+            response = client.post(f'/api/agent/{application_id}/review')
+        assert response.status_code == 401
+        assert 'Python' not in response.text
+        assert request.call_count == 1

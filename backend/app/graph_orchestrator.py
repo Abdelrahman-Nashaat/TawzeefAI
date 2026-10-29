@@ -3,7 +3,8 @@
 Each review belongs to the authenticated HR user who started it. SQLite
 checkpoints contain the review results (including potentially sensitive CV
 evidence), so the database must be protected like the recruitment database.
-The graph uses existing local tools; it does not make an LLM call or send mail.
+The graph can invoke a bounded read-only model agent when explicitly enabled;
+it never sends mail or makes a hiring decision.
 Policy retrieval is metadata-only: neither the question nor search results are
 saved or returned by these endpoints. Use the knowledge endpoint for answers.
 Old checkpoint payloads are redacted from responses, but may still exist on disk.
@@ -26,7 +27,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
-from app.auth import User, require_roles
+from app.agent import AgentError, run_agent
+from app.auth import User, get_current_user, require_roles
 from app.blind import redact_resume
 from app.db import connect
 from app.knowledge import answer_question
@@ -56,6 +58,7 @@ class ReviewState(TypedDict, total=False):
     policy: dict
     scheduling: dict
     status: dict
+    agent_review: dict
     reviewed: bool
 
 
@@ -90,10 +93,11 @@ def _current_scheduling(path: str | Path, application_id: int) -> dict:
             "notice": "Availability is a snapshot; booking remains a separate action."}
 
 
-def build_review_graph(path: str | Path, checkpointer, *, policy_question: str = ""):
+def build_review_graph(path: str | Path, checkpointer, *, policy_question: str = "",
+                       user: User | None = None, authorize=None, enable_agent: bool = False):
     """Compile a bounded graph around existing, read-only domain operations."""
     def plan(state: ReviewState):
-        return {"plan": ["parser", "matching", "policy", "scheduler", "status", "human_review"]}
+        return {"plan": ["parser", "matching", "policy", "scheduler", "status", "agent_review", "human_review"]}
 
     def parser(state: ReviewState):
         with connect(path) as db:
@@ -133,6 +137,14 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             row = get_application(db, state["application_id"])
             return {"status": {"application_status": row["status"]}}
 
+    def agent_review(state: ReviewState):
+        if not enable_agent or user is None:
+            return {"agent_review": {"status": "disabled", "tool_trace": []}}
+        result = run_agent(path, state["application_id"], user, 'prepare review',
+                           enabled=True, authorize=authorize)
+        # Never persist model output or tool payloads in the graph checkpoint.
+        return {"agent_review": {"status": result['status'], "tool_trace": result['tool_trace']}}
+
     def human_review(state: ReviewState):
         reviewed = interrupt({"type": "human_review", "application_id": state["application_id"],
                               "notice": "Acknowledge review; no hiring or booking action will be taken."})
@@ -140,7 +152,8 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
 
     builder = StateGraph(ReviewState)
     nodes = {"plan": plan, "parser": parser, "matching": matching, "policy": policy,
-             "scheduler": scheduler, "status": status, "human_review": human_review}
+             "scheduler": scheduler, "status": status, "agent_review": agent_review,
+             "human_review": human_review}
     for name, node in nodes.items():
         builder.add_node(name, node)
     chain = [START, *nodes, END]
@@ -236,11 +249,19 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
                    (thread_id, payload.application_id, user.id))
     try:
         with SqliteSaver.from_conn_string(str(path)) as saver:
-            graph = build_review_graph(path, saver, policy_question=payload.policy_question)
+            def authorize():
+                current = get_current_user(request)
+                if current.id != user.id or current.role != 'hr':
+                    raise HTTPException(status_code=403, detail='HR access required')
+
+            graph = build_review_graph(path, saver, policy_question=payload.policy_question,
+                                       user=user, authorize=authorize,
+                                       enable_agent=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1')
             config = _config(thread_id)
             graph.invoke({"application_id": payload.application_id}, config)
+            authorize()
             return {"id": thread_id, **_view(graph.get_state(config), path)}
-    except Exception:
+    except Exception as exc:
         # A start that never returned its ID must not leave inaccessible data.
         try:
             with SqliteSaver.from_conn_string(str(path)) as saver:
@@ -252,6 +273,8 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
                 db.execute("DELETE FROM graph_review_owners WHERE thread_id = ?", (thread_id,))
         except Exception:
             logger.exception("Could not remove owner record after review start failed")
+        if isinstance(exc, AgentError):
+            raise HTTPException(status_code=403, detail='HR access required') from exc
         raise
 
 
