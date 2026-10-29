@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.auth import User, require_roles
 from app.db import connect
-from app.recruitment import get_application, job_data, score_resume
+from app.recruitment import get_application, job_data, score_resume, screening_audit_details
 
 router = APIRouter(prefix="/api/workflows")
 HR = Annotated[User, Depends(require_roles("hr"))]
@@ -89,7 +89,7 @@ def run_workflow(application_id: int, request: Request, user: HR):
             )
             db.execute(
                 "INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",
-                (application_id, user.id, "screened", serialized),
+                (application_id, user.id, "screened", screening_audit_details(score, serialized)),
             )
         db.execute(
             """INSERT INTO recruitment_workflows (application_id, last_step) VALUES (?, ?)

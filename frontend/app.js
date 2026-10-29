@@ -1367,10 +1367,144 @@ function displayDate(value) {
   return Number.isNaN(date.valueOf()) ? value : date.toLocaleString("ar-EG", { dateStyle: "medium", timeStyle: "short" });
 }
 
+function setupGoogleDeliveries(card, interview) {
+  const details = element("details", "google-deliveries");
+  details.append(element("summary", "", "تجهيز مسودة Google Calendar أو Gmail"));
+  const panel = element("div", "google-delivery-panel");
+  panel.append(element("p", "subtle-note", "تجهيز المسودة لا يرسل شيئًا. إنشاء حدث Google Calendar الخاص لا يضيف مدعوين؛ رسالة Gmail إجراء منفصل لكل مستلم. قد تصدر Google إشعارات رغم طلب عدم إرسالها."));
+  panel.append(element("p", "subtle-note", "إذا بقيت العملية قيد الإرسال أو كانت نتيجتها غير مؤكدة، تحقق من Google قبل أي إجراء؛ لن يعيد التطبيق المحاولة تلقائيًا."));
+  const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
+  const list = element("div", "google-delivery-list");
+  const reload = element("button", "outline-button", "تحديث سجل Google"); reload.type = "button";
+  const calendarForm = element("form", "decision-form");
+  const calendarReview = element("input"); calendarReview.type = "checkbox";
+  const calendarLabel = element("label", "admin-checkbox", "راجعت الموعد وأريد تجهيز مسودة حدث خاص دون مدعوين.");
+  calendarLabel.prepend(calendarReview);
+  const calendarCreate = element("button", "outline-button", "تجهيز مسودة التقويم"); calendarCreate.type = "submit";
+  calendarForm.append(calendarLabel, calendarCreate);
+  const emailForm = element("form", "decision-form");
+  const recipientLabel = element("label", "", "البريد الإلكتروني للمستلم");
+  const recipient = element("input"); recipient.type = "email"; recipient.required = true; recipient.maxLength = 254; recipient.dir = "ltr"; recipient.autocomplete = "off";
+  recipientLabel.append(recipient);
+  const emailReview = element("input"); emailReview.type = "checkbox";
+  const emailLabel = element("label", "admin-checkbox", "راجعت العنوان والموعد وأريد تجهيز مسودة رسالة تأكيد لهذا المستلم.");
+  emailLabel.prepend(emailReview);
+  const emailCreate = element("button", "outline-button", "تجهيز مسودة الرسالة"); emailCreate.type = "submit";
+  emailForm.append(recipientLabel, emailLabel, emailCreate);
+  panel.append(message, reload, list, calendarForm, emailForm); details.append(panel); card.append(details);
+  let loaded = false, busy = false, loading = false, deliveries = [];
+  const endpoint = `/api/google/interviews/${encodeURIComponent(interview.id)}/deliveries`;
+  function report(text, isError = false) { message.textContent = text; message.className = isError ? "form-error" : "subtle-note"; }
+  function synchronizeControls() {
+    const existing = new Set(deliveries.map((item) => item.kind));
+    calendarForm.hidden = existing.has("calendar"); emailForm.hidden = existing.has("email");
+    for (const control of panel.querySelectorAll("button, input")) control.disabled = busy || !loaded;
+    reload.disabled = busy || loading;
+  }
+  function display() {
+    list.replaceChildren();
+    if (!deliveries.length) list.append(element("p", "empty-note", "لا توجد مسودات لهذا الموعد."));
+    const stateLabels = { pending: "مسودة بانتظار تأكيد الإجراء", sending: "قيد الإرسال أو تحتاج مراجعة بعد انقطاع", confirmed: "قبلت Google الطلب", rejected: "رفضت Google الطلب", uncertain: "النتيجة غير مؤكدة وتحتاج مراجعة" };
+    for (const delivery of deliveries) {
+      const entry = element("section", "google-delivery-entry");
+      const type = delivery.kind === "calendar" ? "حدث التقويم" : "رسالة التأكيد";
+      entry.append(element("h5", "", type), element("p", "", `الحالة: ${stateLabels[delivery.state] || "غير معروفة؛ راجع السجل"}.`));
+      if (delivery.kind === "email" && delivery.recipient) entry.append(element("p", "", `المستلم: ${delivery.recipient}`));
+      entry.append(element("p", "subtle-note", `الموعد: من ${displayDate(delivery.start_at)} إلى ${displayDate(delivery.end_at)}`));
+      if (delivery.kind === "calendar") entry.append(element("p", "subtle-note", "عنوان الحدث: TawzeefAI interview · خاص وبدون مدعوين."));
+      if (delivery.kind === "email") {
+        const start = new Date(delivery.start_at), end = new Date(delivery.end_at);
+        if (!Number.isNaN(start.valueOf()) && !Number.isNaN(end.valueOf())) {
+          const preview = element("p", "subtle-note", `Subject: Interview confirmation — Your interview is scheduled from ${start.toISOString()} to ${end.toISOString()}.`);
+          preview.dir = "ltr";
+          entry.append(preview);
+        }
+      }
+      if (delivery.state === "confirmed" && delivery.kind === "email") entry.append(element("p", "subtle-note", "قبول Gmail للطلب لا يثبت تسليم الرسالة إلى المستلم."));
+      if (delivery.state === "sending" || delivery.state === "uncertain") entry.append(element("p", "form-error", "تحقق من Google ومن سجل العملية؛ لا يمكن إعادة الإرسال تلقائيًا."));
+      if (delivery.state === "rejected") entry.append(element("p", "form-error", "راجع إعدادات Google وسجل العملية؛ لا توجد إعادة إرسال تلقائية."));
+      if (delivery.state === "pending") {
+        const confirm = element("input"); confirm.type = "checkbox";
+        const label = element("label", "admin-checkbox", delivery.kind === "email" ? "راجعت المستلم والموعد وأوافق على إرسال هذه الرسالة الآن عبر Gmail." : "راجعت الموعد وأوافق على إنشاء الحدث الخاص الآن في Google Calendar.");
+        label.prepend(confirm);
+        const send = element("button", "small-button", delivery.kind === "email" ? "إرسال رسالة التأكيد" : "إنشاء حدث Google Calendar"); send.type = "button";
+        send.addEventListener("click", () => {
+          if (!confirm.checked) { report("يرجى تأكيد مراجعة تفاصيل هذا الإجراء أولًا.", true); return; }
+          perform(async () => {
+            const result = await api(`/api/google/deliveries/${encodeURIComponent(delivery.id)}/send`, {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmed: true })
+            }, { errorMessages: { 409: "لا يمكن إرسال هذه المسودة في حالتها الحالية؛ راجع سجل العملية.", 503: "تعذر تنفيذ الطلب؛ راجع حالة المسودة وربط Google قبل أي إجراء آخر." } });
+            if (result.state === "confirmed") return "قبلت Google الطلب. راجع حالة الحدث أو الرسالة في حساب Google.";
+            if (result.state === "rejected") return "رفضت Google الطلب؛ راجع إعدادات الحساب وسجل العملية.";
+            return "النتيجة غير مؤكدة؛ تحقق من Google قبل أي إجراء آخر.";
+          }, true);
+        });
+        entry.append(label, send);
+      }
+      list.append(entry);
+    }
+    synchronizeControls();
+  }
+  async function refresh() {
+    const items = await api(endpoint);
+    if (!Array.isArray(items)) throw new Error("تعذّر قراءة سجل Google.");
+    if (!details.isConnected) return;
+    deliveries = items; loaded = true; display();
+  }
+  async function perform(action, isSend = false) {
+    if (busy || !loaded) return;
+    busy = true; synchronizeControls(); report(isSend ? "جارٍ تنفيذ الإجراء..." : "جارٍ تجهيز المسودة...");
+    try {
+      const resultMessage = await action();
+      if (!details.isConnected) return;
+      await refresh();
+      report(resultMessage);
+    } catch (error) {
+      if (!isStale(error) && details.isConnected) {
+        try { await refresh(); } catch { loaded = false; }
+        report(error instanceof TypeError && isSend ? "تعذر معرفة نتيجة الإرسال؛ راجع سجل العملية وGoogle قبل أي إجراء آخر." : error instanceof TypeError ? "تعذّر الاتصال بالخادم؛ راجع سجل المسودات قبل المحاولة." : error.message, true);
+      }
+    } finally { busy = false; if (details.isConnected) synchronizeControls(); }
+  }
+  calendarForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!calendarReview.checked) { report("يرجى مراجعة الموعد وتأكيد تجهيز المسودة.", true); return; }
+    perform(async () => {
+      await api(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "calendar", confirmed: true }) });
+      calendarReview.checked = false;
+      return "تم تجهيز مسودة التقويم محليًا؛ لم يُنشأ حدث في Google بعد.";
+    });
+  });
+  emailForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!emailReview.checked) { report("يرجى مراجعة المستلم والموعد وتأكيد تجهيز المسودة.", true); return; }
+    const address = recipient.value.trim();
+    if (!address || !recipient.checkValidity()) { report("أدخل عنوان بريد صحيحًا لمستلم واحد.", true); return; }
+    perform(async () => {
+      await api(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "email", recipient: address, confirmed: true }) });
+      recipient.value = ""; emailReview.checked = false;
+      return "تم تجهيز مسودة الرسالة محليًا؛ لم تُرسل رسالة بعد.";
+    });
+  });
+  async function reloadDeliveries() {
+    if (busy || loading) return;
+    loading = true; synchronizeControls(); report("جارٍ تحميل سجل المسودات...");
+    try { await refresh(); if (details.isConnected) report(""); }
+    catch (error) { if (!isStale(error) && details.isConnected) report(error instanceof TypeError ? "تعذر الاتصال بالخادم." : error.message, true); }
+    finally { loading = false; if (details.isConnected) synchronizeControls(); }
+  }
+  reload.addEventListener("click", reloadDeliveries);
+  details.addEventListener("toggle", async () => {
+    if (!details.open || loaded || loading) return;
+    await reloadDeliveries();
+  });
+  synchronizeControls();
+}
+
 function renderInterviews(interviews, role, applications, slots) {
   const target = document.getElementById("interviews-area");
   const box = section(role === "hr" ? "المقابلات" : "مقابلاتي");
-  box.append(element("p", "subtle-note", "المواعيد مسجلة محليًا داخل التطبيق؛ لا يتم إرسال دعوات أو ربط تقويم خارجي. يمكن إضافة ملف التقويم يدويًا، ولن يتحدث تلقائيًا عند تغيير الموعد أو إلغائه."));
+  box.append(element("p", "subtle-note", "المواعيد مسجلة محليًا. يمكن إضافة ملف التقويم يدويًا، ولن يتحدث تلقائيًا عند تغيير الموعد أو إلغائه. إجراءات Google، عند تهيئتها، تتطلب مراجعة وتأكيدًا منفصلين من HR."));
   const list = element("div", "data-list");
   if (!interviews.length) list.append(element("p", "empty-note", "لا توجد مقابلات مسجلة حتى الآن."));
   for (const interview of interviews) {
@@ -1409,6 +1543,7 @@ function renderInterviews(interviews, role, applications, slots) {
         } finally { cancel.disabled = false; }
       });
       card.append(cancel);
+      setupGoogleDeliveries(card, interview);
     }
     list.append(card);
   }

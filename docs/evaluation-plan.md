@@ -35,6 +35,8 @@ Test through actual server endpoints and storage/retrieval boundaries, not only 
 
 For screening and status changes, verify that a durable audit entry captures actor, event, time, target, rubric/version and decision or override, with sufficient evidence to reconstruct the action. Check failed and denied attempts where appropriate. Never put secrets or complete résumé contents into routine logs; minimize test data in traces and error messages. Test that users without permission cannot view or modify audit records.
 
+For keyword screening, new audit events record the method, score, match counts and a SHA-256 digest of the exact serialized result; they do not copy its résumé excerpts. The latest result with its evidence remains on the application for HR review. This digest cannot reconstruct a result overwritten by a later screening, and previous audit rows are not rewritten or scrubbed by this change. Historical result retention and migration of older entries require separate design and validation.
+
 Test secret handling using dummy values: no secrets committed to the repository, exposed in browser responses, or printed in logs. Test expiration, invalid sessions, and role checks. The booklet's proposed zero-leak target applies to the tested cases; no finite suite proves the absence of all possible leaks.
 
 ## Workflow, scheduling, and dashboard

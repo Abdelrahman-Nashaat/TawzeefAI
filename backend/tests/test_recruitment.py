@@ -1,4 +1,6 @@
 import sqlite3
+import json
+from hashlib import sha256
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 
@@ -142,6 +144,28 @@ def test_workflow_uses_same_redacted_screening(client):
     assert score["score"] == 0
     assert score["blind_screening"]["requires_review"] is True
     assert "python.sql@example.com" not in str(client.get("/api/audit").json()).lower()
+
+
+@pytest.mark.parametrize('method', ['direct', 'workflow'])
+def test_screen_audit_keeps_summary_without_resume_snippets(client, method):
+    login(client, 'candidate')
+    app_id = apply(client, 'Built Python APIs for SecretSyntheticClient.').json()['id']
+    login(client, 'hr')
+    endpoint = (f'/api/applications/{app_id}/screen' if method == 'direct'
+                else f'/api/workflows/{app_id}/run')
+    assert client.post(endpoint).status_code == 200
+    score = client.get(f'/api/applications/{app_id}').json()['score']
+    assert 'secretsyntheticclient' in str(score).lower()
+    events = [e for e in client.get('/api/audit').json() if e['action'] == 'screened']
+    assert len(events) == 1
+    details = json.loads(events[0]['details'])
+    assert details['score'] == score['score']
+    assert details['required_mentioned'] == sum(item['mentioned'] for item in score['required'])
+    with connect(client.app.state.database_path) as db:
+        stored = db.execute('SELECT score_json FROM applications WHERE id = ?', (app_id,)).fetchone()[0]
+    assert details['result_sha256'] == sha256(stored.encode('utf-8')).hexdigest()
+    assert 'secretsyntheticclient' not in str(details).lower()
+    assert 'evidence' not in details
 
 
 def test_counterfactual_names_in_actual_resume_do_not_change_score_or_evidence():

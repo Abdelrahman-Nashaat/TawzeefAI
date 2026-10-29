@@ -3,6 +3,7 @@
 import json
 import re
 import unicodedata
+from hashlib import sha256
 from datetime import UTC, datetime
 from pathlib import Path, PurePath
 from typing import Annotated, Literal
@@ -14,6 +15,7 @@ from app.auth import User, get_current_user, require_owner_or_hr, require_roles
 from app.blind import redact_resume
 from app.db import connect
 from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_document_text
+from app.google_outbox import cancellation_block_reason
 from app.resume_structure import structure_resume
 from app.scheduling import utc_text
 
@@ -114,6 +116,26 @@ def score_resume(job: dict, text: str) -> dict:
     }
 
 
+def screening_audit_details(score: dict, serialized: str) -> str:
+    """Record screening metadata without duplicating résumé excerpts in audit.
+
+    The digest identifies the exact serialized result stored on the application;
+    it does not retain previous results after the application is screened again.
+    """
+    required = score['required']
+    preferred = score['preferred']
+    return json.dumps({
+        'method': 'keyword_mentions_v1',
+        'score': score['score'],
+        'evidence_status': score['evidence_status'],
+        'required_mentioned': sum(item['mentioned'] for item in required),
+        'required_total': len(required),
+        'preferred_mentioned': sum(item['mentioned'] for item in preferred),
+        'preferred_total': len(preferred),
+        'result_sha256': sha256(serialized.encode('utf-8')).hexdigest(),
+    }, ensure_ascii=False)
+
+
 def application_view(row, user: User) -> dict:
     result = {key: row[key] for key in ("id", "candidate_id", "job_id", "status", "created_at", "updated_at")}
     if user.role == "hr":
@@ -200,7 +222,7 @@ def screen(application_id: int, request: Request, user: HR):
         score = score_resume(job, row["resume_text"])
         serialized = json.dumps(score, ensure_ascii=False)
         db.execute("UPDATE applications SET score_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?", (serialized, application_id))
-        db.execute("INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)", (application_id, user.id, "screened", serialized))
+        db.execute("INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)", (application_id, user.id, "screened", screening_audit_details(score, serialized)))
         return score
 
 
@@ -233,6 +255,8 @@ def decide(application_id: int, payload: Decision, request: Request, user: HR):
                 (application_id, now),
             ).fetchall()
             for interview in upcoming:
+                if cancellation_block_reason(db, interview['id']):
+                    raise HTTPException(status_code=409, detail='Resolve the Google delivery before rejecting this application')
                 db.execute("UPDATE interviews SET status = 'cancelled' WHERE id = ?", (interview["id"],))
                 db.execute(
                     "INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",

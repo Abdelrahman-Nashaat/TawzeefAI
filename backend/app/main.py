@@ -32,6 +32,8 @@ from app.dashboard import router as dashboard_router
 from app.db import connect, initialize
 from app.evaluation_dashboard import router as evaluation_router
 from app.graph_orchestrator import router as graph_reviews_router
+from app.google_outbox import initialize_google_outbox
+from app.google_outbox import router as google_outbox_router
 from app.hybrid_api import router as hybrid_router
 from app.interview_calendar import router as interview_calendar_router
 from app.jobs_admin import initialize_jobs_admin
@@ -77,6 +79,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         initialize(path)
         initialize_admin_users(path)
         initialize_scheduling(path)
+        initialize_google_outbox(path)
         initialize_slots(path)
         initialize_workflows(path)
         initialize_knowledge_documents(path, include_samples=seed_demo)
@@ -121,6 +124,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
     application.include_router(admin_users_router)
     application.include_router(interview_calendar_router)
     application.include_router(hybrid_router)
+    application.include_router(google_outbox_router)
 
     @application.middleware("http")
     async def check_origin(request: Request, call_next):

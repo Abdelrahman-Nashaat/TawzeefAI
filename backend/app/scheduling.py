@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.auth import User, get_current_user, require_roles
 from app.db import connect
+from app.google_outbox import cancellation_block_reason
 
 router = APIRouter(prefix="/api")
 HR = Annotated[User, Depends(require_roles("hr"))]
@@ -125,6 +126,8 @@ def cancel_interview(interview_id: int, request: Request, user: HR):
             raise HTTPException(status_code=409, detail="Interview is already cancelled")
         if row["start_at"] <= utc_text(datetime.now(UTC)):
             raise HTTPException(status_code=409, detail="Cannot cancel a past or in-progress interview")
+        if cancellation_block_reason(db, interview_id):
+            raise HTTPException(status_code=409, detail="Resolve the Google delivery before cancelling this interview")
         db.execute("UPDATE interviews SET status = 'cancelled' WHERE id = ?", (interview_id,))
         db.execute(
             "INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",
