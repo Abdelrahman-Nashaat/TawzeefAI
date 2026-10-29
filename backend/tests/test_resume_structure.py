@@ -40,6 +40,23 @@ def test_unicode_offsets_and_bounded_extracts_are_explicit():
         assert text[item['start']:item['end']] == item['text']
 
 
+def test_markdown_headings_and_bold_labels_keep_exact_offsets_and_stop_at_unknown_heading():
+    text = ('# Skills\r\n- Python\r\n'
+            '**الخبرة:** بناء APIs\r\n'
+            '## Other personal information\r\nSensitive details\r\n'
+            '**Projects**: 📦 Portfolio\r\n'
+            '- **Education:** Computer Science\r\n')
+    sections = structure_resume(text)['sections']
+    assert [x['text'] for x in sections['skills']['items']] == ['- Python']
+    assert [x['text'] for x in sections['experience']['items']] == ['بناء APIs']
+    assert [x['text'] for x in sections['projects']['items']] == ['📦 Portfolio']
+    assert [x['text'] for x in sections['education']['items']] == ['Computer Science']
+    assert 'Sensitive details' not in str(sections)
+    for section in sections.values():
+        for item in section['items']:
+            assert text[item['start']:item['end']] == item['text']
+
+
 def test_structure_endpoint_is_hr_only_and_uses_same_redacted_source(tmp_path):
     with TestClient(create_app(tmp_path / 'test.sqlite3', seed_demo=True)) as client:
         def login(username, password):
