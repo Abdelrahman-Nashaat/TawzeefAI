@@ -96,6 +96,22 @@ class Confirm(BaseModel):
         return self
 
 
+class SendConfirm(Confirm):
+    # The HR confirmation must name the same address that will be sent to.
+    expected_recipient: str | None = Field(default=None, max_length=254)
+
+
+class CorrectRecipient(Confirm):
+    expected_recipient: str = Field(max_length=254)
+    recipient: str = Field(max_length=254)
+
+    @model_validator(mode='after')
+    def valid_addresses(self):
+        if not _EMAIL.fullmatch(self.expected_recipient) or not _EMAIL.fullmatch(self.recipient):
+            raise ValueError('One valid email address is required')
+        return self
+
+
 def _actor(db, request: Request, user: User) -> None:
     token = request.cookies.get(COOKIE_NAME, '')
     row = db.execute('''SELECT u.id, u.username, u.role, u.active FROM sessions s
@@ -155,6 +171,27 @@ def cancellation_block_reason(db, interview_id: int) -> str | None:
     return 'google_delivery_in_flight_or_unresolved' if row['state'] != 'confirmed' else 'google_calendar_requires_reconciliation'
 
 
+@router.patch('/deliveries/{delivery_id}/recipient')
+def correct_recipient(delivery_id: int, payload: CorrectRecipient, request: Request, user: HR):
+    """Correct only an unsent draft; stale review never overwrites another edit."""
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _actor(db, request, user)
+        row = db.execute('SELECT * FROM google_deliveries WHERE id=?', (delivery_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail='Delivery not found')
+        if row['kind'] != 'email' or row['state'] != 'pending' or row['recipient'] != payload.expected_recipient:
+            raise HTTPException(status_code=409, detail='Delivery changed or cannot be corrected')
+        interview = _interview(db, row['interview_id'])
+        _eligible(interview)
+        if row['start_at'] != interview['start_at'] or row['end_at'] != interview['end_at']:
+            raise HTTPException(status_code=409, detail='Interview time changed; review the delivery')
+        if payload.recipient != row['recipient']:
+            db.execute("UPDATE google_deliveries SET recipient=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?", (payload.recipient, delivery_id))
+            _audit(db, row['application_id'], user.id, row['id'], 'email', 'google_recipient_corrected')
+        return _public(db.execute('SELECT * FROM google_deliveries WHERE id=?', (delivery_id,)).fetchone())
+
+
 @router.get('/interviews/{interview_id}/deliveries')
 def list_deliveries(interview_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
@@ -193,7 +230,7 @@ def prepare_delivery(interview_id: int, payload: Prepare, request: Request, user
 
 
 @router.post('/deliveries/{delivery_id}/send')
-def send_delivery(delivery_id: int, payload: Confirm, request: Request, user: HR):
+def send_delivery(delivery_id: int, payload: SendConfirm, request: Request, user: HR):
     dispatcher = getattr(request.app.state, 'google_dispatcher', None)
     preflight = getattr(request.app.state, 'google_preflight', None)
     if not callable(dispatcher) and not callable(preflight):
@@ -230,6 +267,8 @@ def send_delivery(delivery_id: int, payload: Confirm, request: Request, user: HR
             raise HTTPException(status_code=404, detail='Delivery not found')
         if row['state'] != 'pending':
             raise HTTPException(status_code=409, detail='Delivery cannot be sent again automatically')
+        if row['kind'] == 'email' and payload.expected_recipient != row['recipient']:
+            raise HTTPException(status_code=409, detail='Recipient changed or was not reviewed')
         interview = _interview(db, row['interview_id'])
         _eligible(interview)
         if row['start_at'] != interview['start_at'] or row['end_at'] != interview['end_at']:

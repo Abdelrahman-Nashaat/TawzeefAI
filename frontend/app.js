@@ -783,6 +783,24 @@ function renderApplicationDetail(target, application, role) {
   if (role === "hr") {
     panel.append(element("p", "", `الملف: ${application.filename}`));
     panel.append(element("h4", "", "النص المستخرج من السيرة"), element("pre", "resume-preview", application.resume_text));
+    const duplicatesPanel = element("section", "application-detail");
+    duplicatesPanel.append(element("h4", "", "السير ذات النص المتطابق"), element("p", "subtle-note", "مطابقة النص المستخرج لا تثبت التزوير ولا تتخذ قرارًا؛ راجع الطلبات يدويًا."));
+    const duplicatesResult = element("div"); duplicatesResult.setAttribute("aria-live", "polite");
+    const duplicatesButton = element("button", "outline-button", "فحص التطابق النصي"); duplicatesButton.type = "button";
+    duplicatesButton.addEventListener("click", async () => {
+      duplicatesButton.disabled = true;
+      duplicatesResult.replaceChildren(element("p", "subtle-note", "جارٍ فحص النصوص..."));
+      try {
+        const result = await api(`/api/applications/${encodeURIComponent(application.id)}/duplicates`);
+        if (!duplicatesResult.isConnected) return;
+        const ids = result.matches.map((item) => item.application_id).join("، ");
+        duplicatesResult.replaceChildren(element("p", "", ids ? `طلبات ذات نص مطابق: ${ids}` : "لم يظهر نص مطابق في الطلبات المفحوصة."));
+        duplicatesResult.append(element("p", "subtle-note", `عدد الطلبات المفحوصة: ${result.scanned}. ${result.truncated ? "لم تُفحص جميع الطلبات." : ""}`));
+      } catch (error) {
+        if (!isStale(error) && duplicatesResult.isConnected) duplicatesResult.replaceChildren(element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message));
+      } finally { duplicatesButton.disabled = false; }
+    });
+    duplicatesPanel.append(duplicatesButton, duplicatesResult); panel.append(duplicatesPanel);
     const structurePanel = element("section", "application-detail");
     structurePanel.setAttribute("aria-label", "الأقسام المستخرجة من السيرة");
     panel.append(structurePanel);
@@ -1454,6 +1472,28 @@ function setupGoogleDeliveries(card, interview) {
       if (delivery.state === "sending" || delivery.state === "uncertain") entry.append(element("p", "form-error", "تحقق من Google ومن سجل العملية؛ لا يمكن إعادة الإرسال تلقائيًا."));
       if (delivery.state === "rejected") entry.append(element("p", "form-error", "راجع إعدادات Google وسجل العملية؛ لا توجد إعادة إرسال تلقائية."));
       if (delivery.state === "pending") {
+        if (delivery.kind === "email" && delivery.recipient) {
+          const changeForm = element("form", "decision-form");
+          const changeLabel = element("label", "", "تصحيح بريد المستلم قبل الإرسال");
+          const changeInput = element("input"); changeInput.type = "email"; changeInput.required = true;
+          changeInput.maxLength = 254; changeInput.dir = "ltr"; changeInput.value = delivery.recipient;
+          changeLabel.append(changeInput);
+          const changeButton = element("button", "outline-button", "حفظ المستلم الجديد"); changeButton.type = "submit";
+          changeForm.append(changeLabel, changeButton);
+          changeForm.addEventListener("submit", (event) => {
+            event.preventDefault();
+            const address = changeInput.value.trim();
+            if (!address || !changeInput.checkValidity()) { report("أدخل عنوان بريد صحيحًا لمستلم واحد.", true); return; }
+            perform(async () => {
+              await api(`/api/google/deliveries/${encodeURIComponent(delivery.id)}/recipient`, {
+                method: "PATCH", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ confirmed: true, expected_recipient: delivery.recipient, recipient: address })
+              }, { errorMessages: { 409: "تغيرت المسودة أو لم تعد قابلة للتعديل؛ راجع السجل." } });
+              return "تم تحديث المستلم؛ راجع المسودة قبل الإرسال.";
+            });
+          });
+          entry.append(changeForm);
+        }
         const confirm = element("input"); confirm.type = "checkbox";
         const label = element("label", "admin-checkbox", delivery.kind === "email" ? "راجعت المستلم والموعد وأوافق على إرسال هذه الرسالة الآن عبر Gmail." : "راجعت الموعد وأوافق على إنشاء الحدث الخاص الآن في Google Calendar.");
         label.prepend(confirm);
@@ -1462,7 +1502,8 @@ function setupGoogleDeliveries(card, interview) {
           if (!confirm.checked) { report("يرجى تأكيد مراجعة تفاصيل هذا الإجراء أولًا.", true); return; }
           perform(async () => {
             const result = await api(`/api/google/deliveries/${encodeURIComponent(delivery.id)}/send`, {
-              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmed: true })
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(delivery.kind === "email" ? { confirmed: true, expected_recipient: delivery.recipient } : { confirmed: true })
             }, { errorMessages: { 409: "لا يمكن إرسال هذه المسودة في حالتها الحالية؛ راجع سجل العملية.", 503: "تعذر تنفيذ الطلب؛ راجع حالة المسودة وربط Google قبل أي إجراء آخر." } });
             if (result.state === "confirmed") return "قبلت Google الطلب. راجع حالة الحدث أو الرسالة في حساب Google.";
             if (result.state === "rejected") return "رفضت Google الطلب؛ راجع إعدادات الحساب وسجل العملية.";

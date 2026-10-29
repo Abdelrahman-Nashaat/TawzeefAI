@@ -79,6 +79,71 @@ def test_missing_provider_credentials_leave_draft_pending(demo):
         assert db.execute('SELECT state FROM google_deliveries WHERE id=?', (delivery['id'],)).fetchone()[0] == 'pending'
 
 
+def test_pending_email_recipient_can_be_corrected_only_with_current_review(demo):
+    client, app, path, interview, _ = demo
+    login(client, 'hr')
+    delivery = client.post(f'/api/google/interviews/{interview}/deliveries', json={
+        'kind': 'email', 'recipient': 'wrong@example.test', 'confirmed': True,
+    }).json()
+    target = f"/api/google/deliveries/{delivery['id']}"
+    corrected = {'expected_recipient': 'wrong@example.test', 'recipient': 'correct@example.test', 'confirmed': True}
+    assert client.patch(target + '/recipient', json={**corrected, 'confirmed': False}).status_code == 422
+    assert client.patch(target + '/recipient', json={**corrected, 'recipient': 'bad address'}).status_code == 422
+    login(client, 'candidate')
+    assert client.patch(target + '/recipient', json=corrected).status_code == 403
+    login(client, 'hr')
+    assert client.patch(target + '/recipient', json=corrected).json()['recipient'] == 'correct@example.test'
+    assert client.patch(target + '/recipient', json=corrected).status_code == 409
+    calls = []
+    app.state.google_dispatcher = lambda **kw: calls.append(kw) or {'status': 'confirmed', 'provider_id': 'fake'}
+    assert client.post(target + '/send', json={'confirmed': True, 'expected_recipient': 'wrong@example.test'}).status_code == 409
+    assert client.post(target + '/send', json={'confirmed': True}).status_code == 409
+    assert calls == []
+    assert client.post(target + '/send', json={'confirmed': True, 'expected_recipient': 'correct@example.test'}).json()['state'] == 'confirmed'
+    assert calls[0]['recipient'] == 'correct@example.test'
+    assert client.patch(target + '/recipient', json={**corrected, 'expected_recipient': 'correct@example.test'}).status_code == 409
+    with connect(path) as db:
+        audits = str([dict(row) for row in db.execute("SELECT details FROM audit_events WHERE action='google_recipient_corrected'")])
+        assert 'wrong@example.test' not in audits and 'correct@example.test' not in audits
+
+
+def test_correct_recipient_race_against_send_never_delivers_unreviewed_address(demo):
+    client, app, _, interview, _ = demo
+    login(client, 'hr')
+    delivery = client.post(f'/api/google/interviews/{interview}/deliveries', json={
+        'kind': 'email', 'recipient': 'old@example.test', 'confirmed': True,
+    }).json()
+    calls = []
+    def preflight(kind):
+        response = client.patch(f"/api/google/deliveries/{delivery['id']}/recipient", json={
+            'confirmed': True, 'expected_recipient': 'old@example.test', 'recipient': 'new@example.test',
+        })
+        assert response.status_code == 200
+        return lambda **kw: calls.append(kw)
+    app.state.google_preflight = preflight
+    response = client.post(f"/api/google/deliveries/{delivery['id']}/send", json={
+        'confirmed': True, 'expected_recipient': 'old@example.test',
+    })
+    assert response.status_code == 409 and calls == []
+
+
+@pytest.mark.parametrize('state', ['sending', 'uncertain', 'rejected', 'confirmed'])
+def test_recipient_cannot_be_edited_after_an_attempt(demo, state):
+    client, _, path, interview, _ = demo
+    login(client, 'hr')
+    delivery = client.post(f'/api/google/interviews/{interview}/deliveries', json={
+        'kind': 'email', 'recipient': 'old@example.test', 'confirmed': True,
+    }).json()
+    with connect(path) as db:
+        db.execute('UPDATE google_deliveries SET state=? WHERE id=?', (state, delivery['id']))
+    response = client.patch(f"/api/google/deliveries/{delivery['id']}/recipient", json={
+        'confirmed': True, 'expected_recipient': 'old@example.test', 'recipient': 'new@example.test',
+    })
+    assert response.status_code == 409
+    with connect(path) as db:
+        assert db.execute('SELECT recipient FROM google_deliveries WHERE id=?', (delivery['id'],)).fetchone()[0] == 'old@example.test'
+
+
 def test_preflight_prepares_request_local_dispatch_and_rechecks_interview(demo):
     client, app, path, interview, _ = demo
     login(client, 'hr')
@@ -135,16 +200,16 @@ def test_timeout_and_crash_state_prevent_duplicate_send(demo):
     app.state.google_dispatcher = dispatch
     target = f"/api/google/deliveries/{delivery['id']}/send"
     with ThreadPoolExecutor(max_workers=1) as pool:
-        first = pool.submit(client.post, target, json={'confirmed': True})
+        first = pool.submit(client.post, target, json={'confirmed': True, 'expected_recipient': 'candidate@example.test'})
         try:
             assert entered.wait(timeout=10)
-            assert client.post(target, json={'confirmed': True}).status_code == 409
+            assert client.post(target, json={'confirmed': True, 'expected_recipient': 'candidate@example.test'}).status_code == 409
         finally:
             release.set()
         result = first.result(timeout=10)
     assert result.status_code == 200 and result.json()['state'] == 'uncertain'
     assert 'private provider details' not in result.text and len(calls) == 1
-    assert client.post(target, json={'confirmed': True}).status_code == 409
+    assert client.post(target, json={'confirmed': True, 'expected_recipient': 'candidate@example.test'}).status_code == 409
     with connect(path) as db:
         audit = str([dict(row) for row in db.execute("SELECT * FROM audit_events WHERE action LIKE 'google_%'")])
     assert 'candidate@example.test' not in audit
@@ -180,7 +245,7 @@ def test_revocation_during_dispatch_hides_result_but_records_outcome(demo):
         return {'status': 'confirmed', 'provider_id': 'message-1'}
 
     app.state.google_dispatcher = dispatch
-    result = client.post(f"/api/google/deliveries/{delivery['id']}/send", json={'confirmed': True})
+    result = client.post(f"/api/google/deliveries/{delivery['id']}/send", json={'confirmed': True, 'expected_recipient': 'candidate@example.test'})
     assert result.status_code == 401 and 'candidate@example.test' not in result.text
     with connect(path) as db:
         assert db.execute('SELECT state FROM google_deliveries WHERE id=?', (delivery['id'],)).fetchone()[0] == 'confirmed'

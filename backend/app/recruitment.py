@@ -3,8 +3,8 @@
 import json
 import re
 import unicodedata
-from hashlib import sha256
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path, PurePath
 from typing import Annotated, Literal
 
@@ -212,6 +212,37 @@ def structured_resume(application_id: int, request: Request, user: HR):
         row = get_application(db, application_id)
         source = redact_resume(row['resume_text']).text
     return structure_resume(source)
+
+
+@router.get("/applications/{application_id}/duplicates")
+def duplicate_resume_candidates(application_id: int, request: Request, user: HR):
+    """Identify exact normalized text matches for human review, not fraud.
+
+    Only this application's complete extracted text is compared. The response
+    does not expose résumé text, filenames, candidate identities or hashes.
+    """
+    limit = 2000
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        row = get_application(db, application_id)
+        target = normalize(row['resume_text'])
+        matches = []
+        scanned = 0
+        if target:
+            rows = db.execute('''SELECT id,resume_text FROM applications
+                WHERE id<>? ORDER BY id DESC LIMIT ?''', (application_id, limit + 1))
+            for other in rows:
+                if scanned == limit:
+                    break
+                scanned += 1
+                if normalize(other['resume_text']) == target:
+                    matches.append({'application_id': other['id']})
+            truncated = db.execute('SELECT count(*) FROM applications WHERE id<>?',
+                                   (application_id,)).fetchone()[0] > limit
+        else:
+            truncated = False
+        return {'matches': matches, 'scanned': scanned, 'truncated': truncated,
+                'notice': 'Exact normalized extracted text only. Similarity does not prove fraud; HR must review.'}
 
 
 @router.post("/applications/{application_id}/screen")

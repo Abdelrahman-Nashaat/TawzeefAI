@@ -101,7 +101,7 @@ def test_calendar_removal_and_email_delivery_are_serialized(confirmed):
     install_remover(app, lambda **kw: calls.append(kw) or {'status': 'removed'})
     url = f'/api/google/deliveries/{delivery}/calendar-removal'
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pending = pool.submit(client.post, f'/api/google/deliveries/{email}/send', json={'confirmed': True})
+        pending = pool.submit(client.post, f'/api/google/deliveries/{email}/send', json={'confirmed': True, 'expected_recipient': 'candidate@example.test'})
         try:
             assert entered.wait(timeout=10)
             assert client.post(url, json={'confirmed': True}).status_code == 409
@@ -126,7 +126,7 @@ def test_email_cannot_send_after_calendar_removal_starts(confirmed, removal_stat
                    (delivery, removal_state, actor))
     calls = []
     app.state.google_dispatcher = lambda **kwargs: calls.append(kwargs)
-    assert client.post(f'/api/google/deliveries/{email}/send', json={'confirmed': True}).status_code == 409
+    assert client.post(f'/api/google/deliveries/{email}/send', json={'confirmed': True, 'expected_recipient': 'candidate@example.test'}).status_code == 409
     assert calls == []
     items = client.get(f'/api/google/interviews/{interview}/deliveries').json()
     assert next(x for x in items if x['kind'] == 'calendar')['calendar_removal_state'] == removal_state
