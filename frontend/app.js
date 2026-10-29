@@ -1616,8 +1616,33 @@ function renderSlotsManagement(target, slots, role) {
   else {
     const list = element("ul", "evidence-list");
     for (const slot of slots) {
-      const label = slot.booked ? "محجوز" : new Date(slot.start_at) <= new Date() ? "انتهى الموعد" : "متاح";
-      list.append(element("li", "", `${displayDate(slot.start_at)} – ${displayDate(slot.end_at)} · ${slot.interviewer} · ${label}`));
+      const startTime = new Date(slot.start_at);
+      const future = !Number.isNaN(startTime.valueOf()) && startTime > new Date();
+      const label = slot.withdrawn === true ? "مسحوب" : slot.booked === true ? "محجوز" :
+        slot.withdrawn !== false || slot.booked !== false || Number.isNaN(startTime.valueOf()) ? "الحالة غير متاحة" :
+          future ? "متاح" : "انتهى الموعد";
+      const item = element("li", "", `${displayDate(slot.start_at)} – ${displayDate(slot.end_at)} · ${slot.interviewer} · ${label}`);
+      if (slot.withdrawn === false && slot.booked === false && future) {
+        const withdraw = element("button", "small-button", "سحب الموعد المتاح"); withdraw.type = "button";
+        withdraw.setAttribute("aria-label", `سحب موعد ${displayDate(slot.start_at)} مع ${slot.interviewer}`);
+        withdraw.addEventListener("click", async () => {
+          withdraw.disabled = true;
+          try {
+            await api(`/api/slots/${encodeURIComponent(slot.id)}/withdraw`, { method: "POST" }, {
+              errorMessages: { 409: "تعذّر سحب الموعد؛ قد يكون حُجز أو انتهى أو سُحب بالفعل." }
+            });
+            if (await loadOperations(role)) operationsMessage("تم سحب الموعد المتاح؛ لن يظهر للمرشحين.");
+          } catch (error) {
+            if (!isStale(error)) {
+              const message = error instanceof TypeError ? "تعذّر الاتصال بالخادم؛ راجع حالة الموعد قبل المحاولة." : error.message;
+              await loadOperations(role);
+              operationsMessage(message, true);
+            }
+          } finally { withdraw.disabled = false; }
+        });
+        item.append(withdraw);
+      }
+      list.append(item);
     }
     area.append(list);
   }

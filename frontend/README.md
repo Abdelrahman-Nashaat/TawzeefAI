@@ -17,4 +17,6 @@ Candidates and HR may view `GET /api/interviews`; HR may record an appointment w
 
 For a confirmed Calendar delivery, the UI can request removal after a separate explicit review. The delivery list must expose `calendar_removal_state` as `null`, `removing`, `removed`, `rejected`, or `uncertain`; if it is absent or unknown, removal controls are withheld. Removal does not cancel the local interview or send a cancellation email. A pending or ambiguous removal must be reviewed rather than retried automatically.
 
+HR can withdraw a future, unbooked interview slot. The server checks its current state atomically, so a concurrently booked slot cannot be withdrawn. Withdrawn slots remain visible to HR and are no longer offered to candidates. Withdrawal does not cancel a booked interview or send an email.
+
 Checks: `node --check frontend/app.js`. End-to-end verification requires the backend running on the same origin and the browser to permit cookies.

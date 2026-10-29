@@ -129,3 +129,91 @@ def test_timezone_validation_and_conflicting_interviewer(state):
     login(client, 'candidate')
     assert client.get('/api/slots', params={'application_id': first}).json() == []
     assert client.post(f'/api/slots/{slot_id}/book', json={'application_id': first}).status_code == 409
+
+
+def test_hr_withdraws_available_slot_and_candidate_cannot_book(state):
+    app, client, first, _ = state
+    login(client, 'hr')
+    slot_id = slot(client)
+    login(client, 'candidate')
+    assert client.post(f'/api/slots/{slot_id}/withdraw').status_code == 403
+    login(client, 'hr')
+    result = client.post(f'/api/slots/{slot_id}/withdraw')
+    assert result.status_code == 200 and result.json()['withdrawn'] is True
+    assert client.post(f'/api/slots/{slot_id}/withdraw').status_code == 409
+    assert client.get('/api/slots').json()[0]['withdrawn'] is True
+    login(client, 'candidate')
+    assert client.get('/api/slots', params={'application_id': first}).json() == []
+    assert client.post(f'/api/slots/{slot_id}/book', json={'application_id': first}).status_code == 409
+    with connect(app.state.database_path) as db:
+        assert db.execute("SELECT count(*) FROM slot_audit_events WHERE slot_id=? AND action='slot_withdrawn'", (slot_id,)).fetchone()[0] == 1
+
+
+def test_withdraw_does_not_cancel_a_booked_interview_and_failed_audit_rolls_back(state):
+    app, client, first, _ = state
+    login(client, 'hr')
+    booked = slot(client)
+    available = slot(client, shift=2)
+    login(client, 'candidate')
+    assert client.post(f'/api/slots/{booked}/book', json={'application_id': first}).status_code == 201
+    login(client, 'hr')
+    assert client.post(f'/api/slots/{booked}/withdraw').status_code == 409
+    with connect(app.state.database_path) as db:
+        db.execute("CREATE TRIGGER fail_slot_withdraw BEFORE INSERT ON slot_audit_events WHEN NEW.action='slot_withdrawn' BEGIN SELECT RAISE(ABORT, 'audit failed'); END")
+    with pytest.raises(sqlite3.IntegrityError, match='audit failed'):
+        client.post(f'/api/slots/{available}/withdraw')
+    with connect(app.state.database_path) as db:
+        assert db.execute('SELECT withdrawn FROM interview_slots WHERE id=?', (available,)).fetchone()[0] == 0
+
+
+def test_withdrawal_racing_booking_has_one_winner(state):
+    app, client, first, _ = state
+    login(client, 'hr')
+    slot_id = slot(client)
+    with TestClient(app) as hr, TestClient(app) as candidate:
+        login(hr, 'hr')
+        login(candidate, 'candidate')
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            withdraw = executor.submit(hr.post, f'/api/slots/{slot_id}/withdraw')
+            booking = executor.submit(candidate.post, f'/api/slots/{slot_id}/book', json={'application_id': first})
+            statuses = withdraw.result().status_code, booking.result().status_code
+    assert statuses in ((200, 409), (409, 201))
+    with connect(app.state.database_path) as db:
+        row = db.execute('SELECT withdrawn, interview_id FROM interview_slots WHERE id=?', (slot_id,)).fetchone()
+        assert (row['withdrawn'] == 1) != (row['interview_id'] is not None)
+
+
+def test_withdraw_rechecks_revoked_hr_in_write_transaction(state):
+    from app.auth import User, get_current_user
+
+    app, client, _, _ = state
+    login(client, 'hr')
+    slot_id = slot(client)
+    def revoked_user():
+        with connect(app.state.database_path) as db:
+            row = db.execute("SELECT id,username,display_name FROM users WHERE username='hr'").fetchone()
+            db.execute('UPDATE users SET active=0 WHERE id=?', (row['id'],))
+        return User(id=row['id'], username=row['username'], display_name=row['display_name'], role='hr')
+    app.dependency_overrides[get_current_user] = revoked_user
+    try:
+        assert client.post(f'/api/slots/{slot_id}/withdraw').status_code == 401
+    finally:
+        app.dependency_overrides.clear()
+    with connect(app.state.database_path) as db:
+        assert db.execute('SELECT withdrawn FROM interview_slots WHERE id=?', (slot_id,)).fetchone()[0] == 0
+
+
+def test_legacy_slot_schema_is_migrated_without_withdrawing_existing_slots(tmp_path):
+    from app.slots import initialize_slots
+
+    path = tmp_path / 'legacy.sqlite3'
+    with connect(path) as db:
+        db.executescript('''CREATE TABLE interview_slots (id INTEGER PRIMARY KEY, start_at TEXT NOT NULL,
+            end_at TEXT NOT NULL, interviewer TEXT NOT NULL, interviewer_key TEXT NOT NULL,
+            created_by INTEGER NOT NULL, interview_id INTEGER, created_at TEXT NOT NULL);
+            INSERT INTO interview_slots VALUES (1,'2035-01-01T10:00:00Z','2035-01-01T11:00:00Z',
+                'HR','hr',1,NULL,'2035-01-01T00:00:00Z');''')
+    initialize_slots(path)
+    initialize_slots(path)
+    with connect(path) as db:
+        assert db.execute('SELECT withdrawn FROM interview_slots WHERE id=1').fetchone()[0] == 0

@@ -1,6 +1,7 @@
 """Human-managed, local-only interview slots with atomic candidate booking."""
 
 import json
+import time
 import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.auth import User, get_current_user, require_roles
+from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_digest
 from app.db import connect
 from app.scheduling import interview_view, utc_text
 
@@ -30,6 +31,7 @@ def initialize_slots(path: str | Path) -> None:
                 interviewer_key TEXT NOT NULL,
                 created_by INTEGER NOT NULL REFERENCES users(id),
                 interview_id INTEGER UNIQUE REFERENCES interviews(id),
+                withdrawn INTEGER NOT NULL DEFAULT 0 CHECK (withdrawn IN (0, 1)),
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
             CREATE INDEX IF NOT EXISTS slot_time_idx ON interview_slots(start_at, end_at);
@@ -41,6 +43,10 @@ def initialize_slots(path: str | Path) -> None:
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
         ''')
+        db.execute('BEGIN IMMEDIATE')
+        columns = {row['name'] for row in db.execute('PRAGMA table_info(interview_slots)')}
+        if 'withdrawn' not in columns:
+            db.execute('ALTER TABLE interview_slots ADD COLUMN withdrawn INTEGER NOT NULL DEFAULT 0 CHECK (withdrawn IN (0, 1))')
 
 
 class SlotCreate(BaseModel):
@@ -113,7 +119,8 @@ def list_slots(request: Request, user: Authenticated, application_id: int | None
             rows = db.execute('''SELECT s.*, i.status AS interview_status
                 FROM interview_slots s LEFT JOIN interviews i ON i.id = s.interview_id
                 ORDER BY s.start_at, s.id''').fetchall()
-            return [{**slot_view(row), 'booked': row['interview_status'] == 'scheduled'} for row in rows]
+            return [{**slot_view(row), 'booked': row['interview_status'] == 'scheduled',
+                     'withdrawn': bool(row['withdrawn'])} for row in rows]
         if user.role != 'candidate':
             raise HTTPException(status_code=403, detail='Access denied')
         if application_id is None or application_id <= 0:
@@ -124,7 +131,7 @@ def list_slots(request: Request, user: Authenticated, application_id: int | None
         now = utc_text(datetime.now(UTC))
         rows = db.execute('''SELECT s.* FROM interview_slots s
             LEFT JOIN interviews linked ON linked.id = s.interview_id
-            WHERE s.start_at > ? AND (s.interview_id IS NULL OR linked.status = 'cancelled')
+            WHERE s.withdrawn = 0 AND s.start_at > ? AND (s.interview_id IS NULL OR linked.status = 'cancelled')
             AND NOT EXISTS (SELECT 1 FROM interviews i WHERE i.status = 'scheduled'
                 AND i.start_at < s.end_at AND i.end_at > s.start_at
                 AND (i.candidate_id = ? OR i.interviewer_key = s.interviewer_key))
@@ -142,7 +149,7 @@ def book_slot(slot_id: int, payload: BookSlot, request: Request, user: Candidate
         if slot is None:
             raise HTTPException(status_code=404, detail='Slot not found')
         now = utc_text(datetime.now(UTC))
-        if slot['start_at'] <= now or slot['interview_status'] == 'scheduled':
+        if slot['withdrawn'] or slot['start_at'] <= now or slot['interview_status'] == 'scheduled':
             raise HTTPException(status_code=409, detail='Slot is not available')
         if db.execute("SELECT 1 FROM interviews WHERE application_id = ? AND status = 'scheduled'", (payload.application_id,)).fetchone():
             raise HTTPException(status_code=409, detail='Application already has an interview')
@@ -161,3 +168,29 @@ def book_slot(slot_id: int, payload: BookSlot, request: Request, user: Candidate
                        'interview_id': cursor.lastrowid, 'slot_id': slot_id, 'source': 'candidate_selection',
                    })))
         return interview_view(db.execute('SELECT * FROM interviews WHERE id = ?', (cursor.lastrowid,)).fetchone())
+
+
+@router.post('/slots/{slot_id}/withdraw')
+def withdraw_slot(slot_id: int, request: Request, user: HR):
+    """Retire an unbooked slot without cancelling an existing interview."""
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        session = db.execute('''SELECT u.role FROM sessions s JOIN users u ON u.id=s.user_id
+            WHERE s.user_id=? AND s.token_hash=? AND s.expires_at>? AND u.active=1''',
+            (user.id, token_digest(request.cookies.get(COOKIE_NAME, '')), int(time.time()))).fetchone()
+        if session is None:
+            raise HTTPException(status_code=401, detail='Authentication required')
+        if session['role'] != 'hr':
+            raise HTTPException(status_code=403, detail='HR access required')
+        row = db.execute('''SELECT s.*, i.status AS interview_status FROM interview_slots s
+            LEFT JOIN interviews i ON i.id=s.interview_id WHERE s.id=?''', (slot_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail='Slot not found')
+        if row['withdrawn'] or row['interview_status'] == 'scheduled':
+            raise HTTPException(status_code=409, detail='Slot is withdrawn or has a scheduled interview')
+        if row['start_at'] <= utc_text(datetime.now(UTC)):
+            raise HTTPException(status_code=409, detail='Cannot withdraw a past or in-progress slot')
+        db.execute('UPDATE interview_slots SET withdrawn=1 WHERE id=?', (slot_id,))
+        db.execute('INSERT INTO slot_audit_events (slot_id,actor_id,action) VALUES (?,?,?)',
+                   (slot_id, user.id, 'slot_withdrawn'))
+        return {**slot_view(row), 'withdrawn': True}
