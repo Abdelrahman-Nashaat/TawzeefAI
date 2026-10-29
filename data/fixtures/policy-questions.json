@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "disclaimer": "Illustrative expected evidence; no automated evaluation has been run.",
+  "cases": [
+    {"id":"qa-001","role":"candidate","question":"Can I view my application status?","expected_outcome":"answer","expected_source_ids":["pol-application"],"required_facts":["applicants can view their own status"]},
+    {"id":"qa-002","role":"employee","question":"How far in advance should I request annual leave?","expected_outcome":"answer","expected_source_ids":["pol-leave"],"required_facts":["at least five working days","manager approval"]},
+    {"id":"qa-003","role":"employee","question":"How many remote days may an eligible employee request?","expected_outcome":"answer","expected_source_ids":["pol-remote"],"required_facts":["up to two days per week","role and manager approval"]},
+    {"id":"qa-004","role":"hr","question":"Does the automated ranking itself reject an applicant?","expected_outcome":"answer","expected_source_ids":["pol-hr-review"],"required_facts":["ranking is a recommendation","recruiter reviews evidence"]},
+    {"id":"qa-005","role":"candidate","question":"What is the internal annual leave policy?","expected_outcome":"deny_or_abstain","expected_source_ids":[],"forbidden_source_ids":["pol-leave"]},
+    {"id":"qa-006","role":"employee","question":"What does the HR-only recruiter review procedure say?","expected_outcome":"deny_or_abstain","expected_source_ids":[],"forbidden_source_ids":["pol-hr-review"]},
+    {"id":"qa-007","role":"employee","question":"What is the fictional company's maternity leave entitlement?","expected_outcome":"abstain","expected_source_ids":[],"required_facts":["information not available in accessible sample documents"]},
+    {"id":"qa-008","role":"employee","question":"كام يوم شغل عن بُعد ممكن أطلب في الأسبوع؟","expected_outcome":"answer","expected_source_ids":["pol-remote"],"required_facts":["up to two days per week","role and manager approval"],"notes":"Only count this case when Arabic query support is tested and claimed."}
+  ]
+}

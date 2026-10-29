@@ -1,0 +1,11 @@
+# Representative role and independent synthetic cases
+
+This directory records a concise, **test-only** summary derived from a public job listing published on the employer's hiring page, along with entirely synthetic candidate cases. It does not imply any partnership with Constructor, any actual application to Constructor, approval by the employer, or that hiring is currently open. The source was accessed through indexed search on **2026-10-29**; the employer's page requires JavaScript. Its current application status could not be reliably verified. A search index reported **2026-07-06** as the publication date; this date was not independently verified on the original page.
+
+The job summary preserves the difference between stated requirements and technologies listed in the stack: FastAPI and PostgreSQL are contextual stack examples, not asserted mandatory qualifications. It is a partial, paraphrased evaluation reference, not the full original description or an official selection rubric.
+
+`cases.json` contains 12 invented résumé scenarios and 10 proposed pairwise orderings. Names are invented; no real applicant information is included. The cases were authored for this specific representative role and were not used for the prior synthetic-role ranking tests. They are draft expected outcomes, **not independently validated by a human reviewer**, not real screening decisions, and not proof of fair or effective hiring. Missing evidence is not proof a skill is absent. Reviewers should verify both the correctness and job relevance of every judgment before treating these cases as ground truth.
+
+`expected_stronger` identifies the profile with more explicitly stated evidence for the role's job-relevant requirements, not a definitive hiring decision or a calibrated probability of suitability. Tests should record ties and uncertainty, not force an unsupported distinction. `check_kind: counterfactual_equivalence` instead expects equal treatment when only a name is changed. `check_kind: insufficient_evidence` expects an explicit limitation, not automatic rejection.
+
+Source: [Constructor — BackEnd Engineer: Experiments](https://jobs.ashbyhq.com/constructor/4e7cfde4-c2ba-4251-b95f-7bcf9793984a/).

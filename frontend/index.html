@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="مساحة عمل توظيف لإدارة الطلبات والإجابة عن الأسئلة.">
+  <title>TawzeefAI | توظيف</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <div id="app" aria-live="polite" aria-busy="true">
+    <div class="loading-screen"><span class="loader" aria-hidden="true"></span><span>جاري التحقق من الجلسة...</span></div>
+  </div>
+  <noscript><p class="noscript">يحتاج التطبيق إلى تفعيل JavaScript لتسجيل الدخول.</p></noscript>
+  <template id="login-template">
+    <main class="login-layout">
+      <section class="login-intro" aria-label="عن المنصة">
+        <div class="brand brand-light"><span class="brand-mark" aria-hidden="true">✳</span><span>Tawzeef<span>AI</span></span></div>
+        <div class="intro-content">
+          <div class="eyebrow"><span class="eyebrow-dot"></span> مساحة عمل للتوظيف</div>
+          <h1>كل خطوة توظيف،<br><span>بوضوح أكبر.</span></h1>
+          <p>مساحة تجمع رحلة المرشح، أسئلة الموارد البشرية، ومتابعة التوظيف في مكان واحد.</p>
+          <div class="intro-rule"></div>
+          <div class="intro-note"><span class="note-icon" aria-hidden="true">✦</span><span>الإنسان في قلب كل قرار.</span></div>
+        </div>
+        <div class="intro-footer"><span>TAWZEEFAI</span><span>مشروع تخرج · نسخة محلية</span></div>
+        <div class="orb orb-one" aria-hidden="true"></div><div class="orb orb-two" aria-hidden="true"></div>
+      </section>
+      <section class="login-panel" aria-labelledby="login-title">
+        <div class="panel-top"><span>أهلًا بك</span><span class="panel-line"></span><span>01 / الدخول</span></div>
+        <div class="login-box">
+          <div class="section-label"><span class="small-mark" aria-hidden="true">✳</span> حسابك في توظيف</div>
+          <h2 id="login-title">خلّينا نبدأ.</h2>
+          <p class="subtitle">سجّل الدخول للوصول إلى مساحة العمل الخاصة بك.</p>
+          <form id="login-form" novalidate>
+            <div class="field"><label for="username">اسم المستخدم</label><input id="username" name="username" autocomplete="username" required maxlength="128" placeholder="أدخل اسم المستخدم"></div>
+            <div class="field"><label for="password">كلمة المرور</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="أدخل كلمة المرور"></div>
+            <p id="login-error" class="form-error" role="alert" hidden></p>
+            <button class="primary-button" type="submit"><span>تسجيل الدخول</span><span class="button-arrow" aria-hidden="true">←</span></button>
+          </form>
+          <div class="privacy-note"><span class="lock-icon" aria-hidden="true">◈</span><p>بياناتك مسؤولية كبيرة. يتم عرض المحتوى حسب صلاحيات حسابك.</p></div>
+        </div>
+        <div class="panel-footer"><span>TAWZEEFAI © 2026</span><span>تجربة تطوير محلية</span></div>
+      </section>
+    </main>
+  </template>
+  <template id="shell-template">
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand brand-dark"><span class="brand-mark" aria-hidden="true">✳</span><span>Tawzeef<span>AI</span></span></div>
+        <div class="sidebar-caption">مساحة العمل</div>
+        <nav aria-label="التنقل الرئيسي"><a class="nav-item active" href="#overview" aria-current="page"><span aria-hidden="true">▦</span> نظرة عامة</a></nav>
+        <div class="sidebar-bottom"><div class="sidebar-badge" aria-hidden="true">✦</div><p>رحلة أفضل تبدأ بخطوة واضحة.</p><small>نسخة محلية قيد التطوير</small></div>
+      </aside>
+      <main class="workspace" id="overview">
+        <header class="workspace-header"><div><div class="header-path">مساحة العمل <span>/</span> نظرة عامة</div></div><div class="header-actions"><span class="session-dot" aria-hidden="true"></span><span class="role-badge" id="role-badge"></span><button id="logout" class="text-button" type="button">تسجيل الخروج</button></div></header>
+        <div class="workspace-content">
+          <div class="welcome-row"><div><div class="section-label"><span class="small-mark" aria-hidden="true">✳</span> نظرة عامة</div><h1>أهلًا، <span id="display-name"></span></h1><p class="workspace-subtitle" id="role-description"></p></div><div class="avatar" id="avatar" aria-hidden="true">✳</div></div>
+          <section class="hero-card" aria-labelledby="hero-title"><div><div class="hero-kicker"><span></span> مساحة عملك</div><h2 id="hero-title">كل ما تحتاجه، في مكان واحد.</h2><p id="hero-description"></p></div><div class="hero-graphic" aria-hidden="true"><div class="graphic-ring"><span>✳</span></div></div></section>
+          <section id="recruitment" class="recruitment" aria-labelledby="recruitment-title" hidden><div class="section-heading"><div><span class="overline">بيانات مساحة العمل</span><h2 id="recruitment-title">الوظائف والطلبات</h2></div><p>النتائج المعروضة تأتي من الخادم.</p></div><p id="recruitment-message" class="inline-message" role="status" hidden></p><div id="jobs-area"></div><div id="application-area"></div></section>
+          <section class="knowledge-section" aria-labelledby="knowledge-title"><div class="section-heading"><div><span class="overline">المعرفة والسياسات</span><h2 id="knowledge-title">اسأل عن معلومات العمل</h2></div></div><div class="knowledge-panel"><p>البحث متاح في المستندات التجريبية المسموح بها لحسابك. تحقّق من المصادر؛ قد لا يفهم البحث بعض الصياغات أو الأسئلة العربية.</p><form id="knowledge-form"><label for="knowledge-question">سؤالك</label><textarea id="knowledge-question" maxlength="2000" required placeholder="اكتب سؤالك هنا"></textarea><button class="small-button" type="submit">البحث عن إجابة</button></form><div id="knowledge-result" aria-live="polite"></div></div></section>
+          <section id="operations" class="operations" aria-labelledby="operations-title" hidden><div class="section-heading"><div><span class="overline">المتابعة</span><h2 id="operations-title">المقابلات والمؤشرات</h2></div></div><p id="operations-message" class="inline-message" role="status" hidden></p><div id="dashboard-area"></div><div id="interviews-area"></div></section>
+          <section aria-labelledby="features-title"><div class="section-heading"><div><span class="overline">ما هو قادم</span><h2 id="features-title">مساحتك، خطوة بخطوة</h2></div><p>تظهر البيانات هنا عند تفعيل وظائفها.</p></div><div class="feature-grid" id="feature-grid"></div></section>
+          <div class="workspace-note"><span aria-hidden="true">✦</span><p>هذه نسخة محلية تجريبية. راجع المصادر ونتائج الفحص، والقرار النهائي بيد المراجع البشري.</p></div>
+        </div>
+        <footer class="workspace-footer"><span>TAWZEEFAI · مساحة توظيف أوضح</span><span>نسخة محلية</span></footer>
+      </main>
+    </div>
+  </template>
+</body>
+</html>

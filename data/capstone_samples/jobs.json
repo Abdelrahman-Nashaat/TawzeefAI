@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "notice": "Fictional educational roles; not actual vacancies.",
+  "jobs": [
+    {
+      "id": "cap-backend",
+      "title": "Python Backend Engineer",
+      "location": "Fictional location in Egypt",
+      "required_skills": [
+        "Python",
+        "REST API",
+        "SQL"
+      ],
+      "preferred_skills": [
+        "Docker",
+        "automated testing"
+      ],
+      "responsibilities": [
+        "Build and maintain backend services."
+      ],
+      "document_type": "job_description"
+    },
+    {
+      "id": "cap-data-engineer",
+      "title": "Data Engineer",
+      "location": "Fictional location in Egypt",
+      "required_skills": [
+        "Python",
+        "SQL",
+        "ETL"
+      ],
+      "preferred_skills": [
+        "Airflow",
+        "data quality"
+      ],
+      "responsibilities": [
+        "Build and monitor data pipelines."
+      ],
+      "document_type": "job_description"
+    },
+    {
+      "id": "cap-data-analyst",
+      "title": "Data Analyst",
+      "location": "Fictional location in Egypt",
+      "required_skills": [
+        "SQL",
+        "Excel",
+        "dashboard"
+      ],
+      "preferred_skills": [
+        "Python",
+        "data visualization"
+      ],
+      "responsibilities": [
+        "Analyze and explain business data."
+      ],
+      "document_type": "job_description"
+    },
+    {
+      "id": "cap-data-scientist",
+      "title": "Data Scientist",
+      "location": "Fictional location in Egypt",
+      "required_skills": [
+        "Python",
+        "statistics",
+        "machine learning"
+      ],
+      "preferred_skills": [
+        "experimentation",
+        "SQL"
+      ],
+      "responsibilities": [
+        "Analyze data and evaluate predictive models."
+      ],
+      "document_type": "job_description"
+    },
+    {
+      "id": "cap-ml-engineer",
+      "title": "Machine Learning Engineer",
+      "location": "Fictional location in Egypt",
+      "required_skills": [
+        "Python",
+        "machine learning",
+        "model deployment"
+      ],
+      "preferred_skills": [
+        "Docker",
+        "model monitoring"
+      ],
+      "responsibilities": [
+        "Deploy and monitor machine-learning services."
+      ],
+      "document_type": "job_description"
+    },
+    {
+      "id": "cap-frontend",
+      "title": "Frontend Engineer",
+      "location": "Fictional location in Egypt",
+      "required_skills": [
+        "JavaScript",
+        "React",
+        "HTML and CSS"
+      ],
+      "preferred_skills": [
+        "accessibility",
+        "testing"
+      ],
+      "responsibilities": [
+        "Build accessible browser interfaces."
+      ],
+      "document_type": "job_description"
+    }
+  ]
+}

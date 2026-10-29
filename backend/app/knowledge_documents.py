@@ -1,0 +1,215 @@
+"""Local HR-managed knowledge documents; content is always untrusted data."""
+
+import json
+from pathlib import Path, PurePosixPath
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field, field_validator
+
+from app.auth import User, require_roles
+from app.db import connect
+from app.document_text import (
+    MAX_FILE_BYTES,
+    MAX_TEXT_CHARS,
+    DocumentTextError,
+    extract_document_text,
+    extract_pdf_pages,
+)
+
+router = APIRouter(prefix="/api/knowledge")
+HR = Annotated[User, Depends(require_roles("hr"))]
+Audience = Literal["public", "staff", "hr"]
+
+
+def initialize_knowledge_documents(path: str | Path, *, include_samples: bool = False) -> None:
+    with connect(path) as db:
+        db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_documents (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                audience TEXT NOT NULL CHECK (audience IN ('public', 'staff', 'hr')),
+                filename TEXT,
+                text TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                created_by INTEGER NOT NULL REFERENCES users(id),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS knowledge_documents_audience ON knowledge_documents(audience);
+            CREATE TABLE IF NOT EXISTS knowledge_document_audit (
+                id INTEGER PRIMARY KEY,
+                document_id INTEGER NOT NULL REFERENCES knowledge_documents(id),
+                actor_id INTEGER NOT NULL REFERENCES users(id),
+                action TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                include_sample_policies INTEGER NOT NULL CHECK (include_sample_policies IN (0, 1))
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_settings_audit (
+                id INTEGER PRIMARY KEY,
+                actor_id INTEGER NOT NULL REFERENCES users(id),
+                include_sample_policies INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            """
+        )
+        columns = {row['name'] for row in db.execute('PRAGMA table_info(knowledge_documents)')}
+        if 'active' not in columns:
+            db.execute('ALTER TABLE knowledge_documents ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))')
+        if 'pages_json' not in columns:
+            db.execute('ALTER TABLE knowledge_documents ADD COLUMN pages_json TEXT')
+        db.execute('INSERT OR IGNORE INTO knowledge_settings (id, include_sample_policies) VALUES (1, ?)', (int(include_samples),))
+
+
+def clean_title(value: str) -> str:
+    title = " ".join(value.split())
+    if not title or len(title) > 200 or any(ord(char) < 32 for char in title):
+        raise ValueError("Title must contain 1–200 printable characters")
+    return title
+
+
+def clean_filename(value: str) -> str:
+    # Store only a basename; never use this value as a filesystem path.
+    filename = PurePosixPath(value.replace("\\", "/")).name
+    if not filename or len(filename) > 255 or any(ord(char) < 32 for char in filename):
+        raise ValueError("Invalid filename")
+    return filename
+
+
+class TextDocument(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    audience: Audience
+    text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        return clean_title(value)
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        if not value.strip() or "\x00" in value:
+            raise ValueError("Document text cannot be blank or contain null characters")
+        return value.strip()
+
+
+def store_document(path: str | Path, user: User, title: str, audience: str, text: str, filename: str | None,
+                   pages: list[dict] | None = None) -> dict:
+    with connect(path) as db:
+        cursor = db.execute(
+            "INSERT INTO knowledge_documents (title,audience,filename,text,created_by,pages_json) VALUES (?,?,?,?,?,?)",
+            (title, audience, filename, text, user.id, json.dumps(pages, ensure_ascii=False) if pages is not None else None),
+        )
+        db.execute(
+            "INSERT INTO knowledge_document_audit (document_id,actor_id,action) VALUES (?,?,'created')",
+            (cursor.lastrowid, user.id),
+        )
+        row = db.execute(
+            "SELECT id,title,audience,filename,created_at FROM knowledge_documents WHERE id=?", (cursor.lastrowid,)
+        ).fetchone()
+        result = dict(row)
+        if pages is not None:
+            result.update(page_count=len(pages), pages_with_text=sum(bool(page['text']) for page in pages),
+                          notice='Only extractable text is indexed; blank or scanned pages are not processed with OCR.')
+        return result
+
+
+def fetch_authorized_documents(path: str | Path, role: str) -> list[dict]:
+    """Return documents permitted for role; unknown roles get no documents."""
+    allowed = {"candidate": ("public",), "employee": ("public", "staff"), "hr": ("public", "staff", "hr")}.get(role, ())
+    if not allowed:
+        return []
+    placeholders = ",".join("?" for _ in allowed)
+    with connect(path) as db:
+        rows = db.execute(
+            f"SELECT id,title,audience,text,pages_json FROM knowledge_documents WHERE active = 1 AND audience IN ({placeholders}) ORDER BY id",
+            allowed,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+@router.get("/documents")
+def list_documents(request: Request, user: HR):
+    with connect(request.app.state.database_path) as db:
+        rows = db.execute(
+            "SELECT id,title,audience,filename,created_at,active FROM knowledge_documents ORDER BY id DESC"
+        )
+        return [{**dict(row), 'active': bool(row['active'])} for row in rows]
+
+
+@router.post('/documents/{document_id}/deactivate')
+def deactivate_document(document_id: int, request: Request, user: HR):
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT * FROM knowledge_documents WHERE id = ?', (document_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail='Document not found')
+        if not row['active']:
+            raise HTTPException(status_code=409, detail='Document is already inactive')
+        db.execute('UPDATE knowledge_documents SET active = 0 WHERE id = ?', (document_id,))
+        db.execute(
+            "INSERT INTO knowledge_document_audit (document_id,actor_id,action) VALUES (?,?,'deactivated')",
+            (document_id, user.id),
+        )
+        return {'id': row['id'], 'title': row['title'], 'audience': row['audience'],
+                'filename': row['filename'], 'created_at': row['created_at'], 'active': False}
+
+
+def include_sample_policies(path: str | Path) -> bool:
+    with connect(path) as db:
+        row = db.execute('SELECT include_sample_policies FROM knowledge_settings WHERE id = 1').fetchone()
+        return bool(row['include_sample_policies']) if row is not None else False
+
+
+class KnowledgeSettings(BaseModel):
+    include_sample_policies: bool = Field(strict=True)
+
+
+@router.get('/settings')
+def get_settings(request: Request, user: HR):
+    return {'include_sample_policies': include_sample_policies(request.app.state.database_path)}
+
+
+@router.post('/settings')
+def set_settings(payload: KnowledgeSettings, request: Request, user: HR):
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('UPDATE knowledge_settings SET include_sample_policies = ? WHERE id = 1',
+                   (int(payload.include_sample_policies),))
+        db.execute('INSERT INTO knowledge_settings_audit (actor_id,include_sample_policies) VALUES (?,?)',
+                   (user.id, int(payload.include_sample_policies)))
+    return {'include_sample_policies': payload.include_sample_policies}
+
+
+@router.post("/documents/text", status_code=201)
+def add_text_document(payload: TextDocument, request: Request, user: HR):
+    return store_document(request.app.state.database_path, user, payload.title, payload.audience, payload.text, None)
+
+
+@router.post("/documents", status_code=201)
+async def add_document(request: Request, user: HR, title: str, audience: Audience, filename: str):
+    try:
+        title = clean_title(title)
+        filename = clean_filename(filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    chunks = bytearray()
+    async for chunk in request.stream():
+        if len(chunks) + len(chunk) > MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="File exceeds 5 MiB limit")
+        chunks.extend(chunk)
+    try:
+        if filename.lower().endswith('.pdf'):
+            pages = await run_in_threadpool(extract_pdf_pages, filename, bytes(chunks))
+            text = '\n'.join(page['text'] for page in pages if page['text'])
+        else:
+            pages = None
+            text = await run_in_threadpool(extract_document_text, filename, bytes(chunks))
+    except DocumentTextError as exc:
+        raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
+    return store_document(request.app.state.database_path, user, title, audience, text, filename, pages)

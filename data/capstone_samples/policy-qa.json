@@ -1,0 +1,336 @@
+{
+  "schema_version": 1,
+  "notice": "Fictional draft reference answers; no independent human validation.",
+  "cases": [
+    {
+      "id": "cap-qa-01",
+      "language": "en",
+      "role": "employee",
+      "question": "How early should an employee request annual leave?",
+      "expected_answer": "At least five working days ahead, with manager approval.",
+      "expected_section_ids": [
+        "cap-policy-annual-leave"
+      ],
+      "expected_logical_page": 1
+    },
+    {
+      "id": "cap-qa-02",
+      "language": "ar",
+      "role": "employee",
+      "question": "متى أطلب الإجازة السنوية؟",
+      "expected_answer": "قبل خمسة أيام عمل على الأقل وبموافقة المدير.",
+      "expected_section_ids": [
+        "cap-policy-annual-leave"
+      ],
+      "expected_logical_page": 1
+    },
+    {
+      "id": "cap-qa-03",
+      "language": "en",
+      "role": "employee",
+      "question": "What should an employee do on the first sick day?",
+      "expected_answer": "Notify the manager and submit supporting documents to HR.",
+      "expected_section_ids": [
+        "cap-policy-sick-leave"
+      ],
+      "expected_logical_page": 2
+    },
+    {
+      "id": "cap-qa-04",
+      "language": "ar",
+      "role": "employee",
+      "question": "ماذا أفعل في أول يوم مرض؟",
+      "expected_answer": "إبلاغ المدير وإرسال المستندات للموارد البشرية.",
+      "expected_section_ids": [
+        "cap-policy-sick-leave"
+      ],
+      "expected_logical_page": 2
+    },
+    {
+      "id": "cap-qa-05",
+      "language": "en",
+      "role": "employee",
+      "question": "How many remote days may an eligible employee request per week?",
+      "expected_answer": "Two days per week, subject to manager approval.",
+      "expected_section_ids": [
+        "cap-policy-remote-work"
+      ],
+      "expected_logical_page": 3
+    },
+    {
+      "id": "cap-qa-06",
+      "language": "ar",
+      "role": "employee",
+      "question": "كام يوم عمل عن بعد أسبوعيًا للوظائف المؤهلة؟",
+      "expected_answer": "يومان أسبوعيًا بعد موافقة المدير.",
+      "expected_section_ids": [
+        "cap-policy-remote-work"
+      ],
+      "expected_logical_page": 3
+    },
+    {
+      "id": "cap-qa-07",
+      "language": "en",
+      "role": "employee",
+      "question": "What are the sample standard working hours?",
+      "expected_answer": "9:00 to 17:00, Sunday through Thursday, with a one-hour break.",
+      "expected_section_ids": [
+        "cap-policy-working-hours"
+      ],
+      "expected_logical_page": 4
+    },
+    {
+      "id": "cap-qa-08",
+      "language": "ar",
+      "role": "employee",
+      "question": "ما ساعات العمل الافتراضية؟",
+      "expected_answer": "من التاسعة إلى الخامسة من الأحد للخميس مع استراحة ساعة.",
+      "expected_section_ids": [
+        "cap-policy-working-hours"
+      ],
+      "expected_logical_page": 4
+    },
+    {
+      "id": "cap-qa-09",
+      "language": "en",
+      "role": "employee",
+      "question": "When must overtime be approved?",
+      "expected_answer": "Before the work starts; it must also be recorded.",
+      "expected_section_ids": [
+        "cap-policy-overtime"
+      ],
+      "expected_logical_page": 5
+    },
+    {
+      "id": "cap-qa-10",
+      "language": "ar",
+      "role": "employee",
+      "question": "متى يجب اعتماد العمل الإضافي؟",
+      "expected_answer": "قبل بدء العمل مع تسجيله في سجل الوقت.",
+      "expected_section_ids": [
+        "cap-policy-overtime"
+      ],
+      "expected_logical_page": 5
+    },
+    {
+      "id": "cap-qa-11",
+      "language": "en",
+      "role": "employee",
+      "question": "When should approved business expenses be submitted?",
+      "expected_answer": "Within ten working days with receipts.",
+      "expected_section_ids": [
+        "cap-policy-expense"
+      ],
+      "expected_logical_page": 6
+    },
+    {
+      "id": "cap-qa-12",
+      "language": "ar",
+      "role": "employee",
+      "question": "متى أقدم مصروفات العمل المعتمدة؟",
+      "expected_answer": "خلال عشرة أيام عمل مع الإيصالات.",
+      "expected_section_ids": [
+        "cap-policy-expense"
+      ],
+      "expected_logical_page": 6
+    },
+    {
+      "id": "cap-qa-13",
+      "language": "en",
+      "role": "employee",
+      "question": "What information is required in a training request?",
+      "expected_answer": "A learning goal, estimated cost, and manager approval.",
+      "expected_section_ids": [
+        "cap-policy-training"
+      ],
+      "expected_logical_page": 7
+    },
+    {
+      "id": "cap-qa-14",
+      "language": "ar",
+      "role": "employee",
+      "question": "ما المطلوب في طلب التدريب؟",
+      "expected_answer": "هدف تعليمي وتكلفة تقديرية وموافقة المدير.",
+      "expected_section_ids": [
+        "cap-policy-training"
+      ],
+      "expected_logical_page": 7
+    },
+    {
+      "id": "cap-qa-15",
+      "language": "en",
+      "role": "employee",
+      "question": "When should a damaged company device be reported?",
+      "expected_answer": "On the same working day to IT and the manager.",
+      "expected_section_ids": [
+        "cap-policy-equipment"
+      ],
+      "expected_logical_page": 8
+    },
+    {
+      "id": "cap-qa-16",
+      "language": "ar",
+      "role": "employee",
+      "question": "متى أبلغ عن تلف جهاز الشركة؟",
+      "expected_answer": "في يوم العمل نفسه إلى تقنية المعلومات والمدير.",
+      "expected_section_ids": [
+        "cap-policy-equipment"
+      ],
+      "expected_logical_page": 8
+    },
+    {
+      "id": "cap-qa-17",
+      "language": "en",
+      "role": "employee",
+      "question": "Can an employee share an internal document externally without permission?",
+      "expected_answer": "No; external sharing needs permission.",
+      "expected_section_ids": [
+        "cap-policy-confidentiality"
+      ],
+      "expected_logical_page": 9
+    },
+    {
+      "id": "cap-qa-18",
+      "language": "ar",
+      "role": "employee",
+      "question": "هل يمكن مشاركة مستند داخلي خارج الشركة دون إذن؟",
+      "expected_answer": "لا، المشاركة الخارجية تحتاج إذنًا.",
+      "expected_section_ids": [
+        "cap-policy-confidentiality"
+      ],
+      "expected_logical_page": 9
+    },
+    {
+      "id": "cap-qa-19",
+      "language": "en",
+      "role": "employee",
+      "question": "How can an approved leave request be changed?",
+      "expected_answer": "Contact HR and the manager before leave starts.",
+      "expected_section_ids": [
+        "cap-policy-leave-cancel"
+      ],
+      "expected_logical_page": 10
+    },
+    {
+      "id": "cap-qa-20",
+      "language": "ar",
+      "role": "employee",
+      "question": "كيف أغير طلب إجازة معتمدًا؟",
+      "expected_answer": "التواصل مع الموارد البشرية والمدير قبل بدء الإجازة.",
+      "expected_section_ids": [
+        "cap-policy-leave-cancel"
+      ],
+      "expected_logical_page": 10
+    },
+    {
+      "id": "cap-qa-21",
+      "language": "en",
+      "role": "employee",
+      "question": "Who publishes the sample holiday calendar?",
+      "expected_answer": "HR publishes it at the start of each year.",
+      "expected_section_ids": [
+        "cap-policy-holidays"
+      ],
+      "expected_logical_page": 11
+    },
+    {
+      "id": "cap-qa-22",
+      "language": "ar",
+      "role": "employee",
+      "question": "من ينشر تقويم العطلات الافتراضي؟",
+      "expected_answer": "تنشره الموارد البشرية في بداية كل عام.",
+      "expected_section_ids": [
+        "cap-policy-holidays"
+      ],
+      "expected_logical_page": 11
+    },
+    {
+      "id": "cap-qa-23",
+      "language": "en",
+      "role": "employee",
+      "question": "When does a new employee submit the insurance form?",
+      "expected_answer": "During the first month to HR.",
+      "expected_section_ids": [
+        "cap-policy-insurance"
+      ],
+      "expected_logical_page": 12
+    },
+    {
+      "id": "cap-qa-24",
+      "language": "ar",
+      "role": "employee",
+      "question": "متى يقدم الموظف الجديد استمارة التأمين؟",
+      "expected_answer": "خلال الشهر الأول إلى الموارد البشرية.",
+      "expected_section_ids": [
+        "cap-policy-insurance"
+      ],
+      "expected_logical_page": 12
+    },
+    {
+      "id": "cap-qa-25",
+      "language": "en",
+      "role": "employee",
+      "question": "Is the sample bonus paid automatically?",
+      "expected_answer": "No, eligibility is reviewed annually and management approval is required.",
+      "expected_section_ids": [
+        "cap-policy-bonus"
+      ],
+      "expected_logical_page": 13
+    },
+    {
+      "id": "cap-qa-26",
+      "language": "ar",
+      "role": "employee",
+      "question": "هل تُصرف المكافأة الافتراضية تلقائيًا؟",
+      "expected_answer": "لا، تراجع الأهلية سنويًا وتلزم موافقة الإدارة.",
+      "expected_section_ids": [
+        "cap-policy-bonus"
+      ],
+      "expected_logical_page": 13
+    },
+    {
+      "id": "cap-qa-27",
+      "language": "en",
+      "role": "employee",
+      "question": "Where can an employee submit a workplace concern?",
+      "expected_answer": "Through the internal HR reporting channel.",
+      "expected_section_ids": [
+        "cap-policy-complaints"
+      ],
+      "expected_logical_page": 14
+    },
+    {
+      "id": "cap-qa-28",
+      "language": "ar",
+      "role": "employee",
+      "question": "أين أقدم شكوى عمل؟",
+      "expected_answer": "عبر قناة البلاغات الداخلية للموارد البشرية.",
+      "expected_section_ids": [
+        "cap-policy-complaints"
+      ],
+      "expected_logical_page": 14
+    },
+    {
+      "id": "cap-qa-29",
+      "language": "en",
+      "role": "employee",
+      "question": "What should a departing employee arrange before the last day?",
+      "expected_answer": "Device return and access closure with IT and HR.",
+      "expected_section_ids": [
+        "cap-policy-exit"
+      ],
+      "expected_logical_page": 15
+    },
+    {
+      "id": "cap-qa-30",
+      "language": "ar",
+      "role": "employee",
+      "question": "ماذا يرتب الموظف المغادر قبل آخر يوم؟",
+      "expected_answer": "إعادة الأجهزة وإغلاق الوصول مع التقنية والموارد البشرية.",
+      "expected_section_ids": [
+        "cap-policy-exit"
+      ],
+      "expected_logical_page": 15
+    }
+  ]
+}

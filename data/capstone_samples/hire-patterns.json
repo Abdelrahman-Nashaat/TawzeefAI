@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "notice": "Entirely fictional illustrative patterns; not actual past hires or eligibility criteria.",
+  "patterns": [
+    {
+      "id": "cap-pattern-backend",
+      "role_id": "cap-backend",
+      "audience": "hr",
+      "document_type": "hire_pattern",
+      "text": "Fictional example: a project in this role included Python and REST API. This is not an eligibility rule."
+    },
+    {
+      "id": "cap-pattern-data-engineer",
+      "role_id": "cap-data-engineer",
+      "audience": "hr",
+      "document_type": "hire_pattern",
+      "text": "Fictional example: a project in this role included Python and SQL. This is not an eligibility rule."
+    },
+    {
+      "id": "cap-pattern-data-analyst",
+      "role_id": "cap-data-analyst",
+      "audience": "hr",
+      "document_type": "hire_pattern",
+      "text": "Fictional example: a project in this role included SQL and Excel. This is not an eligibility rule."
+    },
+    {
+      "id": "cap-pattern-data-scientist",
+      "role_id": "cap-data-scientist",
+      "audience": "hr",
+      "document_type": "hire_pattern",
+      "text": "Fictional example: a project in this role included Python and statistics. This is not an eligibility rule."
+    },
+    {
+      "id": "cap-pattern-ml-engineer",
+      "role_id": "cap-ml-engineer",
+      "audience": "hr",
+      "document_type": "hire_pattern",
+      "text": "Fictional example: a project in this role included Python and machine learning. This is not an eligibility rule."
+    },
+    {
+      "id": "cap-pattern-frontend",
+      "role_id": "cap-frontend",
+      "audience": "hr",
+      "document_type": "hire_pattern",
+      "text": "Fictional example: a project in this role included JavaScript and React. This is not an eligibility rule."
+    }
+  ]
+}

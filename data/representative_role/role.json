@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "representative-constructor-backend-experiments",
+  "title": "BackEnd Engineer: Experiments",
+  "organization": "Constructor",
+  "source_url": "https://jobs.ashbyhq.com/constructor/4e7cfde4-c2ba-4251-b95f-7bcf9793984a/",
+  "source_type": "Employer hiring page; retrieved through indexed search because the page requires JavaScript",
+  "accessed_date": "2026-10-29",
+  "search_index_reported_publication_date": "2026-07-06",
+  "publication_date_verified_on_original": false,
+  "current_application_status": "unverified",
+  "usage_notice": "Paraphrased for independent test-only research. Not an official rubric, an active job feed, or a representation of partnership with the employer.",
+  "required_skills": ["Python", "SQL", "monitoring", "debugging", "automated testing"],
+  "preferred_skills": ["experimentation", "PySpark", "Databricks"],
+  "responsibilities": ["Maintain Python backend services", "Work with SQL and data-heavy systems", "Monitor and debug user-facing systems", "Deliver maintainable software with tests and code review"],
+  "contextual_stack_not_mandatory": ["FastAPI", "PostgreSQL", "Plotly Dash", "AWS", "CloudWatch", "Sentry"],
+  "derivation_note": "Short proxy terms translate broader evidence requirements into test fields. Monitoring encompasses alerting; maintainable delivery includes tests, code review, and incremental delivery. Python and SQL alone do not establish the required production depth."
+}

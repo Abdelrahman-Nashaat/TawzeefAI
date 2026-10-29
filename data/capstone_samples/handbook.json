@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "document_id": "cap-handbook-v1",
+  "title": "Fictional HR handbook",
+  "notice": "Synthetic teaching examples, not actual HR policy, legal advice or rendered PDF pages.",
+  "logical_page_definition": "One numbered logical section per page for test provenance; no pagination of a rendered PDF has been verified.",
+  "sections": [
+    {
+      "id": "cap-policy-annual-leave",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Annual leave",
+      "title_ar": "الإجازة السنوية",
+      "logical_page": 1,
+      "audience": "staff",
+      "text_en": "Employees request annual leave at least five working days ahead and need manager approval.",
+      "text_ar": "يطلب الموظف الإجازة السنوية قبل خمسة أيام عمل على الأقل وتلزم موافقة المدير."
+    },
+    {
+      "id": "cap-policy-sick-leave",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Sick leave",
+      "title_ar": "الإجازة المرضية",
+      "logical_page": 2,
+      "audience": "staff",
+      "text_en": "Employees notify their manager on the first sick day and submit supporting documentation to HR.",
+      "text_ar": "يبلغ الموظف المدير في أول يوم مرض ويرسل المستندات الداعمة للموارد البشرية."
+    },
+    {
+      "id": "cap-policy-remote-work",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Remote work",
+      "title_ar": "العمل عن بعد",
+      "logical_page": 3,
+      "audience": "staff",
+      "text_en": "Eligible roles may request two remote working days per week, subject to manager approval.",
+      "text_ar": "يمكن للوظائف المؤهلة طلب يومين عمل عن بعد أسبوعيًا بعد موافقة المدير."
+    },
+    {
+      "id": "cap-policy-working-hours",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Working hours",
+      "title_ar": "ساعات العمل",
+      "logical_page": 4,
+      "audience": "staff",
+      "text_en": "Standard sample hours are 9:00 to 17:00, Sunday through Thursday, with a one-hour break.",
+      "text_ar": "ساعات العمل الافتراضية من التاسعة إلى الخامسة من الأحد للخميس مع استراحة ساعة."
+    },
+    {
+      "id": "cap-policy-overtime",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Overtime",
+      "title_ar": "العمل الإضافي",
+      "logical_page": 5,
+      "audience": "staff",
+      "text_en": "Overtime must be approved by the manager before the work starts and recorded in the timesheet.",
+      "text_ar": "يجب اعتماد العمل الإضافي من المدير قبل البدء وتسجيله في سجل الوقت."
+    },
+    {
+      "id": "cap-policy-expense",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Expenses",
+      "title_ar": "المصروفات",
+      "logical_page": 6,
+      "audience": "staff",
+      "text_en": "Employees submit approved business expenses with receipts within ten working days.",
+      "text_ar": "يقدم الموظف مصروفات العمل المعتمدة مع الإيصالات خلال عشرة أيام عمل."
+    },
+    {
+      "id": "cap-policy-training",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Training",
+      "title_ar": "التدريب",
+      "logical_page": 7,
+      "audience": "staff",
+      "text_en": "Training requests require a learning goal, estimated cost, and manager approval.",
+      "text_ar": "يتطلب طلب التدريب هدفًا تعليميًا وتكلفة تقديرية وموافقة المدير."
+    },
+    {
+      "id": "cap-policy-equipment",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Equipment",
+      "title_ar": "الأجهزة",
+      "logical_page": 8,
+      "audience": "staff",
+      "text_en": "Employees report a damaged company device to IT and their manager on the same working day.",
+      "text_ar": "يبلغ الموظف تقنية المعلومات والمدير عن تلف جهاز الشركة في يوم العمل نفسه."
+    },
+    {
+      "id": "cap-policy-confidentiality",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Confidentiality",
+      "title_ar": "السرية",
+      "logical_page": 9,
+      "audience": "staff",
+      "text_en": "Employees may access internal documents only for their authorized work and must not share them externally without permission.",
+      "text_ar": "يقتصر الوصول إلى المستندات الداخلية على العمل المصرح ولا تشارك خارجيًا دون إذن."
+    },
+    {
+      "id": "cap-policy-leave-cancel",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Canceling leave",
+      "title_ar": "إلغاء الإجازة",
+      "logical_page": 10,
+      "audience": "staff",
+      "text_en": "An approved leave request may be changed by contacting HR and the manager before the leave starts.",
+      "text_ar": "يمكن تغيير الإجازة المعتمدة بالتواصل مع الموارد البشرية والمدير قبل بدئها."
+    },
+    {
+      "id": "cap-policy-holidays",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Public holidays",
+      "title_ar": "العطلات الرسمية",
+      "logical_page": 11,
+      "audience": "staff",
+      "text_en": "The sample holiday calendar is published by HR at the start of each year and may be revised.",
+      "text_ar": "تنشر الموارد البشرية تقويم العطلات الافتراضي في بداية كل عام وقد تعدله."
+    },
+    {
+      "id": "cap-policy-insurance",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Insurance enrollment",
+      "title_ar": "الاشتراك بالتأمين",
+      "logical_page": 12,
+      "audience": "staff",
+      "text_en": "New employees submit the enrollment form to HR during their first month.",
+      "text_ar": "يقدم الموظف الجديد استمارة الاشتراك للموارد البشرية خلال الشهر الأول."
+    },
+    {
+      "id": "cap-policy-bonus",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Bonus review",
+      "title_ar": "مراجعة المكافآت",
+      "logical_page": 13,
+      "audience": "staff",
+      "text_en": "Bonus eligibility is reviewed annually; payment is not automatic and requires management approval.",
+      "text_ar": "تراجع أهلية المكافأة سنويًا ولا يصرف مبلغ تلقائيًا وتلزم موافقة الإدارة."
+    },
+    {
+      "id": "cap-policy-complaints",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Workplace concerns",
+      "title_ar": "شكاوى العمل",
+      "logical_page": 14,
+      "audience": "staff",
+      "text_en": "Employees may submit a workplace concern to HR through the internal reporting channel.",
+      "text_ar": "يمكن للموظف تقديم شكوى عمل للموارد البشرية عبر قناة البلاغات الداخلية."
+    },
+    {
+      "id": "cap-policy-exit",
+      "document_id": "cap-handbook-v1",
+      "document_type": "handbook",
+      "title": "Exit procedures",
+      "title_ar": "إجراءات المغادرة",
+      "logical_page": 15,
+      "audience": "staff",
+      "text_en": "Departing employees arrange device return and access closure with IT and HR before their last day.",
+      "text_ar": "يرتب الموظف المغادر إعادة الأجهزة وإغلاق الوصول مع التقنية والموارد البشرية قبل آخر يوم."
+    }
+  ]
+}

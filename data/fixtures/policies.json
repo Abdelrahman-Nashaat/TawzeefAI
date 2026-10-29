@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "disclaimer": "Fictional sample policies and fictional patterns; not legal advice or an actual company's rules.",
+  "documents": [
+    {"id":"pol-application","title":"Application process","version":"sample-1","audience":"public","text":"Applicants may apply to a listed role and view their own application status. A recruiter reviews application recommendations before a hiring decision."},
+    {"id":"pol-leave","title":"Annual leave","version":"sample-1","audience":"staff","text":"In this fictional sample, employees request annual leave through the internal HR portal at least five working days before the requested start date. Their manager must approve the request."},
+    {"id":"pol-remote","title":"Remote work","version":"sample-1","audience":"staff","text":"In this fictional sample, eligible employees may request up to two remote working days per week. Approval depends on the role and the manager's decision. في هذا المثال التجريبي، يمكن للموظف المؤهل طلب ما يصل إلى يومين شغل عن بعد في الأسبوع، بشرط موافقة المدير وحسب الدور الوظيفي."},
+    {"id":"pol-hr-review","title":"Recruiter review procedure","version":"sample-1","audience":"hr","text":"Recruiters review matching evidence and record their decision and rationale. Automated ranking is a recommendation and does not itself reject or hire an applicant."}
+  ],
+  "hire_patterns": [
+    {"id":"pattern-backend","title":"Illustrative backend skills pattern","audience":"hr","text":"Fictional example only: some successful backend projects used Python APIs, SQL, and automated tests. This is not an eligibility rule or real historical hiring data."},
+    {"id":"pattern-data","title":"Illustrative data engineering pattern","audience":"hr","text":"Fictional example only: some data projects involved SQL transformations, Python pipelines, and data quality checks. This is not an eligibility rule or real historical hiring data."}
+  ]
+}

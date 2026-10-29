@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "disclaimer": "Fictional demo company and sample roles; not verified real job postings.",
+  "jobs": [
+    {
+      "id": "job-backend-python",
+      "title": "Python Backend Developer",
+      "location": "Cairo (fictional role)",
+      "required_skills": ["Python", "HTTP APIs", "SQL"],
+      "preferred_skills": ["automated testing", "Docker"],
+      "responsibilities": ["Build backend APIs", "Maintain relational data", "Write automated tests"]
+    },
+    {
+      "id": "job-data-engineer",
+      "title": "Data Engineer",
+      "location": "Cairo (fictional role)",
+      "required_skills": ["Python", "SQL", "ETL pipelines"],
+      "preferred_skills": ["data modeling", "workflow orchestration"],
+      "responsibilities": ["Build data pipelines", "Model analytical data", "Validate data quality"]
+    },
+    {
+      "id": "job-frontend-react",
+      "title": "Frontend Developer",
+      "location": "Cairo (fictional role)",
+      "required_skills": ["JavaScript", "React", "HTML and CSS"],
+      "preferred_skills": ["accessibility", "automated testing"],
+      "responsibilities": ["Build accessible web interfaces", "Integrate HTTP APIs", "Test user journeys"]
+    }
+  ]
+}

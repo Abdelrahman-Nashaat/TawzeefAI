@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "notice": "Fictional paired text-evidence comparisons; draft expectations have not been human reviewed and are not hiring decisions.",
+  "cases": [
+    {
+      "id": "cap-rank-01",
+      "role_id": "cap-backend",
+      "profile_ids": [
+        "cap-cv-01",
+        "cap-cv-03"
+      ],
+      "expected_more_documented": "cap-cv-01",
+      "rationale": "The first text mentions all three required skills; the second explicitly negates SQL and omits dates. This compares text evidence, not actual suitability."
+    },
+    {
+      "id": "cap-rank-02",
+      "role_id": "cap-data-engineer",
+      "profile_ids": [
+        "cap-cv-06",
+        "cap-cv-08"
+      ],
+      "expected_more_documented": "cap-cv-06",
+      "rationale": "The first text mentions all three required skills; the second explicitly negates ETL and omits dates. This compares text evidence, not actual suitability."
+    },
+    {
+      "id": "cap-rank-03",
+      "role_id": "cap-data-analyst",
+      "profile_ids": [
+        "cap-cv-11",
+        "cap-cv-13"
+      ],
+      "expected_more_documented": "cap-cv-11",
+      "rationale": "The first text mentions all three required skills; the second explicitly negates dashboard and omits dates. This compares text evidence, not actual suitability."
+    },
+    {
+      "id": "cap-rank-04",
+      "role_id": "cap-data-scientist",
+      "profile_ids": [
+        "cap-cv-16",
+        "cap-cv-18"
+      ],
+      "expected_more_documented": "cap-cv-16",
+      "rationale": "The first text mentions all three required skills; the second explicitly negates machine learning and omits dates. This compares text evidence, not actual suitability."
+    },
+    {
+      "id": "cap-rank-05",
+      "role_id": "cap-ml-engineer",
+      "profile_ids": [
+        "cap-cv-21",
+        "cap-cv-23"
+      ],
+      "expected_more_documented": "cap-cv-21",
+      "rationale": "The first text mentions all three required skills; the second explicitly negates model deployment and omits dates. This compares text evidence, not actual suitability."
+    },
+    {
+      "id": "cap-rank-06",
+      "role_id": "cap-frontend",
+      "profile_ids": [
+        "cap-cv-26",
+        "cap-cv-28"
+      ],
+      "expected_more_documented": "cap-cv-26",
+      "rationale": "The first text mentions all three required skills; the second explicitly negates HTML and CSS and omits dates. This compares text evidence, not actual suitability."
+    },
+    {
+      "id": "cap-rank-07",
+      "role_id": "cap-backend",
+      "profile_ids": [
+        "cap-cv-02",
+        "cap-cv-04"
+      ],
+      "expected_more_documented": "cap-cv-02",
+      "rationale": "The first Arabic text mentions Python, REST API and SQL; the second describes only coursework and missing work evidence. This is not a hiring decision."
+    },
+    {
+      "id": "cap-rank-08",
+      "role_id": "cap-data-engineer",
+      "profile_ids": [
+        "cap-cv-07",
+        "cap-cv-09"
+      ],
+      "expected_more_documented": "cap-cv-07",
+      "rationale": "The first Arabic text mentions Python, SQL and ETL; the second describes only coursework and missing work evidence. This is not a hiring decision."
+    },
+    {
+      "id": "cap-rank-09",
+      "role_id": "cap-data-analyst",
+      "profile_ids": [
+        "cap-cv-12",
+        "cap-cv-14"
+      ],
+      "expected_more_documented": "cap-cv-12",
+      "rationale": "The first Arabic text mentions SQL, Excel and dashboard; the second describes only coursework and missing work evidence. This is not a hiring decision."
+    },
+    {
+      "id": "cap-rank-10",
+      "role_id": "cap-data-scientist",
+      "profile_ids": [
+        "cap-cv-17",
+        "cap-cv-19"
+      ],
+      "expected_more_documented": "cap-cv-17",
+      "rationale": "The first Arabic text mentions Python, statistics and machine learning; the second describes only coursework and missing work evidence. This is not a hiring decision."
+    }
+  ]
+}
