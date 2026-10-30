@@ -16,6 +16,8 @@ HR = Annotated[User, Depends(require_roles("hr"))]
 @router.get("/dashboard")
 def dashboard(request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
+        # All indicators must describe the same committed database snapshot.
+        db.execute("BEGIN")
         apps = db.execute("SELECT id, status, created_at FROM applications").fetchall()
         screenings = db.execute("SELECT COUNT(*) FROM audit_events WHERE action = 'screened'").fetchone()[0]
         decisions = db.execute("SELECT application_id, details, created_at FROM audit_events WHERE action = 'decision' ORDER BY id DESC").fetchall()
