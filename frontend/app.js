@@ -1261,7 +1261,8 @@ function setupKnowledgeDocuments() {
 
 function knowledgeSourceLabel(source) {
   const page = Number.isInteger(source.page) && source.page > 0 ? ` · صفحة ${source.page}` : "";
-  return `${source.title} (${source.id})${page}`;
+  const section = typeof source.section === "string" && source.section.trim() ? ` · القسم: ${source.section.trim()}` : "";
+  return `${source.title} (${source.id})${page}${section}`;
 }
 
 function setupKnowledge(role) {

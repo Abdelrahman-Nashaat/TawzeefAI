@@ -6,6 +6,7 @@ limit request bodies before buffering uploads; this function receives bytes that
 are already in memory. The returned text may contain personal information.
 """
 
+import re
 from io import BytesIO
 from pathlib import PurePath
 from zipfile import ZipFile
@@ -158,3 +159,44 @@ def extract_document_text(
     if not parts:
         raise DocumentTextError('no_text', 'No text could be extracted; OCR may be required.')
     return '\n'.join(parts)
+
+
+def extract_docx_sections(filename: str, content: bytes) -> tuple[str, list[dict] | None]:
+    """Extract bounded text and sections marked by Word's built-in heading styles.
+
+    DOCX has no reliable physical page numbers. Unstyled documents retain the
+    original chunking behavior. Sections are untrusted document content.
+    """
+    if PurePath(filename).suffix.lower() != '.docx':
+        raise DocumentTextError('unsupported_type', 'Only DOCX documents are supported.')
+    text = extract_document_text(filename, content)  # Performs all size and ZIP checks first.
+    try:
+        document = Document(BytesIO(content))
+        sections: list[dict] = []
+        parts: list[str] = []
+        heading = None
+        found = False
+        for item in document.iter_inner_content():
+            if isinstance(item, Paragraph):
+                value = item.text.strip()
+                style_id = item.style.style_id if item.style else ''
+                is_heading = bool(value and len(value) <= 200 and re.fullmatch(r'Heading[1-9]', style_id))
+                if is_heading:
+                    if parts:
+                        sections.append({'section': heading, 'text': '\n'.join(parts)})
+                        if len(sections) >= 1000:
+                            raise DocumentTextError('document_too_large', 'The document has too many sections.')
+                    heading, parts, found = value, [], True
+                if value:
+                    parts.append(value)
+            else:
+                parts.extend(value.strip() for value in _table_text(item) if value.strip())
+        if parts:
+            sections.append({'section': heading, 'text': '\n'.join(parts)})
+        if len(sections) > 1000 or '\n'.join(s['text'] for s in sections) != text:
+            raise DocumentTextError('invalid_document', 'Document sections could not be safely extracted.')
+    except DocumentTextError:
+        raise
+    except Exception as exc:
+        raise DocumentTextError('invalid_document', 'The document is invalid or could not be read.') from exc
+    return text, sections if found else None

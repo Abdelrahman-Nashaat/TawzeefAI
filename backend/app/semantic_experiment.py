@@ -138,7 +138,7 @@ def search_hybrid(path: str | Path, role: str, question: str, embedder, *,
         if current is None or current != doc:
             continue
         result.append({'document_id': doc['id'], 'id': source.id, 'title': source.title,
-                       'page': source.page, 'text': source.text, 'similarity': similarity})
+                       'page': source.page, 'section': source.section, 'text': source.text, 'similarity': similarity})
         if len(result) == limit:
             break
     return {'status': 'ok' if result else 'abstain', 'sources': result,

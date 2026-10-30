@@ -20,7 +20,10 @@ COLLECTIONS = frozenset(('legacy_unclassified', 'handbook', 'job_description', '
 
 
 def _revision(source) -> str:
-    data = json.dumps([source.id, source.title, source.text, source.page], ensure_ascii=False,
+    values = [source.id, source.title, source.text, source.page]
+    if source.section is not None:
+        values.append(source.section)
+    data = json.dumps(values, ensure_ascii=False,
                       separators=(',', ':')).encode('utf-8')
     return hashlib.sha256(data).hexdigest()
 
@@ -93,7 +96,7 @@ def search_postgres(path, role, question, embedder, connection, *, min_similarit
             continue
         result.append({'document_id': document['id'], 'id': source.id, 'title': source.title,
                        'page': source.page, 'text': source.text, 'similarity': similarity,
-                       'collection': document['collection'], 'job_id': document['job_id']})
+                       'collection': document['collection'], 'job_id': document['job_id'], 'section': source.section})
         if len(result) == limit:
             break
     return {'status': 'ok' if result else 'abstain', 'sources': result,

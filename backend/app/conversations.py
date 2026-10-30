@@ -142,6 +142,8 @@ def _digest(source: Source) -> str:
     if data['page'] is None:
         # Preserve digests for historical messages written before page metadata.
         del data['page']
+    if data['section'] is None:
+        del data['section']
     raw = json.dumps(data, ensure_ascii=False, sort_keys=True).encode('utf-8')
     return hashlib.sha256(raw).hexdigest()
 

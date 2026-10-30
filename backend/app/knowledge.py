@@ -48,6 +48,7 @@ class Source:
     title: str
     text: str
     page: int | None = None
+    section: str | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +148,9 @@ def _document_passages(document: dict) -> list[Source]:
     Whitespace boundaries are preferred; long unbroken runs remain bounded.
     """
     stored_pages = document.get('pages_json')
+    stored_sections = document.get('sections_json')
+    if stored_pages is not None and stored_sections is not None:
+        return []
     if stored_pages is not None:
         try:
             pages = json.loads(stored_pages)
@@ -156,6 +160,21 @@ def _document_passages(document: dict) -> list[Source]:
                     for index, p in enumerate(pages, 1)) or
                 '\n'.join(p['text'] for p in pages if p['text']) != document['text']):
                 return []
+        except (TypeError, ValueError):
+            return []
+    elif stored_sections is not None:
+        try:
+            sections = json.loads(stored_sections)
+            if (not isinstance(sections, list) or not sections or len(sections) > 1000 or
+                any(not isinstance(s, dict) or set(s) != {'section', 'text'} or
+                    not isinstance(s['text'], str) or not s['text'] or
+                    (s['section'] is not None and (not isinstance(s['section'], str) or
+                     not 1 <= len(s['section']) <= 200 or
+                     not (s['text'] == s['section'] or s['text'].startswith(s['section'] + '\n'))))
+                    for s in sections) or
+                '\n'.join(s['text'] for s in sections) != document['text']):
+                return []
+            pages = [{'page': None, **s} for s in sections]
         except (TypeError, ValueError):
             return []
     else:
@@ -174,7 +193,7 @@ def _document_passages(document: dict) -> list[Source]:
             if body:
                 passages.append(Source(
                     id=f"db-doc-{document['id']}-p{len(passages) + 1}",
-                    title=document['title'], text=body, page=page['page'],
+                    title=document['title'], text=body, page=page['page'], section=page.get('section'),
                 ))
             if end == len(text):
                 break
@@ -254,7 +273,7 @@ def answer_question(
         if not isinstance(row, dict) or not isinstance(row.get('id'), str):
             continue
         source = by_id.get(row.get('id'))
-        if source is not None and all(row.get(key) == getattr(source, key) for key in ('title', 'text', 'page')):
+        if source is not None and all(row.get(key) == getattr(source, key) for key in ('title', 'text', 'page', 'section')):
             hybrid.append(source)
     ranked = _rank_lexical(terms, documents)
     # Fuse the ranked candidate lists, retaining lexical jobs and sample

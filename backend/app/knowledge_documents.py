@@ -14,7 +14,7 @@ from app.document_text import (
     MAX_FILE_BYTES,
     MAX_TEXT_CHARS,
     DocumentTextError,
-    extract_document_text,
+    extract_docx_sections,
     extract_pdf_pages,
 )
 
@@ -69,6 +69,8 @@ def initialize_knowledge_documents(path: str | Path, *, include_samples: bool = 
                 ('legacy_unclassified', 'handbook', 'job_description', 'past_hire_patterns'))""")
         if 'job_id' not in columns:
             db.execute('ALTER TABLE knowledge_documents ADD COLUMN job_id TEXT REFERENCES jobs(id)')
+        if 'sections_json' not in columns:
+            db.execute('ALTER TABLE knowledge_documents ADD COLUMN sections_json TEXT')
         db.execute('INSERT OR IGNORE INTO knowledge_settings (id, include_sample_policies) VALUES (1, ?)', (int(include_samples),))
 
 
@@ -109,7 +111,7 @@ class TextDocument(BaseModel):
 
 def store_document(path: str | Path, user: User, title: str, audience: str, text: str, filename: str | None,
                    pages: list[dict] | None = None, collection: Collection = 'legacy_unclassified',
-                   job_id: str | None = None) -> dict:
+                   job_id: str | None = None, sections: list[dict] | None = None) -> dict:
     if collection not in ('legacy_unclassified', 'handbook', 'job_description', 'past_hire_patterns'):
         raise ValueError('Unsupported knowledge collection')
     # Historical hire patterns must never become public through their audience.
@@ -120,8 +122,8 @@ def store_document(path: str | Path, user: User, title: str, audience: str, text
         if job_id is not None and not db.execute('SELECT 1 FROM jobs WHERE id = ?', (job_id,)).fetchone():
             raise HTTPException(status_code=422, detail='Unknown job identifier')
         cursor = db.execute(
-            "INSERT INTO knowledge_documents (title,audience,filename,text,created_by,pages_json,collection,job_id) VALUES (?,?,?,?,?,?,?,?)",
-            (title, audience, filename, text, user.id, json.dumps(pages, ensure_ascii=False) if pages is not None else None, collection, job_id),
+            "INSERT INTO knowledge_documents (title,audience,filename,text,created_by,pages_json,collection,job_id,sections_json) VALUES (?,?,?,?,?,?,?,?,?)",
+            (title, audience, filename, text, user.id, json.dumps(pages, ensure_ascii=False) if pages is not None else None, collection, job_id, json.dumps(sections, ensure_ascii=False) if sections is not None else None),
         )
         db.execute(
             "INSERT INTO knowledge_document_audit (document_id,actor_id,action) VALUES (?,?,'created')",
@@ -144,7 +146,7 @@ def authorized_documents_in_db(db, role: str) -> list[dict]:
         return []
     placeholders = ",".join("?" for _ in allowed)
     rows = db.execute(
-        f"""SELECT id,title,audience,text,pages_json,collection,job_id FROM knowledge_documents
+        f"""SELECT id,title,audience,text,pages_json,collection,job_id,sections_json FROM knowledge_documents
             WHERE active = 1 AND audience IN ({placeholders}) AND
             (collection IN ('legacy_unclassified','handbook','job_description') OR
              (collection = 'past_hire_patterns' AND ? = 'hr')) ORDER BY id""",
@@ -236,10 +238,11 @@ async def add_document(request: Request, user: HR, title: str, audience: Audienc
         if filename.lower().endswith('.pdf'):
             pages = await run_in_threadpool(extract_pdf_pages, filename, bytes(chunks))
             text = '\n'.join(page['text'] for page in pages if page['text'])
+            sections = None
         else:
             pages = None
-            text = await run_in_threadpool(extract_document_text, filename, bytes(chunks))
+            text, sections = await run_in_threadpool(extract_docx_sections, filename, bytes(chunks))
     except DocumentTextError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
     return store_document(request.app.state.database_path, user, title, audience, text, filename, pages,
-                          collection=collection, job_id=job_id)
+                          collection=collection, job_id=job_id, sections=sections)
