@@ -169,6 +169,56 @@ def test_collection_filter_limits_model_and_preserves_other_namespaces(tmp_path,
     assert stale['sources'] == []
 
 
+def test_job_filter_uses_separate_namespace_and_rechecks_source(tmp_path, pg_connection):
+    np = pytest.importorskip('numpy')
+    from app.db import connect, initialize
+    from app.knowledge_documents import initialize_knowledge_documents
+    from app.postgres_retrieval import search_postgres
+
+    path = tmp_path / 'jobs.sqlite3'
+    initialize(path)
+    initialize_knowledge_documents(path)
+    with connect(path) as db:
+        hr = db.execute("INSERT INTO users(username,display_name,role,password_hash) VALUES('hr','HR','hr','x')").lastrowid
+        for job in ('job-one', 'job-two'):
+            db.execute("INSERT INTO jobs(id,title,location,required_skills,preferred_skills,responsibilities) VALUES(?,?,?,'[]','[]','[]')", (job, job, 'Remote'))
+        for job, body in [('job-one', 'ROLE_ONE'), ('job-two', 'ROLE_TWO')]:
+            db.execute("INSERT INTO knowledge_documents(title,audience,collection,text,created_by,job_id) VALUES(?, 'public', 'job_description', ?, ?, ?)", (job, body, hr, job))
+        db.execute("INSERT INTO knowledge_documents(title,audience,collection,text,created_by,job_id) VALUES('Private', 'public', 'past_hire_patterns', 'ROLE_PRIVATE', ?, 'job-one')", (hr,))
+
+    class Embedder:
+        def __init__(self, callback=None):
+            self.seen = []
+            self.callback = callback
+
+        def encode(self, texts, *, query):
+            if not query:
+                self.seen.extend(texts)
+                if self.callback:
+                    self.callback()
+                    self.callback = None
+            return np.array([[1.0] + [0.0] * 383 for _ in texts], dtype=np.float32)
+
+    all_docs = search_postgres(path, 'employee', 'role', Embedder(), pg_connection, collection='job_description')
+    assert {r['job_id'] for r in all_docs['sources']} == {'job-one', 'job-two'}
+    prior = pg_connection.execute('SELECT namespace,count(*) FROM tawzeef_vectors GROUP BY namespace').fetchall()
+    embedder = Embedder()
+    result = search_postgres(path, 'employee', 'role', embedder, pg_connection, collection='job_description', job_id='job-one')
+    assert [r['text'] for r in result['sources']] == ['ROLE_ONE']
+    assert embedder.seen == ['ROLE_ONE']
+    for name, count in prior:
+        assert pg_connection.execute('SELECT count(*) FROM tawzeef_vectors WHERE namespace=%s', (name,)).fetchone()[0] == count
+    assert search_postgres(path, 'employee', 'role', Embedder(), pg_connection, job_id='unknown')['sources'] == []
+    assert search_postgres(path, 'candidate', 'role', Embedder(), pg_connection, collection='past_hire_patterns', job_id='job-one')['sources'] == []
+
+    def reassign():
+        with connect(path) as db:
+            db.execute("UPDATE knowledge_documents SET job_id='job-two' WHERE title='job-one'")
+
+    changed = search_postgres(path, 'employee', 'role', Embedder(reassign), pg_connection, collection='job_description', job_id='job-one')
+    assert changed['sources'] == []
+
+
 def test_hybrid_api_uses_session_role_with_real_model_and_postgres(tmp_path, pg_connection, monkeypatch):
     from pathlib import Path
 
@@ -194,7 +244,7 @@ def test_hybrid_api_uses_session_role_with_real_model_and_postgres(tmp_path, pg_
         assert client.post(url, json={'question': 'annual leave days'}).status_code == 401
         with connect(path) as db:
             hr = db.execute("SELECT id FROM users WHERE username='hr'").fetchone()[0]
-            db.execute("INSERT INTO knowledge_documents(title,audience,text,created_by) VALUES('Annual leave','public','Employees receive 21 days of annual leave each year.',?)", (hr,))
+            db.execute("INSERT INTO knowledge_documents(title,audience,text,created_by,job_id) VALUES('Annual leave','public','Employees receive 21 days of annual leave each year.',?,'job-backend-python')", (hr,))
             db.execute("INSERT INTO knowledge_documents(title,audience,text,created_by) VALUES('Private leave','hr','SECRET HR leave policy: 999 days.',?)", (hr,))
             db.execute("INSERT INTO knowledge_documents(title,audience,collection,text,created_by) VALUES('Private patterns','public','past_hire_patterns','SECRET HISTORICAL leave notes',?)", (hr,))
         assert client.post('/api/auth/login', json={
@@ -204,6 +254,11 @@ def test_hybrid_api_uses_session_role_with_real_model_and_postgres(tmp_path, pg_
         assert response.status_code == 200
         assert response.json()['sources'][0]['title'] == 'Annual leave'
         assert 'SECRET HR' not in response.text
+        filtered = client.post(url, json={'question': 'How many days of annual leave do employees get?', 'job_id': 'job-backend-python'})
+        assert filtered.status_code == 200 and filtered.json()['sources'][0]['job_id'] == 'job-backend-python'
+        unknown = client.post(url, json={'question': 'leave', 'job_id': 'unknown-job'})
+        assert unknown.status_code == 200 and unknown.json()['sources'] == []
+        assert client.post(url, json={'question': 'leave', 'job_id': 'invalid id'}).status_code == 422
         assert client.post(url, json={'question': 'leave', 'collection': 'bad'}).status_code == 422
         restricted = client.post(url, json={'question': 'leave', 'collection': 'past_hire_patterns'})
         assert restricted.status_code == 200

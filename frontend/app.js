@@ -1084,6 +1084,27 @@ function renderScore(target, score) {
   target.append(list);
 }
 
+function knowledgeJobSelector(id, allLabel) {
+  const label = element("label", "", "الوظيفة (اختياري)");
+  const select = element("select"); select.id = id; label.htmlFor = id;
+  const all = element("option", "", allLabel); all.value = ""; select.append(all);
+  const status = element("span", "subtle-note", "جارٍ تحميل الوظائف...");
+  select.disabled = true;
+  label.append(select, status);
+  api("/api/jobs").then((jobs) => {
+    if (!Array.isArray(jobs)) throw new Error("Invalid job list");
+    for (const job of jobs) {
+      if (typeof job.id !== "string" || typeof job.title !== "string") continue;
+      const option = element("option", "", `${job.title} (${job.id})`); option.value = job.id; select.append(option);
+    }
+    select.disabled = false;
+    status.textContent = jobs.length ? "" : "لا توجد وظائف للاختيار.";
+  }).catch((error) => {
+    if (!isStale(error)) status.textContent = "تعذّر تحميل الوظائف؛ يمكنك المتابعة دون اختيار وظيفة أو إعادة تحميل الصفحة.";
+  });
+  return { label, select };
+}
+
 function setupKnowledgeDocuments() {
   const sectionNode = element("section", "knowledge-section");
   sectionNode.setAttribute("aria-labelledby", "document-management-title");
@@ -1115,6 +1136,7 @@ function setupKnowledgeDocuments() {
       const card = element("article", "job-card");
       const effectiveAudience = document.collection === "past_hire_patterns" ? "hr" : document.audience;
       card.append(element("h4", "", document.title), element("p", "", `النوع: ${collections[document.collection] || "غير مصنّف"}`), element("p", "", `الصلاحية: ${labels[effectiveAudience] || "غير معروفة"}`));
+      if (document.job_id) card.append(element("p", "", `معرّف الوظيفة: ${document.job_id}`));
       if (document.filename) card.append(element("p", "", `الملف: ${document.filename}`));
       if (document.active === true) {
         card.append(element("p", "", "الحالة: نشط في البحث"));
@@ -1163,8 +1185,9 @@ function setupKnowledgeDocuments() {
       if (collection.value === "past_hire_patterns") audience.value = "hr";
       for (const option of audience.options) option.disabled = collection.value === "past_hire_patterns" && option.value !== "hr";
     });
-    form.append(titleLabel, collectionLabel, audienceLabel, element("p", "subtle-note", "أنماط التوظيف للـHR فقط؛ استخدم أمثلة صناعية ولا ترفع بيانات متقدمين حقيقيين في هذه النسخة."));
-    return { titleInput, audience, collection };
+    const job = knowledgeJobSelector(`${prefix}-job`, "دون ربط بوظيفة محددة");
+    form.append(titleLabel, collectionLabel, job.label, audienceLabel, element("p", "subtle-note", "أنماط التوظيف للـHR فقط؛ استخدم أمثلة صناعية ولا ترفع بيانات متقدمين حقيقيين في هذه النسخة."));
+    return { titleInput, audience, collection, job: job.select };
   }
 
   const textForm = element("form", "decision-form");
@@ -1184,7 +1207,9 @@ function setupKnowledgeDocuments() {
     if (!documentTitle || !documentText || !textFields.audience.value) { report("أكمل العنوان والنص والصلاحية.", true); return; }
     textButton.disabled = true;
     try {
-      await api("/api/knowledge/documents/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: documentTitle, audience: textFields.audience.value, collection: textFields.collection.value, text: documentText }) });
+      const payload = { title: documentTitle, audience: textFields.audience.value, collection: textFields.collection.value, text: documentText };
+      if (textFields.job.value) payload.job_id = textFields.job.value;
+      await api("/api/knowledge/documents/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       textForm.reset();
       textFields.collection.dispatchEvent(new Event("change"));
       textFields.audience.value = "";
@@ -1214,6 +1239,7 @@ function setupKnowledgeDocuments() {
     fileButton.disabled = true;
     try {
       const params = new URLSearchParams({ title: documentTitle, audience: fileFields.audience.value, collection: fileFields.collection.value, filename: file.name });
+      if (fileFields.job.value) params.set("job_id", fileFields.job.value);
       const uploaded = await api(`/api/knowledge/documents?${params}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
       fileForm.reset();
       fileFields.collection.dispatchEvent(new Event("change"));
@@ -1255,7 +1281,8 @@ function setupKnowledge(role) {
     if (role === "hr") options.push(["past_hire_patterns", "أنماط توظيف سابقة — HR فقط"]);
     for (const [value, label] of options) { const option = element("option", "", label); option.value = value; collection.append(option); }
     collectionLabel.append(collection);
-    form.append(element("p", "subtle-note", "تجربة محلية على مستندات المعرفة التي أضافها HR فقط؛ لا تشمل الوظائف المنشورة أو العينات. اختيار المجموعة ينطبق على البحث الهجين فقط، وليس الإجابة أو المحادثة العادية. المقتطفات قد لا تدعم السؤال ولا تمثل إجابة متحققًا منها."), collectionLabel, hybridButton);
+    const job = knowledgeJobSelector("hybrid-job", "جميع الوظائف والمستندات العامة");
+    form.append(element("p", "subtle-note", "تجربة محلية على مستندات المعرفة التي أضافها HR فقط؛ لا تشمل الوظائف المنشورة أو العينات. اختيار المجموعة والوظيفة ينطبق على البحث الهجين فقط، وليس الإجابة أو المحادثة العادية. عند اختيار وظيفة لا تظهر المستندات غير المرتبطة بوظيفة. المقتطفات قد لا تدعم السؤال ولا تمثل إجابة متحققًا منها."), collectionLabel, job.label, hybridButton);
     hybridButton.addEventListener("click", async () => {
       const question = document.getElementById("knowledge-question").value.trim();
       if (!question) return;
@@ -1264,6 +1291,7 @@ function setupKnowledge(role) {
       result.replaceChildren(element("p", "", "جاري البحث التجريبي..."));
       try {
         const payload = { question }; if (collection.value) payload.collection = collection.value;
+        if (job.select.value) payload.job_id = job.select.value;
         const answer = await api("/api/knowledge/experimental-hybrid", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }, { errorMessages: { 429: "البحث مشغول؛ حاول مرة أخرى.", 503: "البحث التجريبي غير متاح؛ تحقق من إعداد النموذج وقاعدة البيانات." } });
         result.replaceChildren(element("h3", "", "مقتطفات تجريبية"), element("p", "subtle-note", "تحقق من كل مصدر؛ التشابه لا يثبت أن المقتطف يجيب عن السؤال."));
         if (!answer.sources?.length) result.append(element("p", "", "لم يُعثر على مقتطف مناسب في المستندات المضافة."));

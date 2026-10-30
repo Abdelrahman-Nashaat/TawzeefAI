@@ -4,7 +4,7 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
 
@@ -67,6 +67,8 @@ def initialize_knowledge_documents(path: str | Path, *, include_samples: bool = 
             db.execute("""ALTER TABLE knowledge_documents ADD COLUMN collection TEXT NOT NULL
                 DEFAULT 'legacy_unclassified' CHECK (collection IN
                 ('legacy_unclassified', 'handbook', 'job_description', 'past_hire_patterns'))""")
+        if 'job_id' not in columns:
+            db.execute('ALTER TABLE knowledge_documents ADD COLUMN job_id TEXT REFERENCES jobs(id)')
         db.execute('INSERT OR IGNORE INTO knowledge_settings (id, include_sample_policies) VALUES (1, ?)', (int(include_samples),))
 
 
@@ -89,6 +91,7 @@ class TextDocument(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     audience: Audience
     collection: Collection = 'legacy_unclassified'
+    job_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
     text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
 
     @field_validator("title")
@@ -105,23 +108,27 @@ class TextDocument(BaseModel):
 
 
 def store_document(path: str | Path, user: User, title: str, audience: str, text: str, filename: str | None,
-                   pages: list[dict] | None = None, collection: Collection = 'legacy_unclassified') -> dict:
+                   pages: list[dict] | None = None, collection: Collection = 'legacy_unclassified',
+                   job_id: str | None = None) -> dict:
     if collection not in ('legacy_unclassified', 'handbook', 'job_description', 'past_hire_patterns'):
         raise ValueError('Unsupported knowledge collection')
     # Historical hire patterns must never become public through their audience.
     if collection == 'past_hire_patterns':
         audience = 'hr'
     with connect(path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        if job_id is not None and not db.execute('SELECT 1 FROM jobs WHERE id = ?', (job_id,)).fetchone():
+            raise HTTPException(status_code=422, detail='Unknown job identifier')
         cursor = db.execute(
-            "INSERT INTO knowledge_documents (title,audience,filename,text,created_by,pages_json,collection) VALUES (?,?,?,?,?,?,?)",
-            (title, audience, filename, text, user.id, json.dumps(pages, ensure_ascii=False) if pages is not None else None, collection),
+            "INSERT INTO knowledge_documents (title,audience,filename,text,created_by,pages_json,collection,job_id) VALUES (?,?,?,?,?,?,?,?)",
+            (title, audience, filename, text, user.id, json.dumps(pages, ensure_ascii=False) if pages is not None else None, collection, job_id),
         )
         db.execute(
             "INSERT INTO knowledge_document_audit (document_id,actor_id,action) VALUES (?,?,'created')",
             (cursor.lastrowid, user.id),
         )
         row = db.execute(
-            "SELECT id,title,audience,collection,filename,created_at FROM knowledge_documents WHERE id=?", (cursor.lastrowid,)
+            "SELECT id,title,audience,collection,job_id,filename,created_at FROM knowledge_documents WHERE id=?", (cursor.lastrowid,)
         ).fetchone()
         result = dict(row)
         if pages is not None:
@@ -137,7 +144,7 @@ def authorized_documents_in_db(db, role: str) -> list[dict]:
         return []
     placeholders = ",".join("?" for _ in allowed)
     rows = db.execute(
-        f"""SELECT id,title,audience,text,pages_json,collection FROM knowledge_documents
+        f"""SELECT id,title,audience,text,pages_json,collection,job_id FROM knowledge_documents
             WHERE active = 1 AND audience IN ({placeholders}) AND
             (collection IN ('legacy_unclassified','handbook','job_description') OR
              (collection = 'past_hire_patterns' AND ? = 'hr')) ORDER BY id""",
@@ -156,7 +163,7 @@ def fetch_authorized_documents(path: str | Path, role: str) -> list[dict]:
 def list_documents(request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         rows = db.execute(
-            "SELECT id,title,audience,collection,filename,created_at,active FROM knowledge_documents ORDER BY id DESC"
+            "SELECT id,title,audience,collection,job_id,filename,created_at,active FROM knowledge_documents ORDER BY id DESC"
         )
         return [{**dict(row), 'active': bool(row['active'])} for row in rows]
 
@@ -175,7 +182,7 @@ def deactivate_document(document_id: int, request: Request, user: HR):
             "INSERT INTO knowledge_document_audit (document_id,actor_id,action) VALUES (?,?,'deactivated')",
             (document_id, user.id),
         )
-        return {'id': row['id'], 'title': row['title'], 'audience': row['audience'], 'collection': row['collection'],
+        return {'id': row['id'], 'title': row['title'], 'audience': row['audience'], 'collection': row['collection'], 'job_id': row['job_id'],
                 'filename': row['filename'], 'created_at': row['created_at'], 'active': False}
 
 
@@ -208,12 +215,13 @@ def set_settings(payload: KnowledgeSettings, request: Request, user: HR):
 @router.post("/documents/text", status_code=201)
 def add_text_document(payload: TextDocument, request: Request, user: HR):
     return store_document(request.app.state.database_path, user, payload.title, payload.audience, payload.text, None,
-                          collection=payload.collection)
+                          collection=payload.collection, job_id=payload.job_id)
 
 
 @router.post("/documents", status_code=201)
 async def add_document(request: Request, user: HR, title: str, audience: Audience, filename: str,
-                       collection: Collection = 'legacy_unclassified'):
+                       collection: Collection = 'legacy_unclassified',
+                       job_id: Annotated[str | None, Query(min_length=1, max_length=64, pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$')] = None):
     try:
         title = clean_title(title)
         filename = clean_filename(filename)
@@ -234,4 +242,4 @@ async def add_document(request: Request, user: HR, title: str, audience: Audienc
     except DocumentTextError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
     return store_document(request.app.state.database_path, user, title, audience, text, filename, pages,
-                          collection=collection)
+                          collection=collection, job_id=job_id)

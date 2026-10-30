@@ -8,6 +8,7 @@ paths may opt in experimentally, pending evaluation of relevance and failure beh
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from app.knowledge import ROLE_AUDIENCES, _document_passages, _rank_lexical, _tokens
@@ -25,13 +26,16 @@ def _revision(source) -> str:
 
 
 def search_postgres(path, role, question, embedder, connection, *, min_similarity=0.85, limit=3,
-                    collection=None):
+                    collection=None, job_id=None):
     if role not in ROLE_AUDIENCES:
         raise ValueError('Unsupported role')
     if not isinstance(question, str) or len(question) > 2000:
         raise ValueError('Question must be at most 2000 characters')
     if collection is not None and collection not in COLLECTIONS:
         raise ValueError('Unsupported collection')
+    if job_id is not None and (not isinstance(job_id, str) or len(job_id) > 64 or
+                               not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', job_id)):
+        raise ValueError('Invalid job identifier')
     if not 0 <= min_similarity <= 1 or not 1 <= limit <= 10:
         raise ValueError('Invalid search settings')
     if not question.strip():
@@ -40,11 +44,15 @@ def search_postgres(path, role, question, embedder, connection, *, min_similarit
     # Separate namespaces prevent a filtered refresh from deleting another
     # collection or the backwards-compatible unfiltered index.
     namespace = f'db-{db_id}-{role}' + (f'-collection-{collection}' if collection else '')
+    if job_id is not None:
+        namespace += '-job-' + hashlib.sha256(job_id.encode('utf-8')).hexdigest()[:16]
     index = PostgresVectorIndex(connection, namespace)
     index.initialize()
     documents = fetch_authorized_documents(path, role)
     if collection is not None:
         documents = [doc for doc in documents if doc['collection'] == collection]
+    if job_id is not None:
+        documents = [doc for doc in documents if doc['job_id'] == job_id]
     pairs = [(doc, source) for doc in documents for source in _document_passages(doc)]
     if len(pairs) > MAX_PASSAGES:
         raise ValueError('Too many passages for experimental search')
@@ -85,7 +93,7 @@ def search_postgres(path, role, question, embedder, connection, *, min_similarit
             continue
         result.append({'document_id': document['id'], 'id': source.id, 'title': source.title,
                        'page': source.page, 'text': source.text, 'similarity': similarity,
-                       'collection': document['collection']})
+                       'collection': document['collection'], 'job_id': document['job_id']})
         if len(result) == limit:
             break
     return {'status': 'ok' if result else 'abstain', 'sources': result,

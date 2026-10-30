@@ -89,3 +89,32 @@ def test_past_hire_protection_and_history_after_direct_reclassification(tmp_path
         assert new_answer['sources'] == []
         stored = client.get(f'/api/conversations/{conversation}').json()['messages'][0]
         assert stored['mode'] == 'unavailable' and stored['sources'] == []
+
+
+def test_document_job_metadata_validation_and_legacy_default(tmp_path):
+    path = tmp_path / 'job-documents.sqlite3'
+    with TestClient(create_app(path, seed_demo=True)) as client:
+        login(client, 'hr')
+        payload = {'title': 'Job guide', 'audience': 'public', 'text': 'Synthetic guide',
+                   'collection': 'job_description', 'job_id': 'job-backend-python'}
+        created = client.post('/api/knowledge/documents/text', json=payload)
+        assert created.status_code == 201
+        assert created.json()['job_id'] == 'job-backend-python'
+        assert client.get('/api/knowledge/documents').json()[0]['job_id'] == 'job-backend-python'
+        assert client.post('/api/knowledge/documents/text', json={**payload, 'job_id': 'does-not-exist'}).status_code == 422
+        assert client.post('/api/knowledge/documents/text', json={**payload, 'job_id': 'BAD ID'}).status_code == 422
+        assert client.post('/api/knowledge/documents/text', json={**payload, 'job_id': None}).json()['job_id'] is None
+        doc = Document()
+        doc.add_paragraph('Synthetic job document')
+        buffer = BytesIO()
+        doc.save(buffer)
+        response = client.post('/api/knowledge/documents', params={
+            'title': 'Job file', 'audience': 'public', 'filename': 'job.docx',
+            'job_id': 'job-backend-python',
+        }, content=buffer.getvalue())
+        assert response.status_code == 201 and response.json()['job_id'] == 'job-backend-python'
+        rejected = client.post('/api/knowledge/documents', params={
+            'title': 'Missing job', 'audience': 'public', 'filename': 'job.docx',
+            'job_id': 'does-not-exist',
+        }, content=buffer.getvalue())
+        assert rejected.status_code == 422
