@@ -115,6 +115,60 @@ def test_pg_search_only_embeds_authorized_and_rechecks_revocation(tmp_path, pg_c
     assert answer['sources'] == [] and answer['status'] == 'abstain'
 
 
+def test_collection_filter_limits_model_and_preserves_other_namespaces(tmp_path, pg_connection):
+    np = pytest.importorskip('numpy')
+    from app.db import connect, initialize
+    from app.knowledge_documents import initialize_knowledge_documents
+    from app.postgres_retrieval import search_postgres
+
+    path = tmp_path / 'collections.sqlite3'
+    initialize(path)
+    initialize_knowledge_documents(path)
+    with connect(path) as db:
+        hr = db.execute("INSERT INTO users(username,display_name,role,password_hash) VALUES('hr','HR','hr','x')").lastrowid
+        handbook = db.execute("INSERT INTO knowledge_documents(title,audience,collection,text,created_by) VALUES('Handbook','public','handbook','LEAVE_HANDBOOK',?)", (hr,)).lastrowid
+        job = db.execute("INSERT INTO knowledge_documents(title,audience,collection,text,created_by) VALUES('Job','public','job_description','LEAVE_JOB',?)", (hr,)).lastrowid
+        # Defense against inconsistent audience even if records are tampered with.
+        db.execute("INSERT INTO knowledge_documents(title,audience,collection,text,created_by) VALUES('Private','public','past_hire_patterns','LEAVE_PRIVATE',?)", (hr,))
+
+    class Embedder:
+        def __init__(self, callback=None):
+            self.seen = []
+            self.callback = callback
+
+        def encode(self, texts, *, query):
+            if not query:
+                self.seen.extend(texts)
+                if self.callback:
+                    self.callback()
+                    self.callback = None
+            return np.array([[1.0] + [0.0] * 383 for _ in texts], dtype=np.float32)
+
+    all_docs = search_postgres(path, 'employee', 'leave', Embedder(), pg_connection)
+    assert {s['document_id'] for s in all_docs['sources']} == {handbook, job}
+    all_namespace = pg_connection.execute('SELECT DISTINCT namespace FROM tawzeef_vectors').fetchone()[0]
+    embedder = Embedder()
+    filtered = search_postgres(path, 'employee', 'leave', embedder, pg_connection, collection='handbook')
+    assert [s['document_id'] for s in filtered['sources']] == [handbook]
+    assert filtered['sources'][0]['collection'] == 'handbook'
+    assert embedder.seen == ['LEAVE_HANDBOOK']
+    assert pg_connection.execute('SELECT count(*) FROM tawzeef_vectors WHERE namespace=%s', (all_namespace,)).fetchone()[0] == 2
+    job_only = search_postgres(path, 'employee', 'leave', Embedder(), pg_connection, collection='job_description')
+    assert [s['document_id'] for s in job_only['sources']] == [job]
+    private = Embedder()
+    assert search_postgres(path, 'employee', 'leave', private, pg_connection, collection='past_hire_patterns')['sources'] == []
+    assert private.seen == []
+    with pytest.raises(ValueError):
+        search_postgres(path, 'employee', 'leave', Embedder(), pg_connection, collection='invalid')
+
+    def change_collection():
+        with connect(path) as db:
+            db.execute("UPDATE knowledge_documents SET collection='job_description' WHERE id=?", (handbook,))
+
+    stale = search_postgres(path, 'employee', 'leave', Embedder(change_collection), pg_connection, collection='handbook')
+    assert stale['sources'] == []
+
+
 def test_hybrid_api_uses_session_role_with_real_model_and_postgres(tmp_path, pg_connection, monkeypatch):
     from pathlib import Path
 
@@ -142,6 +196,7 @@ def test_hybrid_api_uses_session_role_with_real_model_and_postgres(tmp_path, pg_
             hr = db.execute("SELECT id FROM users WHERE username='hr'").fetchone()[0]
             db.execute("INSERT INTO knowledge_documents(title,audience,text,created_by) VALUES('Annual leave','public','Employees receive 21 days of annual leave each year.',?)", (hr,))
             db.execute("INSERT INTO knowledge_documents(title,audience,text,created_by) VALUES('Private leave','hr','SECRET HR leave policy: 999 days.',?)", (hr,))
+            db.execute("INSERT INTO knowledge_documents(title,audience,collection,text,created_by) VALUES('Private patterns','public','past_hire_patterns','SECRET HISTORICAL leave notes',?)", (hr,))
         assert client.post('/api/auth/login', json={
             'username': 'candidate', 'password': 'candidate-demo-only',
         }).status_code == 200
@@ -149,6 +204,11 @@ def test_hybrid_api_uses_session_role_with_real_model_and_postgres(tmp_path, pg_
         assert response.status_code == 200
         assert response.json()['sources'][0]['title'] == 'Annual leave'
         assert 'SECRET HR' not in response.text
+        assert client.post(url, json={'question': 'leave', 'collection': 'bad'}).status_code == 422
+        restricted = client.post(url, json={'question': 'leave', 'collection': 'past_hire_patterns'})
+        assert restricted.status_code == 200
+        assert restricted.json()['sources'] == []
+        assert 'SECRET HISTORICAL' not in restricted.text
         monkeypatch.setenv('TAWZEEF_USE_HYBRID_ANSWERS', '1')
         combined = client.post('/api/knowledge/answer', json={
             'question': 'How many days of annual leave do employees get?',

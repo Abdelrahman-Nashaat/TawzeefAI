@@ -20,8 +20,8 @@ The PostgreSQL path (`app/postgres_retrieval.py`) computes local embeddings,
 stores vectors and opaque source identifiers in pgvector, ranks only IDs and
 content revisions authorized by the current SQLite state, combines vector and
 BM25 ranks, and rechecks active sources before returning their text. It rebuilds
-the role-specific index on each search and is bounded to 100 passages. Embeddings
-can persist in PostgreSQL until that index is refreshed, even after a document
+the role- and optional collection-specific index on each search and is bounded to 100 passages. Embeddings
+can persist in PostgreSQL until the corresponding index is refreshed, even after a document
 is disabled; database storage still needs protection. Account revocation is
 checked again before the endpoint returns. This is a local demo, not a general
 guarantee against every concurrent access or leakage scenario.
@@ -49,7 +49,13 @@ To use the PostgreSQL experiment entirely in Docker, run
 `http://127.0.0.1:18000/`. Alternatively, start Docker with
 `start-docker-demo.ps1`, run `start-hybrid-demo.ps1` and open
 `http://127.0.0.1:8000/` for the host version. Have HR add a synthetic policy
-document, then use the experimental button on the knowledge panel. The host
+document, then use the experimental button on the knowledge panel. The optional
+collection selector limits this experimental endpoint to uploaded documents of
+the selected type; omitted selection searches all currently authorized uploaded
+documents. Past-hire patterns remain HR-only regardless of the selector. The
+selector does not filter normal answers, saved conversations, published jobs, or
+bundled fixtures. These logical vector namespaces are not independent physical
+databases and do not supply job-ID or section metadata filters. The host
 and container have separate SQLite databases. The host's regular answer button
 can use Groq if the local key is present; the Docker demo does not enable Groq.
 Do not use real data in either demo. If the database or model is unavailable,

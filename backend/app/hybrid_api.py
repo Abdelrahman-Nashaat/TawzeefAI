@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import User, get_current_user
+from app.knowledge_documents import Collection
 
 router = APIRouter(prefix='/api/knowledge')
 _busy = BoundedSemaphore(1)
@@ -17,6 +18,7 @@ _busy = BoundedSemaphore(1)
 class HybridQuestion(BaseModel):
     model_config = ConfigDict(extra='forbid')
     question: str = Field(min_length=1, max_length=2000)
+    collection: Collection | None = None
 
 
 @lru_cache(maxsize=1)
@@ -69,7 +71,7 @@ def hybrid_question(payload: HybridQuestion, request: Request,
             model = _load_model(directory)
             with psycopg.connect(autocommit=True, connect_timeout=3) as connection:
                 result = search_postgres(request.app.state.database_path, user.role,
-                                         payload.question, model, connection)
+                                         payload.question, model, connection, collection=payload.collection)
         except Exception as exc:
             # Database DSNs, local paths and documents must not be returned.
             raise HTTPException(status_code=503, detail='Experimental hybrid search is unavailable') from exc

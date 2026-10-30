@@ -15,6 +15,7 @@ from app.knowledge_documents import fetch_authorized_documents
 from app.postgres_vectors import PostgresVectorIndex
 
 MAX_PASSAGES = 100
+COLLECTIONS = frozenset(('legacy_unclassified', 'handbook', 'job_description', 'past_hire_patterns'))
 
 
 def _revision(source) -> str:
@@ -23,19 +24,27 @@ def _revision(source) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def search_postgres(path, role, question, embedder, connection, *, min_similarity=0.85, limit=3):
+def search_postgres(path, role, question, embedder, connection, *, min_similarity=0.85, limit=3,
+                    collection=None):
     if role not in ROLE_AUDIENCES:
         raise ValueError('Unsupported role')
     if not isinstance(question, str) or len(question) > 2000:
         raise ValueError('Question must be at most 2000 characters')
+    if collection is not None and collection not in COLLECTIONS:
+        raise ValueError('Unsupported collection')
     if not 0 <= min_similarity <= 1 or not 1 <= limit <= 10:
         raise ValueError('Invalid search settings')
     if not question.strip():
         return {'status': 'abstain', 'sources': []}
     db_id = hashlib.sha256(str(Path(path).resolve()).encode('utf-8')).hexdigest()[:40]
-    index = PostgresVectorIndex(connection, f'db-{db_id}-{role}')
+    # Separate namespaces prevent a filtered refresh from deleting another
+    # collection or the backwards-compatible unfiltered index.
+    namespace = f'db-{db_id}-{role}' + (f'-collection-{collection}' if collection else '')
+    index = PostgresVectorIndex(connection, namespace)
     index.initialize()
     documents = fetch_authorized_documents(path, role)
+    if collection is not None:
+        documents = [doc for doc in documents if doc['collection'] == collection]
     pairs = [(doc, source) for doc in documents for source in _document_passages(doc)]
     if len(pairs) > MAX_PASSAGES:
         raise ValueError('Too many passages for experimental search')
@@ -75,7 +84,8 @@ def search_postgres(path, role, question, embedder, connection, *, min_similarit
         if live.get(document['id']) != document:
             continue
         result.append({'document_id': document['id'], 'id': source.id, 'title': source.title,
-                       'page': source.page, 'text': source.text, 'similarity': similarity})
+                       'page': source.page, 'text': source.text, 'similarity': similarity,
+                       'collection': document['collection']})
         if len(result) == limit:
             break
     return {'status': 'ok' if result else 'abstain', 'sources': result,

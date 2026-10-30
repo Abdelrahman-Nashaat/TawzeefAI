@@ -72,7 +72,7 @@ function showWorkspace(user) {
   document.getElementById("role-description").textContent = view.description;
   document.getElementById("hero-description").textContent = view.hero;
   if (user.role === "candidate" || user.role === "hr") loadRecruitment(user.role);
-  setupKnowledge();
+  setupKnowledge(user.role);
   setupConversations();
   if (user.role === "hr") setupKnowledgeDocuments();
   if (user.role === "candidate" || user.role === "hr") loadOperations(user.role);
@@ -1238,7 +1238,7 @@ function knowledgeSourceLabel(source) {
   return `${source.title} (${source.id})${page}`;
 }
 
-function setupKnowledge() {
+function setupKnowledge(role) {
   const form = document.getElementById("knowledge-form");
   const result = document.getElementById("knowledge-result");
   const submit = form.querySelector("button");
@@ -1248,15 +1248,23 @@ function setupKnowledge() {
     hybridButton = element("button", "outline-button", "تجربة البحث الهجين");
     hybridButton.type = "button";
     hybridButton.disabled = submit.disabled;
-    form.append(element("p", "subtle-note", "تجربة محلية على مستندات السياسات المضافة فقط؛ المقتطفات المرشحة قد لا تدعم السؤال، ولا تمثل إجابة متحققًا منها."), hybridButton);
+    const collectionLabel = element("label", "", "مجموعة المستندات للبحث الهجين التجريبي");
+    const collection = element("select"); collection.id = "hybrid-collection"; collectionLabel.htmlFor = collection.id;
+    const options = [["", "كل المستندات المصرح بها"], ["handbook", "دليل الموظفين والسياسات"],
+      ["job_description", "وصف وظيفة"], ["legacy_unclassified", "غير مصنّف"]];
+    if (role === "hr") options.push(["past_hire_patterns", "أنماط توظيف سابقة — HR فقط"]);
+    for (const [value, label] of options) { const option = element("option", "", label); option.value = value; collection.append(option); }
+    collectionLabel.append(collection);
+    form.append(element("p", "subtle-note", "تجربة محلية على مستندات المعرفة التي أضافها HR فقط؛ لا تشمل الوظائف المنشورة أو العينات. اختيار المجموعة ينطبق على البحث الهجين فقط، وليس الإجابة أو المحادثة العادية. المقتطفات قد لا تدعم السؤال ولا تمثل إجابة متحققًا منها."), collectionLabel, hybridButton);
     hybridButton.addEventListener("click", async () => {
       const question = document.getElementById("knowledge-question").value.trim();
       if (!question) return;
-      submit.disabled = true; hybridButton.disabled = true;
+      submit.disabled = true; hybridButton.disabled = true; collection.disabled = true;
       result.className = "knowledge-result";
       result.replaceChildren(element("p", "", "جاري البحث التجريبي..."));
       try {
-        const answer = await api("/api/knowledge/experimental-hybrid", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) }, { errorMessages: { 429: "البحث مشغول؛ حاول مرة أخرى.", 503: "البحث التجريبي غير متاح؛ تحقق من إعداد النموذج وقاعدة البيانات." } });
+        const payload = { question }; if (collection.value) payload.collection = collection.value;
+        const answer = await api("/api/knowledge/experimental-hybrid", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }, { errorMessages: { 429: "البحث مشغول؛ حاول مرة أخرى.", 503: "البحث التجريبي غير متاح؛ تحقق من إعداد النموذج وقاعدة البيانات." } });
         result.replaceChildren(element("h3", "", "مقتطفات تجريبية"), element("p", "subtle-note", "تحقق من كل مصدر؛ التشابه لا يثبت أن المقتطف يجيب عن السؤال."));
         if (!answer.sources?.length) result.append(element("p", "", "لم يُعثر على مقتطف مناسب في المستندات المضافة."));
         else {
@@ -1270,7 +1278,7 @@ function setupKnowledge() {
         }
       } catch (error) {
         if (!isStale(error) && result.isConnected) result.replaceChildren(element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message));
-      } finally { submit.disabled = false; hybridButton.disabled = false; }
+      } finally { submit.disabled = false; hybridButton.disabled = false; collection.disabled = false; }
     });
   }).catch((error) => { if (!isStale(error)) console.warn("Could not check experimental search availability."); });
   form.addEventListener("submit", async (event) => {
