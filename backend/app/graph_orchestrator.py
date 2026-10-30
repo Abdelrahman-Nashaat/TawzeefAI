@@ -5,8 +5,9 @@ checkpoints contain the review results (including potentially sensitive CV
 evidence), so the database must be protected like the recruitment database.
 The graph can invoke a bounded read-only model agent when explicitly enabled;
 it never sends mail or makes a hiring decision.
-Policy retrieval is metadata-only: neither the question nor search results are
-saved or returned by these endpoints. Use the knowledge endpoint for answers.
+Policy retrieval saves source identifiers and digests only. Answers are rebuilt
+from currently authorized sources on every read; questions and excerpts are not
+stored in checkpoints.
 Old checkpoint payloads are redacted from responses, but may still exist on disk.
 """
 
@@ -15,7 +16,9 @@ import hashlib
 import logging
 import os
 import secrets
+import time
 from contextlib import contextmanager
+from dataclasses import asdict
 from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
@@ -28,8 +31,9 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
 from app.agent import AgentError, run_agent
-from app.auth import User, get_current_user, require_roles
+from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_digest
 from app.blind import redact_resume
+from app.conversations import _authorized_sources, _digest
 from app.db import connect
 from app.knowledge import answer_question
 from app.recruitment import get_application, job_data, score_resume
@@ -121,13 +125,15 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             return {"matching": score}
 
     def policy(state: ReviewState):
-        # The input and result never enter graph state or checkpoints. In
-        # particular, a saved answer cannot outlive access to its sources.
         question = policy_question.strip()
         if not question:
             return {"policy": {"status": "not_requested"}}
-        answer_question(question, "hr", database_path=path, enable_groq=False)
-        return {"policy": {"status": "searched_without_retaining_results"}}
+        answer = answer_question(question, "hr", database_path=path, enable_groq=False)
+        if answer.mode == 'abstain' and not answer.sources:
+            return {"policy": {"status": "abstain"}}
+        return {"policy": {"status": "source_refs_v1", "refs": [
+            {"id": source.id, "digest": _digest(source)} for source in answer.sources
+        ]}}
 
     def scheduler(state: ReviewState):
         return {"scheduling": _current_scheduling(path, state["application_id"])}
@@ -213,7 +219,8 @@ def _review_lock(path: str | Path, thread_id: str):
                 fcntl.flock(file.fileno(), fcntl.LOCK_UN)
 
 
-def _view(snapshot, path: str | Path | None = None) -> dict:
+def _view(snapshot, path: str | Path | None = None, *, request: Request | None = None,
+          user: User | None = None) -> dict:
     state = dict(snapshot.values)
     # Old checkpoints may contain data from a previous version of the graph.
     # Never return their question, answer, or source metadata to a caller.
@@ -225,13 +232,37 @@ def _view(snapshot, path: str | Path | None = None) -> dict:
                 matching[group] = [{"skill": item["skill"], "mentioned": item["mentioned"]}
                                    for item in matching[group]]
         state["matching"] = matching
+    policy = {}
     if "policy" in state:
-        status = state["policy"].get("status")
+        policy = state["policy"] if isinstance(state["policy"], dict) else {}
+        status = policy.get("status")
         state["policy"] = {"status": status if status in {
-            "not_requested", "searched_without_retaining_results"
+            "not_requested", "searched_without_retaining_results", "abstain"
         } else "unavailable"}
     if path is not None and "application_id" in state:
         with connect(path) as db:
+            db.execute('BEGIN')
+            if request is not None and user is not None:
+                token = request.cookies.get(COOKIE_NAME, '')
+                actor = db.execute('''SELECT u.id, u.username, u.role, u.active FROM sessions s
+                    JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.user_id=? AND s.expires_at>?''',
+                    (token_digest(token), user.id, int(time.time()))).fetchone()
+                if actor is None or not actor['active'] or actor['username'] != user.username:
+                    raise HTTPException(status_code=401, detail='Authentication required')
+                if actor['role'] != 'hr':
+                    raise HTTPException(status_code=403, detail='HR access required')
+                if policy.get('status') == 'source_refs_v1':
+                    refs = policy.get('refs')
+                    available = _authorized_sources(db, 'hr')
+                    if (isinstance(refs, list) and 1 <= len(refs) <= 3 and
+                            all(isinstance(ref, dict) and set(ref) == {'id', 'digest'} and
+                                isinstance(ref['id'], str) and ref['id'] in available and
+                                ref['digest'] == _digest(available[ref['id']]) for ref in refs)):
+                        sources = [available[ref['id']] for ref in refs]
+                        state['policy'] = {'status': 'answer',
+                            'answer': '\n\n'.join(f'[{s.id}] {s.text}' for s in sources),
+                            'sources': [asdict(source) for source in sources],
+                            'notice': 'Extractive excerpts; review the source for relevance.'}
             application = get_application(db, state["application_id"])
             state["status"] = {"application_status": application["status"]}
         state["scheduling"] = _current_scheduling(path, state["application_id"])
@@ -260,7 +291,7 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
             config = _config(thread_id)
             graph.invoke({"application_id": payload.application_id}, config)
             authorize()
-            return {"id": thread_id, **_view(graph.get_state(config), path)}
+            return {"id": thread_id, **_view(graph.get_state(config), path, request=request, user=user)}
     except Exception as exc:
         # A start that never returned its ID must not leave inaccessible data.
         try:
@@ -285,7 +316,7 @@ def read_review(thread_id: str, request: Request, user: HR):
     _owner(path, thread_id, user)
     with SqliteSaver.from_conn_string(str(path)) as saver:
         graph = build_review_graph(path, saver)
-        return {"id": thread_id, **_view(graph.get_state(_config(thread_id)), path)}
+        return {"id": thread_id, **_view(graph.get_state(_config(thread_id)), path, request=request, user=user)}
 
 
 @router.post("/{thread_id}/resume")
@@ -299,4 +330,4 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
         if not graph.get_state(config).next:
             raise HTTPException(status_code=409, detail="Review is not awaiting input")
         graph.invoke(Command(resume=payload.reviewed), config)
-        return {"id": thread_id, **_view(graph.get_state(config), path)}
+        return {"id": thread_id, **_view(graph.get_state(config), path, request=request, user=user)}

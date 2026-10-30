@@ -157,6 +157,67 @@ def test_failed_start_removes_owner_and_partial_checkpoints(tmp_path, monkeypatc
             assert db.execute('SELECT count(*) FROM writes').fetchone()[0] == 0
 
 
+def test_graph_policy_rechecks_source_before_first_response(tmp_path, monkeypatch):
+    path = tmp_path / 'policy-race.sqlite3'
+    monkeypatch.delenv('TAWZEEF_ENABLE_GROQ', raising=False)
+    original = orchestrator.answer_question
+    with TestClient(app_with_graph(path)) as client:
+        login(client, 'hr')
+        with connect(path) as db:
+            candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
+            application = db.execute("""INSERT INTO applications(candidate_id,job_id,filename,resume_text)
+                VALUES (?, 'job-backend-python', 'resume.docx', 'synthetic')""", (candidate,)).lastrowid
+        doc = client.post('/api/knowledge/documents/text', json={
+            'title': 'Quasar leave', 'audience': 'hr', 'text': 'Quasar leave is eleven days. private-marker',
+        }).json()
+
+        def revoke(*args, **kwargs):
+            answer = original(*args, **kwargs)
+            assert answer.sources
+            with connect(path) as db:
+                db.execute('UPDATE knowledge_documents SET active=0 WHERE id=?', (doc['id'],))
+            return answer
+
+        monkeypatch.setattr(orchestrator, 'answer_question', revoke)
+        response = client.post('/api/graph-reviews', json={
+            'application_id': application, 'policy_question': 'quasar leave',
+        })
+        assert response.status_code == 201
+        assert response.json()['state']['policy'] == {'status': 'unavailable'}
+        assert 'private-marker' not in response.text
+
+
+def test_graph_policy_remains_available_after_restart_and_is_hidden_on_change(tmp_path, monkeypatch):
+    path = tmp_path / 'policy-restart.sqlite3'
+    monkeypatch.delenv('TAWZEEF_ENABLE_GROQ', raising=False)
+    with TestClient(app_with_graph(path)) as client:
+        login(client, 'hr')
+        with connect(path) as db:
+            candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
+            application = db.execute("""INSERT INTO applications(candidate_id,job_id,filename,resume_text)
+                VALUES (?, 'job-backend-python', 'resume.docx', 'synthetic')""", (candidate,)).lastrowid
+        doc = client.post('/api/knowledge/documents/text', json={
+            'title': 'Quasar leave', 'audience': 'hr', 'text': 'Quasar leave is eleven days. private-marker',
+        }).json()
+        created = client.post('/api/graph-reviews', json={
+            'application_id': application, 'policy_question': 'quasar leave',
+        }).json()
+        assert created['state']['policy']['status'] == 'answer'
+        thread = created['id']
+
+    with TestClient(app_with_graph(path)) as client:
+        login(client, 'hr')
+        restored = client.get(f'/api/graph-reviews/{thread}')
+        assert restored.status_code == 200
+        assert 'private-marker' in restored.json()['state']['policy']['answer']
+        with connect(path) as db:
+            db.execute('UPDATE knowledge_documents SET text=? WHERE id=?', ('Changed policy.', doc['id']))
+        resumed = client.post(f'/api/graph-reviews/{thread}/resume', json={'reviewed': True})
+        assert resumed.status_code == 200
+        assert resumed.json()['state']['policy'] == {'status': 'unavailable'}
+        assert 'private-marker' not in resumed.text
+
+
 def test_concurrent_resume_has_exactly_one_winner(tmp_path, monkeypatch):
     path = tmp_path / 'concurrent.sqlite3'
     with TestClient(app_with_graph(path)) as client:
@@ -299,9 +360,10 @@ def test_graph_review_persists_and_requires_owner_hr(tmp_path):
         assert body['state']['parsed']['sections']['education'] == 'unknown'
         assert 'private-cv-marker' not in str(body)
         assert body['state']['matching']['method']
-        assert body['state']['policy'] == {'status': 'searched_without_retaining_results'}
+        assert body['state']['policy']['status'] == 'answer'
+        assert 'confidential-policy-marker' in body['state']['policy']['answer']
+        assert body['state']['policy']['sources'][0]['title'] == 'Quasar policy'
         assert 'personal-marker' not in str(body)
-        assert 'confidential-policy-marker' not in str(body)
         assert body['state']['status']['application_status'] == 'submitted'
         with SqliteSaver.from_conn_string(str(path)) as saver:
             graph = build_review_graph(path, saver)
@@ -312,7 +374,9 @@ def test_graph_review_persists_and_requires_owner_hr(tmp_path):
             assert 'private-cv-marker' not in str(history)
 
         assert client.post(f"/api/knowledge/documents/{document.json()['id']}/deactivate").status_code == 200
-        assert 'confidential-policy-marker' not in client.get(f'/api/graph-reviews/{thread_id}').text
+        redacted = client.get(f'/api/graph-reviews/{thread_id}')
+        assert redacted.json()['state']['policy'] == {'status': 'unavailable'}
+        assert 'confidential-policy-marker' not in redacted.text
 
         # A live session must not retain HR authorization after the role changes.
         with connect(path) as db:
@@ -338,11 +402,13 @@ def test_graph_review_persists_and_requires_owner_hr(tmp_path):
         assert pending.status_code == 200
         assert pending.json()['awaiting_review'] is True
         assert 'confidential-policy-marker' not in pending.text
+        assert pending.json()['state']['policy'] == {'status': 'unavailable'}
         completed = client.post(f'/api/graph-reviews/{thread_id}/resume', json={'reviewed': True})
         assert completed.status_code == 200, completed.text
         assert completed.json()['state']['reviewed'] is True
         assert completed.json()['awaiting_review'] is False
         assert 'confidential-policy-marker' not in completed.text
+        assert completed.json()['state']['policy'] == {'status': 'unavailable'}
         assert client.post(f'/api/graph-reviews/{thread_id}/resume', json={'reviewed': True}).status_code == 409
         assert client.get(f"/api/applications/{application['id']}").json()['status'] == 'submitted'
         assert client.get('/api/audit').json() == audit_before

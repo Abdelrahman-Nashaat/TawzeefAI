@@ -738,7 +738,7 @@ function setupGraphReview(target, application) {
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
   const question = element("textarea"); question.maxLength = 2000; question.placeholder = "يمكن تركه فارغًا"; questionLabel.append(question);
   const start = element("button", "small-button", "بدء مراجعة المراحل"); start.type = "submit";
-  form.append(questionLabel, element("p", "subtle-note", "إذا أدخلت سؤالًا، تُسجَّل حالة البحث فقط دون السؤال أو نتائج البحث. استخدم قسم المعرفة للحصول على إجابة ومصادرها."), start);
+  form.append(questionLabel, element("p", "subtle-note", "يُعرض مقتطف من المصادر المصرح بها عند إدخال سؤال، ويُعاد فحصها عند تحميل المراجعة. لا يُحفظ نص السؤال في المراجعة."), start);
   const restore = element("form", "decision-form");
   const idLabel = element("label", "", "معرّف مراجعة سابقة لهذا الطلب");
   const idInput = element("input"); idInput.maxLength = 100; idLabel.append(idInput);
@@ -759,8 +759,16 @@ function setupGraphReview(target, application) {
     const parsed = review.state.parsed;
     if (parsed) output.append(element("p", "", parsed.text_available ? "يتوفر نص مستخرج؛ تحليل الأقسام تقديري ويحتاج مراجعة في قسم السيرة المنظمة." : "لا يتوفر نص مستخرج من الملف."));
     if (review.state.matching) { const score = element("div"); renderScore(score, review.state.matching); output.append(score); }
-    const policy = review.state.policy?.status;
-    if (policy) output.append(element("p", "", policy === "searched_without_retaining_results" ? "أُجري بحث محلي في السياسات دون حفظ نتائجه؛ الإجابة والمصادر في قسم المعرفة." : policy === "not_requested" ? "لم يُطلب بحث في السياسات." : "تفاصيل بحث السياسات غير متاحة."));
+    const policy = review.state.policy;
+    if (policy?.status === "answer" && typeof policy.answer === "string" && Array.isArray(policy.sources)) {
+      output.append(element("h4", "", "نتيجة بحث السياسة"), element("p", "subtle-note", "مقتطفات من المصادر؛ تحقق من السياق قبل الاعتماد عليها."), element("p", "", policy.answer));
+      const sources = element("ul", "evidence-list");
+      for (const source of policy.sources) { const item = element("li"); item.append(element("strong", "", knowledgeSourceLabel(source)), element("p", "", source.text)); sources.append(item); }
+      output.append(sources);
+    } else if (policy?.status === "abstain") output.append(element("p", "", "لم يُعثر على مصدر مناسب لسؤال السياسة."));
+    else if (policy?.status === "not_requested") output.append(element("p", "", "لم يُطلب بحث في السياسات."));
+    else if (policy?.status === "searched_without_retaining_results") output.append(element("p", "", "أُجري بحث سابق دون حفظ نتائجه؛ استخدم قسم المعرفة للبحث مجددًا."));
+    else if (policy) output.append(element("p", "", "لم تعد مصادر السياسة متاحة أو تغيرت؛ أعد البحث بعد التحقق من الصلاحيات."));
     const scheduling = review.state.scheduling;
     if (scheduling) {
       output.append(element("p", "", scheduling.eligible ? "الطلب مؤهل لاستعراض المواعيد المحلية. الحجز إجراء منفصل." : "لا توجد أهلية حاليًا لاستعراض مواعيد الحجز للطلب."));
