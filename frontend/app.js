@@ -1283,16 +1283,25 @@ function setupKnowledge(role) {
     for (const [value, label] of options) { const option = element("option", "", label); option.value = value; collection.append(option); }
     collectionLabel.append(collection);
     const job = knowledgeJobSelector("hybrid-job", "جميع الوظائف والمستندات العامة");
-    form.append(element("p", "subtle-note", "تجربة محلية على مستندات المعرفة التي أضافها HR فقط؛ لا تشمل الوظائف المنشورة أو العينات. اختيار المجموعة والوظيفة ينطبق على البحث الهجين فقط، وليس الإجابة أو المحادثة العادية. عند اختيار وظيفة لا تظهر المستندات غير المرتبطة بوظيفة. المقتطفات قد لا تدعم السؤال ولا تمثل إجابة متحققًا منها."), collectionLabel, job.label, hybridButton);
+    const sectionLabel = element("label", "", "اسم القسم (اختياري؛ مطابق تمامًا)");
+    const section = element("input"); section.id = "hybrid-section"; section.type = "text"; section.maxLength = 400;
+    sectionLabel.htmlFor = section.id; sectionLabel.append(section);
+    form.append(element("p", "subtle-note", "تجربة محلية على مستندات المعرفة التي أضافها HR فقط؛ لا تشمل الوظائف المنشورة أو العينات. فلاتر المجموعة والوظيفة والقسم تنطبق على البحث الهجين فقط، وليس الإجابة أو المحادثة العادية. عند اختيار وظيفة لا تظهر المستندات غير المرتبطة بها. تصفية القسم تطابق الاسم تمامًا في ملفات DOCX المرفوعة حديثًا بعناوين Word؛ لا تشمل المصادر بلا أقسام معروفة. المقتطفات قد لا تدعم السؤال ولا تمثل إجابة متحققًا منها."), collectionLabel, job.label, sectionLabel, hybridButton);
     hybridButton.addEventListener("click", async () => {
       const question = document.getElementById("knowledge-question").value.trim();
       if (!question) return;
-      submit.disabled = true; hybridButton.disabled = true; collection.disabled = true;
+      const sectionName = section.value.trim();
+      if (Array.from(sectionName).length > 200) {
+        result.replaceChildren(element("p", "form-error", "اسم القسم يجب ألا يتجاوز 200 حرف."));
+        return;
+      }
+      submit.disabled = true; hybridButton.disabled = true; collection.disabled = true; section.disabled = true;
       result.className = "knowledge-result";
       result.replaceChildren(element("p", "", "جاري البحث التجريبي..."));
       try {
         const payload = { question }; if (collection.value) payload.collection = collection.value;
         if (job.select.value) payload.job_id = job.select.value;
+        if (sectionName) payload.section = sectionName;
         const answer = await api("/api/knowledge/experimental-hybrid", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }, { errorMessages: { 429: "البحث مشغول؛ حاول مرة أخرى.", 503: "البحث التجريبي غير متاح؛ تحقق من إعداد النموذج وقاعدة البيانات." } });
         result.replaceChildren(element("h3", "", "مقتطفات تجريبية"), element("p", "subtle-note", "تحقق من كل مصدر؛ التشابه لا يثبت أن المقتطف يجيب عن السؤال."));
         if (!answer.sources?.length) result.append(element("p", "", "لم يُعثر على مقتطف مناسب في المستندات المضافة."));
@@ -1307,7 +1316,7 @@ function setupKnowledge(role) {
         }
       } catch (error) {
         if (!isStale(error) && result.isConnected) result.replaceChildren(element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message));
-      } finally { submit.disabled = false; hybridButton.disabled = false; collection.disabled = false; }
+      } finally { submit.disabled = false; hybridButton.disabled = false; collection.disabled = false; section.disabled = false; }
     });
   }).catch((error) => { if (!isStale(error)) console.warn("Could not check experimental search availability."); });
   form.addEventListener("submit", async (event) => {

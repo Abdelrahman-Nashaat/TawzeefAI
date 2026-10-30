@@ -6,7 +6,7 @@ from threading import BoundedSemaphore
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.auth import User, get_current_user
 from app.knowledge_documents import Collection
@@ -20,6 +20,16 @@ class HybridQuestion(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     collection: Collection | None = None
     job_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
+    section: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @field_validator('section', mode='before')
+    @classmethod
+    def validate_section(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, str) or any(ord(char) < 32 for char in value):
+            raise ValueError('Invalid section')
+        return value.strip()
 
 
 @lru_cache(maxsize=1)
@@ -73,7 +83,7 @@ def hybrid_question(payload: HybridQuestion, request: Request,
             with psycopg.connect(autocommit=True, connect_timeout=3) as connection:
                 result = search_postgres(request.app.state.database_path, user.role,
                                          payload.question, model, connection, collection=payload.collection,
-                                         job_id=payload.job_id)
+                                         job_id=payload.job_id, section=payload.section)
         except Exception as exc:
             # Database DSNs, local paths and documents must not be returned.
             raise HTTPException(status_code=503, detail='Experimental hybrid search is unavailable') from exc
