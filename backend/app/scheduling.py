@@ -94,6 +94,9 @@ def create_interview(payload: InterviewCreate, request: Request, user: HR):
             raise HTTPException(status_code=404, detail="Application not found")
         if application["status"] not in {"submitted", "advanced"}:
             raise HTTPException(status_code=409, detail="Cannot schedule a finalized application")
+        if db.execute("SELECT 1 FROM interviews WHERE application_id = ? AND status = 'scheduled' LIMIT 1",
+                      (payload.application_id,)).fetchone():
+            raise HTTPException(status_code=409, detail="Application already has an interview")
         conflict = db.execute(
             """SELECT 1 FROM interviews
                WHERE status = 'scheduled' AND start_at < ? AND end_at > ? AND (candidate_id = ? OR interviewer_key = ?)
