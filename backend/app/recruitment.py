@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 import unicodedata
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -11,7 +12,14 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.auth import User, get_current_user, require_owner_or_hr, require_roles
+from app.auth import (
+    COOKIE_NAME,
+    User,
+    get_current_user,
+    require_owner_or_hr,
+    require_roles,
+    token_digest,
+)
 from app.blind import redact_resume
 from app.db import connect
 from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_document_text
@@ -151,6 +159,17 @@ def get_application(db, application_id: int):
     return row
 
 
+def _require_current_role(db, request: Request, user: User, role: str) -> None:
+    """Recheck the authenticated actor inside the write transaction."""
+    actor = db.execute('''SELECT u.username, u.role FROM sessions s JOIN users u ON u.id=s.user_id
+        WHERE s.user_id=? AND s.token_hash=? AND s.expires_at>? AND u.active=1''',
+        (user.id, token_digest(request.cookies.get(COOKIE_NAME, '')), int(time.time()))).fetchone()
+    if actor is None or actor['username'] != user.username:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    if actor['role'] != role:
+        raise HTTPException(status_code=403, detail=f'{role.capitalize()} access required')
+
+
 @router.get("/jobs")
 def list_jobs(request: Request, user: Authenticated):
     with connect(request.app.state.database_path) as db:
@@ -176,6 +195,10 @@ async def apply(request: Request, user: Candidate, job_id: str, filename: str):
     except DocumentTextError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
     with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _require_current_role(db, request, user, 'candidate')
+        if db.execute('SELECT 1 FROM jobs WHERE id = ?', (job_id,)).fetchone() is None:
+            raise HTTPException(status_code=404, detail='Job not found')
         cursor = db.execute(
             "INSERT INTO applications (candidate_id, job_id, filename, resume_text) VALUES (?, ?, ?, ?)",
             (user.id, job_id, filename, text),
@@ -248,6 +271,8 @@ def duplicate_resume_candidates(application_id: int, request: Request, user: HR)
 @router.post("/applications/{application_id}/screen")
 def screen(application_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _require_current_role(db, request, user, 'hr')
         row = get_application(db, application_id)
         job = job_data(db.execute("SELECT * FROM jobs WHERE id = ?", (row["job_id"],)).fetchone())
         score = score_resume(job, row["resume_text"])
@@ -266,6 +291,7 @@ class Decision(BaseModel):
 def decide(application_id: int, payload: Decision, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         db.execute("BEGIN IMMEDIATE")
+        _require_current_role(db, request, user, 'hr')
         application = get_application(db, application_id)
         permitted = {
             "submitted": {"advance", "reject"},
