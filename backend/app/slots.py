@@ -96,12 +96,24 @@ def slot_view(row) -> dict:
     return {key: row[key] for key in ('id', 'start_at', 'end_at', 'interviewer')}
 
 
+def _require_current_role(db, request: Request, user: User, role: str) -> None:
+    """Recheck the requesting session inside the serialized write transaction."""
+    session = db.execute('''SELECT u.username, u.role FROM sessions s JOIN users u ON u.id=s.user_id
+        WHERE s.user_id=? AND s.token_hash=? AND s.expires_at>? AND u.active=1''',
+        (user.id, token_digest(request.cookies.get(COOKIE_NAME, '')), int(time.time()))).fetchone()
+    if session is None or session['username'] != user.username:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    if session['role'] != role:
+        raise HTTPException(status_code=403, detail=f'{role.capitalize()} access required')
+
+
 @router.post('/slots', status_code=201)
 def create_slot(payload: SlotCreate, request: Request, user: HR):
     if payload.start_at <= datetime.now(UTC):
         raise HTTPException(status_code=422, detail='Slot start must be in the future')
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN IMMEDIATE')
+        _require_current_role(db, request, user, 'hr')
         cursor = db.execute(
             'INSERT INTO interview_slots (start_at,end_at,interviewer,interviewer_key,created_by) VALUES (?,?,?,?,?)',
             (utc_text(payload.start_at), utc_text(payload.end_at), payload.interviewer,
@@ -143,6 +155,7 @@ def list_slots(request: Request, user: Authenticated, application_id: int | None
 def book_slot(slot_id: int, payload: BookSlot, request: Request, user: Candidate):
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN IMMEDIATE')
+        _require_current_role(db, request, user, 'candidate')
         application = owned_advanced_application(db, payload.application_id, user)
         slot = db.execute('''SELECT s.*, i.status AS interview_status FROM interview_slots s
             LEFT JOIN interviews i ON i.id = s.interview_id WHERE s.id = ?''', (slot_id,)).fetchone()
@@ -175,13 +188,7 @@ def withdraw_slot(slot_id: int, request: Request, user: HR):
     """Retire an unbooked slot without cancelling an existing interview."""
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN IMMEDIATE')
-        session = db.execute('''SELECT u.role FROM sessions s JOIN users u ON u.id=s.user_id
-            WHERE s.user_id=? AND s.token_hash=? AND s.expires_at>? AND u.active=1''',
-            (user.id, token_digest(request.cookies.get(COOKIE_NAME, '')), int(time.time()))).fetchone()
-        if session is None:
-            raise HTTPException(status_code=401, detail='Authentication required')
-        if session['role'] != 'hr':
-            raise HTTPException(status_code=403, detail='HR access required')
+        _require_current_role(db, request, user, 'hr')
         row = db.execute('''SELECT s.*, i.status AS interview_status FROM interview_slots s
             LEFT JOIN interviews i ON i.id=s.interview_id WHERE s.id=?''', (slot_id,)).fetchone()
         if row is None:
