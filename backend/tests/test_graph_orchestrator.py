@@ -229,6 +229,9 @@ def test_scheduler_respects_cancellations_conflicts_and_application_status(tmp_p
             interview(candidate_other, candidate, 3, 'Someone else', 'scheduled')
             slot(4, 'Dave', interview(other_application, other, 4, 'Dave', 'scheduled'))
             available = slot(5, 'Eve')
+            withdrawn = slot(6, 'Frank')
+
+        assert client.post(f'/api/slots/{withdrawn}/withdraw').status_code == 200
 
         def schedule():
             response = client.post('/api/graph-reviews', json={'application_id': target})
@@ -239,6 +242,9 @@ def test_scheduler_respects_cancellations_conflicts_and_application_status(tmp_p
         result = first['state']['scheduling']
         assert result['eligible'] is True
         assert [entry['id'] for entry in result['available_slots']] == [released, available]
+        assert client.post(f'/api/slots/{available}/withdraw').status_code == 200
+        refreshed = client.get(f"/api/graph-reviews/{first['id']}").json()['state']['scheduling']
+        assert [entry['id'] for entry in refreshed['available_slots']] == [released]
         with connect(path) as db:
             db.execute("UPDATE applications SET status='rejected' WHERE id=?", (target,))
         current = client.get(f"/api/graph-reviews/{first['id']}").json()['state']

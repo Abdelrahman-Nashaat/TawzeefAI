@@ -83,7 +83,7 @@ def _current_scheduling(path: str | Path, application_id: int) -> dict:
                     "notice": "Application already has a scheduled interview."}
         rows = db.execute("""SELECT s.id, s.start_at, s.end_at FROM interview_slots s
             LEFT JOIN interviews linked ON linked.id = s.interview_id
-            WHERE s.start_at > ? AND (s.interview_id IS NULL OR linked.status = 'cancelled')
+            WHERE s.withdrawn = 0 AND s.start_at > ? AND (s.interview_id IS NULL OR linked.status = 'cancelled')
             AND NOT EXISTS (SELECT 1 FROM interviews i WHERE i.status = 'scheduled'
                 AND i.start_at < s.end_at AND i.end_at > s.start_at
                 AND (i.candidate_id = ? OR i.interviewer_key = s.interviewer_key))
