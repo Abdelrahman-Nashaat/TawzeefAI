@@ -1,6 +1,7 @@
 """Local interview appointments; this does not connect an external calendar."""
 
 import json
+import time
 import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.auth import User, get_current_user, require_roles
+from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_digest
 from app.db import connect
 from app.google_outbox import cancellation_block_reason
 
@@ -36,6 +37,11 @@ def initialize_scheduling(path: str | Path) -> None:
             );
             CREATE INDEX IF NOT EXISTS interview_candidate ON interviews(candidate_id, start_at, end_at);
             CREATE INDEX IF NOT EXISTS interview_interviewer ON interviews(interviewer_key, start_at, end_at);
+            CREATE TABLE IF NOT EXISTS interview_completions (
+                interview_id INTEGER PRIMARY KEY REFERENCES interviews(id),
+                recorded_by INTEGER NOT NULL REFERENCES users(id),
+                recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
             """
         )
         columns = {row["name"] for row in db.execute("PRAGMA table_info(interviews)")}
@@ -76,7 +82,46 @@ def utc_text(value: datetime) -> str:
 
 
 def interview_view(row) -> dict:
-    return {key: row[key] for key in ("id", "application_id", "start_at", "end_at", "interviewer", "status", "created_at")}
+    return {**{key: row[key] for key in ("id", "application_id", "start_at", "end_at", "interviewer", "status", "created_at")},
+            "completed": bool(row["completed"]) if "completed" in set(row.keys()) else False}
+
+
+def _require_current_hr(db, request: Request, user: User) -> None:
+    session = db.execute("""SELECT u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id
+        WHERE s.user_id=? AND s.token_hash=? AND s.expires_at>? AND u.active=1""",
+        (user.id, token_digest(request.cookies.get(COOKIE_NAME, '')), int(time.time()))).fetchone()
+    if session is None or session['username'] != user.username:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if session['role'] != 'hr':
+        raise HTTPException(status_code=403, detail="HR access required")
+
+
+@router.post("/interviews/{interview_id}/complete")
+def complete_interview(interview_id: int, request: Request, user: HR):
+    """Record that HR confirms an interview took place; no provider calls occur."""
+    with connect(request.app.state.database_path) as db:
+        db.execute("BEGIN IMMEDIATE")
+        _require_current_hr(db, request, user)
+        row = db.execute("""SELECT i.*, a.status AS application_status FROM interviews i
+            JOIN applications a ON a.id=i.application_id WHERE i.id=?""", (interview_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Interview not found")
+        if row['status'] != 'scheduled' or row['application_status'] not in ('submitted', 'advanced'):
+            raise HTTPException(status_code=409, detail="Interview cannot be marked completed")
+        try:
+            end = datetime.fromisoformat(row['end_at'])
+            if end.tzinfo is None or end.utcoffset() is None or end > datetime.now(UTC):
+                raise ValueError('Interview is not over')
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise HTTPException(status_code=409, detail="Interview end must have passed") from exc
+        if db.execute("SELECT 1 FROM interview_completions WHERE interview_id=?", (interview_id,)).fetchone():
+            raise HTTPException(status_code=409, detail="Interview completion already recorded")
+        db.execute("INSERT INTO interview_completions(interview_id, recorded_by) VALUES (?,?)", (interview_id, user.id))
+        db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,?,?)",
+                   (row['application_id'], user.id, 'interview_completed', json.dumps({'interview_id': interview_id})))
+        updated = db.execute("SELECT *, 1 AS completed FROM interviews WHERE id=?", (interview_id,)).fetchone()
+        _require_current_hr(db, request, user)
+        return interview_view(updated)
 
 
 @router.post("/interviews", status_code=201)
@@ -94,7 +139,8 @@ def create_interview(payload: InterviewCreate, request: Request, user: HR):
             raise HTTPException(status_code=404, detail="Application not found")
         if application["status"] not in {"submitted", "advanced"}:
             raise HTTPException(status_code=409, detail="Cannot schedule a finalized application")
-        if db.execute("SELECT 1 FROM interviews WHERE application_id = ? AND status = 'scheduled' LIMIT 1",
+        if db.execute("""SELECT 1 FROM interviews i WHERE i.application_id = ? AND i.status = 'scheduled'
+                      AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) LIMIT 1""",
                       (payload.application_id,)).fetchone():
             raise HTTPException(status_code=409, detail="Application already has an interview")
         conflict = db.execute(
@@ -143,9 +189,9 @@ def cancel_interview(interview_id: int, request: Request, user: HR):
 def list_interviews(request: Request, user: Authenticated):
     with connect(request.app.state.database_path) as db:
         if user.role == "hr":
-            rows = db.execute("SELECT * FROM interviews ORDER BY start_at, id").fetchall()
+            rows = db.execute("SELECT i.*, EXISTS(SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) AS completed FROM interviews i ORDER BY start_at, id").fetchall()
         elif user.role == "candidate":
-            rows = db.execute("SELECT * FROM interviews WHERE candidate_id = ? ORDER BY start_at, id", (user.id,)).fetchall()
+            rows = db.execute("SELECT i.*, EXISTS(SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) AS completed FROM interviews i WHERE candidate_id = ? ORDER BY start_at, id", (user.id,)).fetchall()
         else:
             raise HTTPException(status_code=403, detail="Access denied")
         return [interview_view(row) for row in rows]

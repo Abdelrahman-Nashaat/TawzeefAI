@@ -143,7 +143,8 @@ def list_slots(request: Request, user: Authenticated, application_id: int | None
         if application_id is None or application_id <= 0:
             raise HTTPException(status_code=422, detail='Application is required')
         application = owned_advanced_application(db, application_id, user)
-        if db.execute("SELECT 1 FROM interviews WHERE application_id = ? AND status = 'scheduled'", (application_id,)).fetchone():
+        if db.execute("""SELECT 1 FROM interviews i WHERE i.application_id = ? AND i.status = 'scheduled'
+                      AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id)""", (application_id,)).fetchone():
             return []
         now = utc_text(datetime.now(UTC))
         rows = db.execute('''SELECT s.* FROM interview_slots s
@@ -169,7 +170,8 @@ def book_slot(slot_id: int, payload: BookSlot, request: Request, user: Candidate
         now = utc_text(datetime.now(UTC))
         if slot['withdrawn'] or slot['start_at'] <= now or slot['interview_status'] == 'scheduled':
             raise HTTPException(status_code=409, detail='Slot is not available')
-        if db.execute("SELECT 1 FROM interviews WHERE application_id = ? AND status = 'scheduled'", (payload.application_id,)).fetchone():
+        if db.execute("""SELECT 1 FROM interviews i WHERE i.application_id = ? AND i.status = 'scheduled'
+                      AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id)""", (payload.application_id,)).fetchone():
             raise HTTPException(status_code=409, detail='Application already has an interview')
         conflict = db.execute('''SELECT 1 FROM interviews WHERE status = 'scheduled'
             AND start_at < ? AND end_at > ? AND (candidate_id = ? OR interviewer_key = ?) LIMIT 1''',

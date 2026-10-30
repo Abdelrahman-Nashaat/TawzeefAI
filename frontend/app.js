@@ -737,7 +737,7 @@ function setupGraphReview(target, application) {
   const form = element("form", "decision-form");
   const intentLabel = element("label", "", "نوع المراجعة");
   const intent = element("select");
-  for (const [value, text] of [["full", "مراجعة شاملة"], ["policy", "سؤال سياسة"], ["scheduling", "المواعيد"], ["status", "حالة الطلب"], ["create_slot", "اقتراح موعد متاح"]]) {
+  for (const [value, text] of [["full", "مراجعة شاملة"], ["adaptive", "خطة مراجعة حسب حالة الطلب"], ["policy", "سؤال سياسة"], ["scheduling", "المواعيد"], ["status", "حالة الطلب"], ["create_slot", "اقتراح موعد متاح"]]) {
     const option = element("option", "", text); option.value = value; intent.append(option);
   }
   intentLabel.append(intent);
@@ -779,6 +779,11 @@ function setupGraphReview(target, application) {
     const plan = element("ol", "evidence-list");
     for (const step of review.state.plan || []) plan.append(element("li", "", labels[step] || step));
     output.append(element("h4", "", "مراحل المراجعة"), plan);
+    if (review.state.intent === "adaptive") {
+      const planSources = { model: "اقترح النموذج الخطة وتحقق الخادم من خطواتها.", deterministic: "استُخدمت خطة محددة حسب حالة الطلب دون نموذج.", deterministic_fallback: "تعذّر استخدام اقتراح النموذج أو لم يجتز التحقق؛ استُخدمت خطة بديلة محددة." };
+      output.append(element("p", "subtle-note", `${planSources[review.state.plan_source] || "مصدر الخطة غير معروف."} المراحل للقراءة فقط وتحتاج مراجعة بشرية.`));
+      if (review.state.plan_stale) output.append(element("p", "form-error", "تغير الطلب أو الوظيفة منذ إعداد الخطة؛ ابدأ مراجعة جديدة."));
+    }
     const parsed = review.state.parsed;
     if (parsed) output.append(element("p", "", parsed.text_available ? "يتوفر نص مستخرج؛ تحليل الأقسام تقديري ويحتاج مراجعة في قسم السيرة المنظمة." : "لا يتوفر نص مستخرج من الملف."));
     if (review.state.matching) { const score = element("div"); renderScore(score, review.state.matching); output.append(score); }
@@ -794,6 +799,7 @@ function setupGraphReview(target, application) {
     else if (policy) output.append(element("p", "", "لم تعد مصادر السياسة متاحة أو تغيرت؛ أعد البحث بعد التحقق من الصلاحيات."));
     const scheduling = review.state.scheduling;
     if (scheduling) {
+      if (scheduling.interview_completed) output.append(element("p", "", "سُجّل إجراء مقابلة سابقة لهذا الطلب."));
       output.append(element("p", "", scheduling.eligible ? "الطلب مؤهل لاستعراض المواعيد المحلية. الحجز إجراء منفصل." : "لا توجد أهلية حاليًا لاستعراض مواعيد الحجز للطلب."));
       if (scheduling.available_slots?.length) {
         const slots = element("ul", "evidence-list");
@@ -845,6 +851,7 @@ function setupGraphReview(target, application) {
     } else if (review.awaiting_review) {
       output.append(element("p", "result-badge", "توقفت المراجعة بانتظار التأكيد البشري."));
       const resume = element("button", "small-button", "أؤكد أنني راجعت النتائج واستكمل المراجعة"); resume.type = "button";
+      if (review.state.intent === "adaptive" && review.state.plan_stale) resume.disabled = true;
       resume.addEventListener("click", async () => {
         resume.disabled = true; start.disabled = true; open.disabled = true; report("جارٍ استكمال المراجعة...");
         try {
@@ -863,7 +870,9 @@ function setupGraphReview(target, application) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); start.disabled = true; open.disabled = true; output.replaceChildren(); report("جارٍ تنفيذ المراحل حتى نقطة المراجعة البشرية...");
     try {
-      const body = { application_id: application.id, intent: intent.value, policy_question: question.value.trim() };
+      const body = { application_id: application.id, intent: intent.value };
+      if (intent.value === "adaptive") body.adaptive_goal = "review_application";
+      else body.policy_question = question.value.trim();
       if (intent.value === "create_slot") {
         const startTime = new Date(slotStart.value), endTime = new Date(slotEnd.value);
         if (!interviewer.value.trim() || Number.isNaN(startTime.valueOf()) || Number.isNaN(endTime.valueOf()) || endTime <= startTime) throw new Error("تحقق من اسم المحاور وأن نهاية الموعد بعد بدايته.");
@@ -913,11 +922,18 @@ function renderApplicationDetail(target, application, role) {
   panel.append(element("h4", "", `تفاصيل الطلب #${application.id}`));
   panel.append(element("p", "", `الحالة: ${statusLabels[application.status] || application.status}`));
   panel.append(element("p", "", `تاريخ التقديم: ${application.created_at}`));
+  let candidateProgress = null;
+  if (role === "candidate") {
+    candidateProgress = element("p", "subtle-note", "جارٍ تحميل مرحلة الطلب...");
+    candidateProgress.setAttribute("aria-live", "polite");
+    panel.append(candidateProgress);
+    loadCandidateProgress(candidateProgress, application.id);
+  }
   if (role === "candidate" && application.status === "advanced") {
     const slotsPanel = element("section", "application-detail");
     slotsPanel.setAttribute("aria-label", "اختيار موعد مقابلة");
     panel.append(slotsPanel);
-    loadCandidateSlots(slotsPanel, application.id);
+    loadCandidateSlots(slotsPanel, application.id, candidateProgress);
   }
   if (role === "hr") {
     panel.append(element("p", "", `الملف: ${application.filename}`));
@@ -1013,15 +1029,28 @@ function renderApplicationDetail(target, application, role) {
   target.replaceChildren(panel);
 }
 
-async function loadCandidateSlots(target, applicationId) {
+async function loadCandidateProgress(target, applicationId) {
+  const labels = { applied: "تم التقديم", screened: "تم فحص الطلب", shortlisted: "تمت الموافقة على الانتقال للمرحلة التالية", interview_scheduled: "تم تسجيل موعد مقابلة", interviewed: "تم تسجيل إجراء المقابلة", hired: "تم التوظيف", rejected: "انتهى الطلب بالرفض" };
+  try {
+    const progress = await api(`/api/workflows/${encodeURIComponent(applicationId)}/progress`);
+    if (target.isConnected) target.textContent = `مرحلة الطلب: ${labels[progress.stage] || "غير متاحة"}`;
+  } catch (error) {
+    if (!isStale(error) && target.isConnected) target.textContent = "تعذّر تحميل مرحلة الطلب. حاول مجددًا.";
+  }
+}
+
+async function loadCandidateSlots(target, applicationId, progressTarget) {
   target.replaceChildren(element("p", "subtle-note", "جاري تحميل المواعيد المتاحة..."));
   try {
     const slots = await api(`/api/slots?${new URLSearchParams({ application_id: applicationId })}`);
     if (!target.isConnected) return;
     target.replaceChildren(
       element("h4", "", "اختيار موعد مقابلة"),
-      element("p", "subtle-note", "الحجز محلي داخل التطبيق فقط؛ لن تُرسل دعوة أو رسالة بريد إلكتروني.")
+      element("p", "subtle-note", "المواعيد المعروضة قد تتغير؛ حدّث القائمة قبل الحجز. الحجز محلي فقط، ولن تُرسل دعوة أو رسالة بريد إلكتروني.")
     );
+    const refresh = element("button", "outline-button", "تحديث المواعيد"); refresh.type = "button";
+    refresh.addEventListener("click", () => loadCandidateSlots(target, applicationId, progressTarget));
+    target.append(refresh);
     if (!Array.isArray(slots)) throw new Error("تعذّر قراءة المواعيد المتاحة.");
     if (!slots.length) target.append(element("p", "empty-note", "لا توجد مواعيد متاحة حاليًا، أو لديك مقابلة مجدولة لهذا الطلب."));
     for (const slot of slots) {
@@ -1036,7 +1065,8 @@ async function loadCandidateSlots(target, applicationId) {
             body: JSON.stringify({ application_id: applicationId })
           });
           if (target.isConnected) {
-            await loadCandidateSlots(target, applicationId);
+            await loadCandidateSlots(target, applicationId, progressTarget);
+            if (progressTarget?.isConnected) await loadCandidateProgress(progressTarget, applicationId);
             announce("تم حجز المقابلة محليًا؛ لن تُرسل رسالة بريد إلكتروني.");
             await loadOperations("candidate");
           }
@@ -1429,7 +1459,7 @@ function setupConversations() {
   sectionNode.setAttribute("aria-label", "محادثاتي المحفوظة");
   const heading = element("div", "section-heading"); heading.append(element("h2", "", "محادثاتي المحفوظة"));
   const panel = element("div", "knowledge-panel");
-  const note = element("p", "subtle-note", "يُحفظ السجل لحسابك ويمكنك الرجوع إليه. كل سؤال يُجاب عنه مستقلًا؛ الأسئلة والإجابات السابقة لا تُرسل كسياق للنموذج. راجع المصادر، ولا ترسل بيانات شخصية غير لازمة.");
+  const note = element("p", "subtle-note", "يُحفظ السجل لحسابك. قد يُستخدم آخر سؤال مؤهل كسياق ويُرسل إلى Groq عند تفعيله، دون إرسال الإجابة السابقة. ابدأ محادثة جديدة عند تغيير الموضوع، وراجع المصادر ولا ترسل بيانات شخصية غير لازمة.");
   const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
   const selectorLabel = element("label", "", "اختر محادثة من سجلك");
   const selector = element("select", "conversation-select"); selectorLabel.append(selector);
@@ -1811,7 +1841,7 @@ function renderInterviews(interviews, role, applications, slots) {
   if (!interviews.length) list.append(element("p", "empty-note", "لا توجد مقابلات مسجلة حتى الآن."));
   for (const interview of interviews) {
     const card = element("article", "job-card");
-    const interviewStatus = interview.status === "scheduled" ? "مجدولة" : interview.status === "cancelled" ? "ملغاة" : "حالة غير معروفة";
+    const interviewStatus = interview.completed ? "تم تسجيل إجرائها" : interview.status === "scheduled" ? "مجدولة" : interview.status === "cancelled" ? "ملغاة" : "حالة غير معروفة";
     card.append(element("h4", "", `مقابلة الطلب #${interview.application_id}`), element("p", "", `من ${displayDate(interview.start_at)} إلى ${displayDate(interview.end_at)}`), element("p", "", `المحاور: ${interview.interviewer}`), element("p", "", `الحالة: ${interviewStatus}`));
     if (interview.status === "scheduled") {
       const calendar = element("button", "outline-button", "تنزيل ملف التقويم"); calendar.type = "button";
@@ -1834,17 +1864,32 @@ function renderInterviews(interviews, role, applications, slots) {
       card.append(calendar);
     }
     if (role === "hr" && interview.status === "scheduled") {
-      const cancel = element("button", "outline-button", "إلغاء الموعد"); cancel.type = "button";
-      cancel.addEventListener("click", async () => {
-        cancel.disabled = true;
-        try {
-          await api(`/api/interviews/${encodeURIComponent(interview.id)}/cancel`, { method: "POST" });
-          if (await loadOperations(role)) operationsMessage("تم إلغاء الموعد المحلي.");
-        } catch (error) {
-          if (!isStale(error)) operationsMessage(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true);
-        } finally { cancel.disabled = false; }
-      });
-      card.append(cancel);
+      if (!interview.completed && new Date(interview.end_at).valueOf() <= Date.now()) {
+        const complete = element("button", "small-button", "تأكيد إجراء المقابلة"); complete.type = "button";
+        complete.addEventListener("click", async () => {
+          complete.disabled = true;
+          try {
+            await api(`/api/interviews/${encodeURIComponent(interview.id)}/complete`, { method: "POST" });
+            if (await loadOperations(role)) operationsMessage("تم تسجيل إجراء المقابلة.");
+          } catch (error) {
+            if (!isStale(error)) operationsMessage(error instanceof TypeError ? "تعذّر الاتصال بالخادم. حدّث القائمة للتحقق من الحالة." : error.message, true);
+          } finally { complete.disabled = false; }
+        });
+        card.append(complete);
+      }
+      if (!interview.completed && new Date(interview.start_at).valueOf() > Date.now()) {
+        const cancel = element("button", "outline-button", "إلغاء الموعد"); cancel.type = "button";
+        cancel.addEventListener("click", async () => {
+          cancel.disabled = true;
+          try {
+            await api(`/api/interviews/${encodeURIComponent(interview.id)}/cancel`, { method: "POST" });
+            if (await loadOperations(role)) operationsMessage("تم إلغاء الموعد المحلي.");
+          } catch (error) {
+            if (!isStale(error)) operationsMessage(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true);
+          } finally { cancel.disabled = false; }
+        });
+        card.append(cancel);
+      }
       setupGoogleDeliveries(card, interview);
     }
     list.append(card);

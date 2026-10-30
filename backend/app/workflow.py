@@ -16,6 +16,7 @@ from app.recruitment import get_application, job_data, score_resume, screening_a
 
 router = APIRouter(prefix="/api/workflows")
 HR = Annotated[User, Depends(require_roles("hr"))]
+Candidate = Annotated[User, Depends(require_roles("candidate"))]
 
 
 def initialize_workflows(path: str | Path) -> None:
@@ -29,7 +30,8 @@ def initialize_workflows(path: str | Path) -> None:
 
 def describe(db, application) -> dict:
     interview = db.execute(
-        "SELECT id, start_at FROM interviews WHERE application_id = ? AND status = 'scheduled' ORDER BY start_at DESC LIMIT 1",
+        """SELECT i.id, i.start_at, EXISTS(SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) AS completed
+           FROM interviews i WHERE i.application_id = ? AND i.status = 'scheduled' ORDER BY i.id DESC LIMIT 1""",
         (application["id"],),
     ).fetchone()
     screened = application["score_json"] is not None
@@ -52,7 +54,7 @@ def describe(db, application) -> dict:
         "application_id": application["id"],
         "status": status,
         "screened": screened,
-        "interview": dict(interview) if interview else None,
+        "interview": {**dict(interview), "completed": bool(interview['completed'])} if interview else None,
         "next_step": next_step,
         "last_step": saved["last_step"] if saved else None,
         "updated_at": saved["updated_at"] if saved else None,
@@ -65,6 +67,33 @@ def describe(db, application) -> dict:
 def workflow_status(application_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         return describe(db, get_application(db, application_id))
+
+
+@router.get("/{application_id}/progress")
+def candidate_progress(application_id: int, request: Request, user: Candidate):
+    """Expose only the owner's current stage, never HR notes or assessment."""
+    with connect(request.app.state.database_path) as db:
+        db.execute("BEGIN")
+        application = db.execute("SELECT id,status,score_json FROM applications WHERE id=? AND candidate_id=?",
+                                 (application_id, user.id)).fetchone()
+        if application is None:
+            raise HTTPException(status_code=404, detail="Application not found")
+        status = application['status']
+        if status in ('hired', 'rejected'):
+            stage = status
+        else:
+            interview = db.execute("""SELECT i.id, EXISTS(SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) AS completed
+                FROM interviews i WHERE i.application_id=? AND i.status='scheduled' ORDER BY i.id DESC LIMIT 1""",
+                (application_id,)).fetchone()
+            if interview:
+                stage = 'interviewed' if interview['completed'] else 'interview_scheduled'
+            elif status == 'advanced':
+                stage = 'shortlisted'
+            elif application['score_json'] is not None:
+                stage = 'screened'
+            else:
+                stage = 'applied'
+        return {'application_id': application_id, 'stage': stage}
 
 
 @router.post("/{application_id}/run")

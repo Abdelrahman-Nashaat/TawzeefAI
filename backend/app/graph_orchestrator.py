@@ -31,6 +31,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field, model_validator
 
+from app.adaptive_planner import context_for, make_plan
 from app.agent import AgentError, run_agent
 from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_digest
 from app.blind import redact_resume
@@ -50,8 +51,17 @@ logger = logging.getLogger(__name__)
 class ReviewRequest(BaseModel):
     application_id: int = Field(gt=0)
     policy_question: str = Field(default="", max_length=2000)
-    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot'] = 'full'
+    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'adaptive'] = 'full'
     slot: SlotCreate | None = None
+    adaptive_goal: Literal['review_application'] | None = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def restrict_adaptive_input(cls, data):
+        if (isinstance(data, dict) and data.get('intent') == 'adaptive' and
+                set(data) - {'application_id', 'intent', 'adaptive_goal'}):
+            raise ValueError('Adaptive review accepts no tools, identity overrides, or extra fields')
+        return data
 
     @model_validator(mode='after')
     def check_policy_question(self):
@@ -63,6 +73,8 @@ class ReviewRequest(BaseModel):
             raise ValueError('Slot details are required only for create_slot')
         if self.intent == 'create_slot' and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
+        if (self.intent == 'adaptive') != (self.adaptive_goal is not None):
+            raise ValueError('Adaptive goal is required only for adaptive review')
         return self
 
 
@@ -86,6 +98,10 @@ class ReviewState(TypedDict, total=False):
     operation_id: str
     action_proposal: dict
     action_result: dict
+    adaptive_goal: str
+    plan_source: str
+    plan_context: dict
+    context_digest: str
 
 
 class _AtomicResumeSaver(SqliteSaver):
@@ -134,20 +150,26 @@ def _current_scheduling(path: str | Path, application_id: int) -> dict:
         if application["status"] != "advanced":
             return {"available_slots": [], "eligible": False,
                     "notice": "Application is not eligible for candidate booking."}
-        if db.execute("SELECT 1 FROM interviews WHERE application_id = ? AND status = 'scheduled'",
-                      (application_id,)).fetchone():
-            return {"available_slots": [], "eligible": False,
+        completed = bool(db.execute("""SELECT 1 FROM interviews i JOIN interview_completions c
+                ON c.interview_id=i.id WHERE i.application_id=? LIMIT 1""", (application_id,)).fetchone())
+        active = db.execute("""SELECT 1 FROM interviews i WHERE i.application_id=? AND i.status='scheduled'
+                AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) LIMIT 1""",
+                (application_id,)).fetchone()
+        if active:
+            return {"available_slots": [], "eligible": False, "interview_completed": completed,
                     "notice": "Application already has a scheduled interview."}
         rows = db.execute("""SELECT s.id, s.start_at, s.end_at FROM interview_slots s
             LEFT JOIN interviews linked ON linked.id = s.interview_id
             WHERE s.withdrawn = 0 AND s.start_at > ? AND (s.interview_id IS NULL OR linked.status = 'cancelled')
             AND NOT EXISTS (SELECT 1 FROM interviews i WHERE i.status = 'scheduled'
                 AND i.start_at < s.end_at AND i.end_at > s.start_at
-                AND (i.candidate_id = ? OR i.interviewer_key = s.interviewer_key))
+                AND (i.candidate_id = ? OR i.interviewer_key = s.interviewer_key)
+                AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id))
             ORDER BY s.start_at, s.id LIMIT 10""",
             (utc_text(datetime.now(UTC)), application["candidate_id"])).fetchall()
-    return {"available_slots": [dict(r) for r in rows], "eligible": True,
-            "notice": "Availability is a snapshot; booking remains a separate action."}
+    return {"available_slots": [dict(r) for r in rows], "eligible": True, "interview_completed": completed,
+            "notice": ("A previous interview was completed. Availability is a snapshot; booking remains a separate action."
+                       if completed else "Availability is a snapshot; booking remains a separate action.")}
 
 
 def build_review_graph(path: str | Path, checkpointer, *, policy_question: str = "",
@@ -155,6 +177,19 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
                        action_db=None):
     """Compile a bounded graph around supervised domain operations."""
     def plan(state: ReviewState):
+        if state.get('intent') == 'adaptive':
+            if authorize is None or user is None:
+                raise HTTPException(status_code=403, detail='HR access required')
+            authorize()
+            with connect(path) as db:
+                facts, digest = context_for(db, state['application_id'])
+            steps, source = make_plan(facts, enabled=enable_agent)
+            authorize()
+            with connect(path) as db:
+                if context_for(db, state['application_id'])[1] != digest:
+                    raise HTTPException(status_code=409, detail='Application changed; start a new review')
+            return {'plan': [*steps, 'human_review'], 'plan_source': source,
+                    'plan_context': facts, 'context_digest': digest}
         plans = {
             'full': ['parser', 'matching', 'policy', 'scheduler', 'status', 'agent_review', 'human_review'],
             'policy': ['policy', 'human_review'],
@@ -241,10 +276,12 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             raise HTTPException(status_code=409, detail='Application changed; start a new review')
         slot = SlotCreate.model_validate(proposal['slot'])
         start, end = utc_text(slot.start_at), utc_text(slot.end_at)
-        if action_db.execute("SELECT 1 FROM interviews WHERE status='scheduled' AND application_id=?", (state['application_id'],)).fetchone():
+        if action_db.execute("""SELECT 1 FROM interviews i WHERE i.status='scheduled' AND i.application_id=?
+                AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id)""", (state['application_id'],)).fetchone():
             raise HTTPException(status_code=409, detail='Application already has an interview')
         if action_db.execute("""SELECT 1 FROM interviews WHERE status='scheduled' AND start_at < ? AND end_at > ?
-                AND (candidate_id=? OR interviewer_key=?)""", (end, start, application['candidate_id'], slot.interviewer.casefold())).fetchone():
+                AND (candidate_id=? OR interviewer_key=?) AND NOT EXISTS
+                (SELECT 1 FROM interview_completions c WHERE c.interview_id=interviews.id)""", (end, start, application['candidate_id'], slot.interviewer.casefold())).fetchone():
             raise HTTPException(status_code=409, detail='Candidate or interviewer has a conflicting interview')
         if action_db.execute("""SELECT 1 FROM interview_slots WHERE withdrawn=0 AND start_at < ? AND end_at > ?
                 AND interviewer_key=?""", (end, start, slot.interviewer.casefold())).fetchone():
@@ -265,8 +302,26 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
     nodes = {"plan": plan, "parser": parser, "matching": matching, "policy": policy,
              "scheduler": scheduler, "status": status, "agent_review": agent_review,
              "human_review": human_review, "prepare_slot": prepare_slot, "execute_slot": execute_slot}
+    def guarded(node):
+        def execute(state):
+            if state.get('intent') != 'adaptive':
+                return node(state)
+            if authorize is None:
+                raise HTTPException(status_code=403, detail='HR access required')
+            authorize()
+            with connect(path) as db:
+                if context_for(db, state['application_id'])[1] != state['context_digest']:
+                    raise HTTPException(status_code=409, detail='Application changed; start a new review')
+            result = node(state)
+            authorize()
+            with connect(path) as db:
+                if context_for(db, state['application_id'])[1] != state['context_digest']:
+                    raise HTTPException(status_code=409, detail='Application changed; start a new review')
+            return result
+        return execute
+
     for name, node in nodes.items():
-        builder.add_node(name, node)
+        builder.add_node(name, guarded(node) if name in {'parser', 'matching', 'status', 'scheduler'} else node)
     builder.add_edge(START, 'plan')
     def next_after(name):
         def route(state: ReviewState):
@@ -341,9 +396,12 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     selected = state.get('intent', 'full')
     scoped_fields = {'parsed': 'full', 'matching': 'full', 'agent_review': 'full',
                      'policy': 'policy', 'scheduling': 'scheduling', 'status': 'status'}
-    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot'}:
+    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'adaptive'}:
         selected = 'invalid'
     for field, scope in scoped_fields.items():
+        adaptive_fields = {'parsed': 'parser', 'matching': 'matching', 'scheduling': 'scheduler', 'status': 'status'}
+        if selected == 'adaptive' and adaptive_fields.get(field) in state.get('plan', []):
+            continue
         if selected != 'full' and scope != selected:
             state.pop(field, None)
     # Old checkpoints may contain data from a previous version of the graph.
@@ -388,13 +446,17 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                             'sources': [asdict(source) for source in sources],
                             'notice': 'Extractive excerpts; review the source for relevance.'}
             application = get_application(db, state["application_id"])
+            if selected == 'adaptive':
+                state['plan_stale'] = context_for(db, state['application_id'])[1] != state.get('context_digest')
             state["status"] = {"application_status": application["status"]}
-        if selected in ('full', 'scheduling') and 'scheduler' in state.get('plan', []):
+        if selected in ('full', 'scheduling', 'adaptive') and 'scheduler' in state.get('plan', []):
             state["scheduling"] = _current_scheduling(path, state["application_id"])
         else:
             state.pop('scheduling', None)
-        if selected not in ('full', 'status') or 'status' not in state.get('plan', []):
+        if selected not in ('full', 'status', 'adaptive') or 'status' not in state.get('plan', []):
             state.pop('status', None)
+    if selected == 'adaptive':
+        state.pop('context_digest', None)
     return {"state": state, "awaiting_review": bool(snapshot.next)}
 
 
@@ -419,6 +481,8 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
                                        enable_agent=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1')
             config = _config(thread_id)
             initial = {"application_id": payload.application_id, "intent": payload.intent}
+            if payload.adaptive_goal is not None:
+                initial['adaptive_goal'] = payload.adaptive_goal
             if payload.slot is not None:
                 initial.update(slot=payload.slot.model_dump(mode='json'), operation_id=thread_id)
             graph.invoke(initial, config)
@@ -468,6 +532,9 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             snapshot = graph.get_state(config)
             if not snapshot.next:
                 raise HTTPException(status_code=409, detail="Review is not awaiting input")
+            if (snapshot.values.get('intent') == 'adaptive' and
+                    context_for(db, snapshot.values['application_id'])[1] != snapshot.values.get('context_digest')):
+                raise HTTPException(status_code=409, detail='Application changed; start a new review')
             if snapshot.values.get('intent') == 'create_slot' and payload.reviewed:
                 expected = snapshot.values.get('action_proposal', {}).get('approval_fingerprint', '')
                 if (not expected or not payload.approval_fingerprint or
