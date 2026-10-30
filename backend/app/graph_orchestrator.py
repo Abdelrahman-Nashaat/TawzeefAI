@@ -325,6 +325,12 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
     initialize_graph_reviews(path)
     _owner(path, thread_id, user)
     with _review_lock(path, thread_id), SqliteSaver.from_conn_string(str(path)) as saver:
+        # Authentication and ownership may have changed while acquiring the
+        # lock or opening the checkpointer. Recheck before writing a resume.
+        current = get_current_user(request)
+        if current.id != user.id or current.role != 'hr':
+            raise HTTPException(status_code=403, detail='HR access required')
+        _owner(path, thread_id, current)
         graph = build_review_graph(path, saver)
         config = _config(thread_id)
         if not graph.get_state(config).next:
