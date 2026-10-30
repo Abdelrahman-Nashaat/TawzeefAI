@@ -178,8 +178,16 @@ def add_message(conversation_id: int, payload: MessageCreate, request: Request, 
     path = request.app.state.database_path
     with connect(path) as db:
         _owned(db, conversation_id, user, request)
+    def authorize_sources(sources):
+        with connect(path) as db:
+            db.execute('BEGIN')
+            _owned(db, conversation_id, user, request)
+            available = _authorized_sources(db, user.role)
+            if any(available.get(source.id) != source for source in sources):
+                raise HTTPException(status_code=409, detail='Source access changed; please retry')
     answer = answer_question(payload.question, user.role, database_path=path,
-                             enable_groq=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1')
+                             enable_groq=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1',
+                             authorize_sources=authorize_sources)
     source_records = [{'id': source.id, 'digest': _digest(source)} for source in answer.sources]
     with connect(path) as db:
         db.execute('BEGIN IMMEDIATE')

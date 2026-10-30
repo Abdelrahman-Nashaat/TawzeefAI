@@ -8,6 +8,7 @@ module must not receive role claims straight from an untrusted request.
 
 import json
 import math
+import os
 import re
 import unicodedata
 from collections import Counter
@@ -188,12 +189,13 @@ def answer_question(
     fixture_dir: Path | None = None,
     enable_groq: bool = False,
     database_path: Path | str | None = None,
+    authorize_sources=None,
 ) -> KnowledgeAnswer:
     """Find authorized evidence and optionally ask Groq to summarize it.
 
     Unmatched/empty questions abstain; Groq failure returns extractive evidence.
-    Retrieval is lexical and includes only limited Arabic normalization. Valid
-    citation IDs do not prove that generated claims are factually grounded.
+    Optional hybrid candidates are checked against currently authorized source
+    content before use. Valid citation IDs do not prove factual support.
     """
     if role not in ROLE_AUDIENCES:
         raise ValueError('Unsupported role')
@@ -205,6 +207,22 @@ def answer_question(
     if not terms:
         return KnowledgeAnswer('No answer was found in the accessible sample documents.', [], 'abstain')
 
+    hybrid_rows = []
+    hybrid_notice = None
+    if database_path is not None and os.environ.get('TAWZEEF_USE_HYBRID_ANSWERS') == '1':
+        try:
+            from app.hybrid_api import retrieve_hybrid
+
+            result = retrieve_hybrid(database_path, role, question)
+            if not isinstance(result, dict) or not isinstance(result.get('sources'), list):
+                raise TypeError('Invalid hybrid response')
+            hybrid_rows = result['sources']
+            hybrid_notice = 'Experimental hybrid retrieval; verify the sources.'
+        except Exception:  # noqa: BLE001 - a local search failure falls back to lexical retrieval.
+            hybrid_notice = 'Hybrid retrieval unavailable; using lexical retrieval.'
+
+    # Load sources after the optional search, so a changed or revoked document
+    # cannot be passed to the provider just because it appeared in an old index.
     documents = _documents(
         fixture_dir or DEFAULT_FIXTURES, role,
         include_samples=are_samples_enabled(database_path) if database_path is not None else True,
@@ -230,12 +248,33 @@ def answer_question(
                 documents.append(source)
                 existing_ids.add(source.id)
 
+    by_id = {source.id: source for source in documents}
+    hybrid = []
+    for row in hybrid_rows[:10]:
+        if not isinstance(row, dict) or not isinstance(row.get('id'), str):
+            continue
+        source = by_id.get(row.get('id'))
+        if source is not None and all(row.get(key) == getattr(source, key) for key in ('title', 'text', 'page')):
+            hybrid.append(source)
     ranked = _rank_lexical(terms, documents)
+    # Fuse the ranked candidate lists, retaining lexical jobs and sample
+    # collections that the experimental vector index does not yet cover.
+    lexical = [source for _, source in ranked]
+    combined = []
+    for index in range(max(len(hybrid), len(lexical))):
+        if index < len(hybrid):
+            combined.append(hybrid[index])
+        if index < len(lexical):
+            combined.append(lexical[index])
     # First select the highest-ranked passage from each document, then fill
     # remaining slots with next-best passages. One long source cannot crowd
     # out every other relevant document.
     distinct, repeats, seen = [], [], set()
-    for _, source in ranked:
+    seen_ids = set()
+    for source in combined:
+        if source.id in seen_ids:
+            continue
+        seen_ids.add(source.id)
         match = re.fullmatch(r'(db-doc-[0-9]+)-p[0-9]+', source.id)
         group = match.group(1) if match else source.id
         if group in seen:
@@ -245,10 +284,12 @@ def answer_question(
             distinct.append(source)
     sources = (distinct + repeats)[:3]
     if not sources:
-        return KnowledgeAnswer('No answer was found in the accessible sample documents.', [], 'abstain')
+        return KnowledgeAnswer('No answer was found in the accessible sample documents.', [], 'abstain', hybrid_notice)
 
     extractive = '\n\n'.join(f'[{s.id}] {s.text}' for s in sources)
     if enable_groq:
+        if authorize_sources is not None:
+            authorize_sources(sources)
         try:
             answer = generate_with_groq(question, [
                 {'id': s.id, 'title': s.title, 'text': s.text[:4000]} for s in sources
@@ -256,12 +297,12 @@ def answer_question(
             if not _has_valid_citations(answer, sources):
                 return KnowledgeAnswer(
                     extractive, sources, 'extractive',
-                    'AI citations could not be verified; showing source excerpts.',
+                    ' '.join(filter(None, [hybrid_notice, 'AI citations could not be verified; showing source excerpts.'])),
                 )
             return KnowledgeAnswer(
                 answer, sources, 'groq',
-                'AI-generated; valid citation IDs do not establish factual accuracy. Verify the sources.',
+                ' '.join(filter(None, [hybrid_notice, 'AI-generated; valid citation IDs do not establish factual accuracy. Verify the sources.'])),
             )
         except ProviderUnavailable:
-            return KnowledgeAnswer(extractive, sources, 'extractive', 'AI service unavailable; showing source excerpts.')
-    return KnowledgeAnswer(extractive, sources, 'extractive')
+            return KnowledgeAnswer(extractive, sources, 'extractive', ' '.join(filter(None, [hybrid_notice, 'AI service unavailable; showing source excerpts.'])))
+    return KnowledgeAnswer(extractive, sources, 'extractive', hybrid_notice)

@@ -2,7 +2,8 @@
 
 This is an opt-in experiment. A separate endpoint and UI button use PostgreSQL
 and pgvector when explicitly enabled; the normal answer and chat paths remain
-lexical. It retrieves candidate excerpts from HR-uploaded knowledge documents,
+lexical unless separately opted in as described below. The experiment retrieves
+candidate excerpts from HR-uploaded knowledge documents,
 not verified answers, jobs, or the bundled policy fixtures. Similarity is not
 proof of relevance or factual support; the threshold is not production calibrated.
 
@@ -54,6 +55,23 @@ can use Groq if the local key is present; the Docker demo does not enable Groq.
 Do not use real data in either demo. If the database or model is unavailable,
 the experimental endpoint reports an error and normal search remains available.
 
+To additionally test hybrid candidates in the ordinary knowledge answer and
+saved-conversation flows, run the host demo with
+`$env:TAWZEEF_USE_HYBRID_ANSWERS='1'; .\start-hybrid-demo.ps1` from the project
+root. This independent opt-in also requires `TAWZEEF_ENABLE_HYBRID=1`, the
+local model, and PostgreSQL configured by that script. Unset the variable after
+the test with `Remove-Item Env:TAWZEEF_USE_HYBRID_ANSWERS`. Ordinary answers
+then interleave the experimental document candidates with lexical results,
+including job and sample sources, and recheck each candidate against current
+authorized source content. Session and source permissions are rechecked before
+source excerpts are sent to the provider and again before returning or
+storing it. A failed or busy hybrid search falls back to lexical search with a
+notice. There remains a race after the last check and before a provider call;
+these controls do not eliminate all disclosure risk. The hybrid index still
+covers uploaded documents only, not all three capstone collections, and it does
+not have a separate reranking model. Do not infer answer accuracy from citations
+or from similarity scores.
+
 ## Evaluation
 
 ```powershell
@@ -64,7 +82,7 @@ uv run --extra semantic pytest tests/test_semantic_experiment.py -q
 
 The SQLite benchmark uses nine synthetic development questions, including three
 unanswerable questions, and reports three diagnostic thresholds. It is far too
-small to choose a threshold or prove accuracy. Before integration, use a
+small to choose a threshold or prove accuracy. Before relying on this integration, use a
 separate labeled Arabic/English set, test false returns and missing evidence,
 validate page citations, audit authorization and revocation, measure resource
 use at realistic corpus sizes, and review the results independently.

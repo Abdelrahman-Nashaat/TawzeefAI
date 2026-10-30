@@ -183,29 +183,29 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
 
     @application.post("/api/knowledge/answer")
     def knowledge_answer(payload: KnowledgeQuestion, request: Request, user: Annotated[User, Depends(get_current_user)]):
+        def authorize_sources(sources):
+            with connect(path) as db:
+                db.execute('BEGIN')
+                token = request.cookies.get(COOKIE_NAME, '')
+                actor = db.execute('''SELECT u.id, u.username, u.role FROM sessions s
+                    JOIN users u ON u.id=s.user_id
+                    WHERE s.token_hash=? AND s.expires_at>? AND u.active=1''',
+                    (token_digest(token), int(time.time()))).fetchone()
+                if actor is None or actor['id'] != user.id or actor['username'] != user.username:
+                    raise HTTPException(status_code=401, detail='Authentication required')
+                if actor['role'] != user.role:
+                    raise HTTPException(status_code=409, detail='Access changed; please retry')
+                available = _authorized_sources(db, actor['role'])
+                if any(available.get(source.id) != source for source in sources):
+                    raise HTTPException(status_code=409, detail='Source access changed; please retry')
+
         answer = answer_question(
-            payload.question,
-            user.role,
-            database_path=path,
+            payload.question, user.role, database_path=path,
             enable_groq=os.environ.get("TAWZEEF_ENABLE_GROQ") == "1",
+            authorize_sources=authorize_sources,
         )
-        # The provider can take time. Recheck the live session and every exact
-        # passage before returning either a generated or an extractive answer.
-        with connect(path) as db:
-            db.execute('BEGIN')
-            token = request.cookies.get(COOKIE_NAME, '')
-            actor = db.execute('''SELECT u.id, u.username, u.role FROM sessions s
-                JOIN users u ON u.id=s.user_id
-                WHERE s.token_hash=? AND s.expires_at>? AND u.active=1''',
-                (token_digest(token), int(time.time()))).fetchone()
-            if actor is None or actor['id'] != user.id or actor['username'] != user.username:
-                raise HTTPException(status_code=401, detail='Authentication required')
-            if actor['role'] != user.role:
-                raise HTTPException(status_code=409, detail='Access changed; please retry')
-            available = _authorized_sources(db, actor['role'])
-            if any(available.get(source.id) != source for source in answer.sources):
-                raise HTTPException(status_code=409, detail='Source access changed; please retry')
-            return asdict(answer)
+        authorize_sources(answer.sources)
+        return asdict(answer)
 
     @application.post("/api/agent/{application_id}/review")
     def agent_review(application_id: int, request: Request, user: Annotated[User, Depends(get_current_user)]):

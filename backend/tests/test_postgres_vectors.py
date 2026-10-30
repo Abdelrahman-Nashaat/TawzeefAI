@@ -149,6 +149,14 @@ def test_hybrid_api_uses_session_role_with_real_model_and_postgres(tmp_path, pg_
         assert response.status_code == 200
         assert response.json()['sources'][0]['title'] == 'Annual leave'
         assert 'SECRET HR' not in response.text
+        monkeypatch.setenv('TAWZEEF_USE_HYBRID_ANSWERS', '1')
+        combined = client.post('/api/knowledge/answer', json={
+            'question': 'How many days of annual leave do employees get?',
+        })
+        assert combined.status_code == 200
+        assert any(source['title'] == 'Annual leave' for source in combined.json()['sources'])
+        assert 'hybrid' in combined.json()['notice'].lower()
+        assert 'SECRET HR' not in combined.text
         monkeypatch.setenv('PGPORT', '1')
         unavailable = client.post(url, json={'question': 'How many days of annual leave do employees get?'})
         assert unavailable.status_code == 503

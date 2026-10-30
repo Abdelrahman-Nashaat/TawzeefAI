@@ -33,6 +33,25 @@ def hybrid_status(user: Annotated[User, Depends(get_current_user)]):
             and bool(os.environ.get('TAWZEEF_EMBEDDING_MODEL_DIR'))}
 
 
+def retrieve_hybrid(path, role: str, question: str) -> dict:
+    """Run a bounded hybrid search. Callers must recheck identities and sources."""
+    directory = os.environ.get('TAWZEEF_EMBEDDING_MODEL_DIR', '')
+    if os.environ.get('TAWZEEF_ENABLE_HYBRID') != '1' or not directory:
+        raise RuntimeError('Hybrid search is not configured')
+    if not _busy.acquire(blocking=False):
+        raise RuntimeError('Hybrid search is busy')
+    try:
+        import psycopg
+
+        from app.postgres_retrieval import search_postgres
+
+        model = _load_model(directory)
+        with psycopg.connect(autocommit=True, connect_timeout=3) as connection:
+            return search_postgres(path, role, question, model, connection)
+    finally:
+        _busy.release()
+
+
 @router.post('/experimental-hybrid')
 def hybrid_question(payload: HybridQuestion, request: Request,
                     user: Annotated[User, Depends(get_current_user)]):

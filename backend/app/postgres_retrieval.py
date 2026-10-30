@@ -2,8 +2,8 @@
 
 Only persisted knowledge documents are included here; jobs and fixtures remain
 in the regular lexical search. The server must derive role from its session.
-Returned excerpts are candidates, not verified answers. This is not connected to
-the public API pending evaluation of relevance and failure behavior.
+Returned excerpts are candidates, not verified answers. Public answer and chat
+paths may opt in experimentally, pending evaluation of relevance and failure behavior.
 """
 
 import hashlib
