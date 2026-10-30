@@ -16,9 +16,11 @@ unbound delivery, an interrupted or ambiguous send, and an ambiguous deletion
 remain unresolved. Removing an event is a separate explicit HR operation; it
 does not itself cancel the local interview or notify a recipient.
 
-Before enabling live dispatch, implement and test recovery from interrupted or
-ambiguous delivery, editing or replacing safely rejected drafts, and a clear
-cancellation notification workflow. A sent email is not automatically retracted
+HR can explicitly reprepare a definitely rejected delivery as a new local draft;
+the rejected attempt remains recorded, and sending or correcting the new draft
+requires its current generation. Repreparing does not contact Google. Interrupted
+or ambiguous delivery still needs external reconciliation, and a clear
+cancellation notification workflow remains unfinished. A sent email is not automatically retracted
 or followed by a cancellation notice. Never retry an ambiguous Gmail send
 automatically: the first attempt may have succeeded. Google may send some
 notifications even when an event write requests `sendUpdates=none`.

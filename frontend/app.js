@@ -915,12 +915,18 @@ function renderApplicationDetail(target, application, role) {
     const form = element("form", "decision-form");
     const label = element("label", "", "قرار المراجع البشري");
     const select = element("select");
-    for (const [value, text] of [["", "اختر القرار"], ["advance", "نقل للمرحلة التالية"], ["reject", "رفض الطلب"], ["hire", "توظيف"]]) { const option = element("option", "", text); option.value = value; select.append(option); }
+    const decisions = { submitted: [["advance", "نقل للمرحلة التالية"], ["reject", "رفض الطلب"]], advanced: [["hire", "توظيف"], ["reject", "رفض الطلب"]] };
+    const available = decisions[application.status] || [];
+    for (const [value, text] of [["", "اختر القرار"], ...available]) { const option = element("option", "", text); option.value = value; select.append(option); }
     select.required = true; label.append(select);
     const noteLabel = element("label", "", "ملاحظة القرار");
     const note = element("textarea"); note.maxLength = 1000; note.placeholder = "أضف سبب القرار أو ملاحظة للمراجعة"; noteLabel.append(note);
     const submit = element("button", "small-button", "تسجيل القرار"); submit.type = "submit";
     form.append(label, noteLabel, submit);
+    if (!available.length) {
+      select.disabled = true; note.disabled = true; submit.disabled = true;
+      form.append(element("p", "subtle-note", "لا توجد قرارات متاحة في حالة الطلب الحالية."));
+    }
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (!select.value) return;
@@ -1554,7 +1560,7 @@ function setupGoogleDeliveries(card, interview) {
   function display() {
     list.replaceChildren();
     if (!deliveries.length) list.append(element("p", "empty-note", "لا توجد مسودات لهذا الموعد."));
-    const stateLabels = { pending: "مسودة بانتظار تأكيد الإجراء", sending: "قيد الإرسال أو تحتاج مراجعة بعد انقطاع", confirmed: "قبلت Google الطلب", rejected: "رفضت Google الطلب", uncertain: "النتيجة غير مؤكدة وتحتاج مراجعة" };
+    const stateLabels = { pending: "مسودة بانتظار تأكيد الإجراء", sending: "قيد الإرسال أو تحتاج مراجعة بعد انقطاع", confirmed: "قبلت Google الطلب", rejected: "رُفضت المحاولة", uncertain: "النتيجة غير مؤكدة وتحتاج مراجعة" };
     for (const delivery of deliveries) {
       const entry = element("section", "google-delivery-entry");
       const type = delivery.kind === "calendar" ? "حدث التقويم" : "رسالة التأكيد";
@@ -1602,8 +1608,31 @@ function setupGoogleDeliveries(card, interview) {
         }
       }
       if (delivery.state === "sending" || delivery.state === "uncertain") entry.append(element("p", "form-error", "تحقق من Google ومن سجل العملية؛ لا يمكن إعادة الإرسال تلقائيًا."));
-      if (delivery.state === "rejected") entry.append(element("p", "form-error", "راجع إعدادات Google وسجل العملية؛ لا توجد إعادة إرسال تلقائية."));
+      if (delivery.state === "rejected") {
+        entry.append(element("p", "form-error", "رُفضت المحاولة. راجع الإعدادات؛ يمكنك إعادة تجهيز المسودة محليًا فقط، ثم مراجعتها وتأكيد الإرسال بشكل منفصل."));
+        if (Number.isSafeInteger(delivery.retry_generation) && delivery.retry_generation >= 0) {
+          const confirmRetry = element("input"); confirmRetry.type = "checkbox";
+          const retryLabel = element("label", "admin-checkbox", "راجعت الرفض وأوافق على إعادة تجهيز المسودة دون إرسالها."); retryLabel.prepend(confirmRetry);
+          const retry = element("button", "outline-button", "إعادة تجهيز المسودة"); retry.type = "button";
+          retry.addEventListener("click", () => {
+            if (!confirmRetry.checked) { report("يرجى مراجعة الرفض وتأكيد إعادة التجهيز أولًا.", true); return; }
+            perform(async () => {
+              await api(`/api/google/deliveries/${encodeURIComponent(delivery.id)}/reprepare`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ confirmed: true, expected_generation: delivery.retry_generation })
+              }, { errorMessages: { 409: "تغيرت حالة المسودة؛ راجع السجل وحدّثه قبل إعادة التجهيز." } });
+              return "أُعيد تجهيز المسودة محليًا دون إرسال؛ راجع التفاصيل وأكد الإجراء منفصلًا.";
+            });
+          });
+          entry.append(retryLabel, retry);
+        } else entry.append(element("p", "form-error", "تعذر قراءة إصدار المسودة؛ حدّث السجل قبل إعادة التجهيز."));
+      }
       if (delivery.state === "pending") {
+        if (!Number.isSafeInteger(delivery.retry_generation) || delivery.retry_generation < 0) {
+          entry.append(element("p", "form-error", "تعذر قراءة إصدار المسودة؛ حدّث السجل قبل تعديلها أو تنفيذها."));
+          list.append(entry);
+          continue;
+        }
         if (delivery.kind === "email" && delivery.recipient) {
           const changeForm = element("form", "decision-form");
           const changeLabel = element("label", "", "تصحيح بريد المستلم قبل الإرسال");
@@ -1619,7 +1648,7 @@ function setupGoogleDeliveries(card, interview) {
             perform(async () => {
               await api(`/api/google/deliveries/${encodeURIComponent(delivery.id)}/recipient`, {
                 method: "PATCH", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ confirmed: true, expected_recipient: delivery.recipient, recipient: address })
+                body: JSON.stringify({ confirmed: true, expected_recipient: delivery.recipient, recipient: address, expected_generation: delivery.retry_generation })
               }, { errorMessages: { 409: "تغيرت المسودة أو لم تعد قابلة للتعديل؛ راجع السجل." } });
               return "تم تحديث المستلم؛ راجع المسودة قبل الإرسال.";
             });
@@ -1635,10 +1664,10 @@ function setupGoogleDeliveries(card, interview) {
           perform(async () => {
             const result = await api(`/api/google/deliveries/${encodeURIComponent(delivery.id)}/send`, {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(delivery.kind === "email" ? { confirmed: true, expected_recipient: delivery.recipient } : { confirmed: true })
+              body: JSON.stringify(delivery.kind === "email" ? { confirmed: true, expected_recipient: delivery.recipient, expected_generation: delivery.retry_generation } : { confirmed: true, expected_generation: delivery.retry_generation })
             }, { errorMessages: { 409: "لا يمكن إرسال هذه المسودة في حالتها الحالية؛ راجع سجل العملية.", 503: "تعذر تنفيذ الطلب؛ راجع حالة المسودة وربط Google قبل أي إجراء آخر." } });
             if (result.state === "confirmed") return "قبلت Google الطلب. راجع حالة الحدث أو الرسالة في حساب Google.";
-            if (result.state === "rejected") return "رفضت Google الطلب؛ راجع إعدادات الحساب وسجل العملية.";
+            if (result.state === "rejected") return "رُفضت المحاولة؛ راجع إعدادات الحساب وسجل العملية.";
             return "النتيجة غير مؤكدة؛ تحقق من Google قبل أي إجراء آخر.";
           }, true);
         });

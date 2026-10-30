@@ -58,6 +58,20 @@ def initialize_google_outbox(path: str | Path) -> None:
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         );
+        CREATE TABLE IF NOT EXISTS google_rejected_attempts (
+            id INTEGER PRIMARY KEY,
+            delivery_id INTEGER NOT NULL REFERENCES google_deliveries(id),
+            generation INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            recipient TEXT,
+            event_id TEXT,
+            start_at TEXT NOT NULL,
+            end_at TEXT NOT NULL,
+            rejected_at TEXT NOT NULL,
+            reviewed_by INTEGER NOT NULL REFERENCES users(id),
+            reviewed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            UNIQUE(delivery_id, generation)
+        );
         ''')
         # Backward-compatible migration for databases created before calendar
         # provenance was recorded. Existing rows deliberately remain unbound.
@@ -66,6 +80,8 @@ def initialize_google_outbox(path: str | Path) -> None:
         for name in ('calendar_binding', 'calendar_etag'):
             if name not in columns:
                 db.execute(f'ALTER TABLE google_deliveries ADD COLUMN {name} TEXT')
+        if 'retry_generation' not in columns:
+            db.execute('ALTER TABLE google_deliveries ADD COLUMN retry_generation INTEGER NOT NULL DEFAULT 0 CHECK (retry_generation >= 0)')
 
 
 class Prepare(BaseModel):
@@ -99,17 +115,28 @@ class Confirm(BaseModel):
 class SendConfirm(Confirm):
     # The HR confirmation must name the same address that will be sent to.
     expected_recipient: str | None = Field(default=None, max_length=254)
+    expected_generation: int | None = Field(default=None, strict=True, ge=0)
 
 
 class CorrectRecipient(Confirm):
     expected_recipient: str = Field(max_length=254)
     recipient: str = Field(max_length=254)
+    expected_generation: int | None = Field(default=None, strict=True, ge=0)
 
     @model_validator(mode='after')
     def valid_addresses(self):
         if not _EMAIL.fullmatch(self.expected_recipient) or not _EMAIL.fullmatch(self.recipient):
             raise ValueError('One valid email address is required')
         return self
+
+
+class Reprepare(Confirm):
+    expected_generation: int = Field(strict=True, ge=0)
+
+
+def _check_generation(row, expected: int | None) -> None:
+    if (expected is None and row['retry_generation'] != 0) or (expected is not None and expected != row['retry_generation']):
+        raise HTTPException(status_code=409, detail='Delivery changed; review the current draft')
 
 
 def _actor(db, request: Request, user: User) -> None:
@@ -152,7 +179,7 @@ def _audit(db, application_id: int, actor_id: int, delivery_id: int, kind: str, 
 
 def _public(row) -> dict:
     return {key: row[key] for key in ('id', 'interview_id', 'kind', 'recipient', 'event_id',
-                                       'start_at', 'end_at', 'state', 'provider_id', 'created_at', 'updated_at')}
+                                       'start_at', 'end_at', 'state', 'provider_id', 'created_at', 'updated_at', 'retry_generation')}
 
 
 def cancellation_block_reason(db, interview_id: int) -> str | None:
@@ -182,6 +209,7 @@ def correct_recipient(delivery_id: int, payload: CorrectRecipient, request: Requ
             raise HTTPException(status_code=404, detail='Delivery not found')
         if row['kind'] != 'email' or row['state'] != 'pending' or row['recipient'] != payload.expected_recipient:
             raise HTTPException(status_code=409, detail='Delivery changed or cannot be corrected')
+        _check_generation(row, payload.expected_generation)
         interview = _interview(db, row['interview_id'])
         _eligible(interview)
         if row['start_at'] != interview['start_at'] or row['end_at'] != interview['end_at']:
@@ -189,6 +217,39 @@ def correct_recipient(delivery_id: int, payload: CorrectRecipient, request: Requ
         if payload.recipient != row['recipient']:
             db.execute("UPDATE google_deliveries SET recipient=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?", (payload.recipient, delivery_id))
             _audit(db, row['application_id'], user.id, row['id'], 'email', 'google_recipient_corrected')
+        return _public(db.execute('SELECT * FROM google_deliveries WHERE id=?', (delivery_id,)).fetchone())
+
+
+@router.post('/deliveries/{delivery_id}/reprepare')
+def reprepare_delivery(delivery_id: int, payload: Reprepare, request: Request, user: HR):
+    """Create a new draft only after a definite rejection; never call Google."""
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _actor(db, request, user)
+        row = db.execute('SELECT * FROM google_deliveries WHERE id=?', (delivery_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail='Delivery not found')
+        if row['state'] != 'rejected':
+            raise HTTPException(status_code=409, detail='Only rejected deliveries can be prepared again')
+        _check_generation(row, payload.expected_generation)
+        interview = _interview(db, row['interview_id'])
+        _eligible(interview)
+        if row['start_at'] != interview['start_at'] or row['end_at'] != interview['end_at']:
+            raise HTTPException(status_code=409, detail='Interview time changed; review the delivery')
+        db.execute('''INSERT INTO google_rejected_attempts
+            (delivery_id,generation,kind,recipient,event_id,start_at,end_at,rejected_at,reviewed_by)
+            VALUES (?,?,?,?,?,?,?,?,?)''',
+            (delivery_id,row['retry_generation'],row['kind'],row['recipient'],row['event_id'],
+             row['start_at'],row['end_at'],row['updated_at'],user.id))
+        event_id = uuid.uuid4().hex if row['kind'] == 'calendar' else None
+        updated = db.execute('''UPDATE google_deliveries SET state='pending',event_id=?,provider_id=NULL,
+            calendar_binding=NULL,calendar_etag=NULL,retry_generation=retry_generation+1,
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE id=? AND state='rejected' AND retry_generation=?''',
+            (event_id,delivery_id,payload.expected_generation))
+        if updated.rowcount != 1:
+            raise HTTPException(status_code=409, detail='Delivery changed; review the current draft')
+        _audit(db,row['application_id'],user.id,delivery_id,row['kind'],'google_delivery_reprepared')
         return _public(db.execute('SELECT * FROM google_deliveries WHERE id=?', (delivery_id,)).fetchone())
 
 
@@ -267,6 +328,7 @@ def send_delivery(delivery_id: int, payload: SendConfirm, request: Request, user
             raise HTTPException(status_code=404, detail='Delivery not found')
         if row['state'] != 'pending':
             raise HTTPException(status_code=409, detail='Delivery cannot be sent again automatically')
+        _check_generation(row, payload.expected_generation)
         if row['kind'] == 'email' and payload.expected_recipient != row['recipient']:
             raise HTTPException(status_code=409, detail='Recipient changed or was not reviewed')
         interview = _interview(db, row['interview_id'])

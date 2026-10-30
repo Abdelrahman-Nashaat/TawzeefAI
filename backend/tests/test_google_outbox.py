@@ -37,6 +37,105 @@ def login(client, username):
     assert client.post('/api/auth/login', json={'username': username, 'password': f'{username}-demo-only'}).status_code == 200
 
 
+def test_reprepare_definite_rejection_preserves_history_and_requires_new_review(demo):
+    client, app, path, interview, _ = demo
+    login(client, 'hr')
+    delivery = client.post(f'/api/google/interviews/{interview}/deliveries', json={
+        'kind': 'email', 'recipient': 'old@example.test', 'confirmed': True,
+    }).json()
+    target = f"/api/google/deliveries/{delivery['id']}"
+    calls = []
+    app.state.google_dispatcher = lambda **kw: calls.append(kw) or {'status': 'rejected'}
+    assert client.post(target + '/send', json={'confirmed': True, 'expected_recipient': 'old@example.test'}).json()['state'] == 'rejected'
+    assert client.post(target + '/reprepare', json={'confirmed': False, 'expected_generation': 0}).status_code == 422
+    login(client, 'candidate')
+    assert client.post(target + '/reprepare', json={'confirmed': True, 'expected_generation': 0}).status_code == 403
+    login(client, 'hr')
+    renewed = client.post(target + '/reprepare', json={'confirmed': True, 'expected_generation': 0})
+    assert renewed.status_code == 200
+    assert renewed.json()['state'] == 'pending' and renewed.json()['retry_generation'] == 1
+    assert len(calls) == 1  # Repreparing does not contact Google.
+    assert client.post(target + '/reprepare', json={'confirmed': True, 'expected_generation': 0}).status_code == 409
+    correction = {'confirmed': True, 'expected_recipient': 'old@example.test', 'recipient': 'new@example.test'}
+    assert client.patch(target + '/recipient', json=correction).status_code == 409
+    assert client.patch(target + '/recipient', json={**correction, 'expected_generation': 1}).status_code == 200
+    assert client.post(target + '/send', json={'confirmed': True, 'expected_recipient': 'new@example.test'}).status_code == 409
+    assert client.post(target + '/send', json={'confirmed': True, 'expected_generation': 0, 'expected_recipient': 'new@example.test'}).status_code == 409
+    assert len(calls) == 1
+    with connect(path) as db:
+        record = db.execute('SELECT * FROM google_rejected_attempts WHERE delivery_id=?', (delivery['id'],)).fetchone()
+        assert record['generation'] == 0 and record['recipient'] == 'old@example.test'
+        assert db.execute("SELECT count(*) FROM audit_events WHERE action='google_delivery_reprepared'").fetchone()[0] == 1
+    assert client.post(target + '/send', json={'confirmed': True, 'expected_generation': 1,
+                                               'expected_recipient': 'new@example.test'}).json()['state'] == 'rejected'
+    assert client.post(target + '/reprepare', json={'confirmed': True, 'expected_generation': 0}).status_code == 409
+    assert client.post(target + '/reprepare', json={'confirmed': True, 'expected_generation': 1}).json()['retry_generation'] == 2
+    with connect(path) as db:
+        assert db.execute('SELECT count(*) FROM google_rejected_attempts WHERE delivery_id=?', (delivery['id'],)).fetchone()[0] == 2
+
+
+@pytest.mark.parametrize('state', ['pending', 'sending', 'uncertain', 'confirmed'])
+def test_reprepare_refuses_nonrejected_delivery(demo, state):
+    client, app, path, interview, _ = demo
+    login(client, 'hr')
+    delivery = client.post(f'/api/google/interviews/{interview}/deliveries', json={
+        'kind': 'calendar', 'confirmed': True,
+    }).json()
+    with connect(path) as db:
+        db.execute('UPDATE google_deliveries SET state=? WHERE id=?', (state, delivery['id']))
+    app.state.google_dispatcher = lambda **kw: pytest.fail('must not send')
+    assert client.post(f"/api/google/deliveries/{delivery['id']}/reprepare", json={
+        'confirmed': True, 'expected_generation': 0,
+    }).status_code == 409
+    with connect(path) as db:
+        assert db.execute('SELECT count(*) FROM google_rejected_attempts').fetchone()[0] == 0
+
+
+def test_concurrent_reprepare_claims_only_one_new_draft(demo):
+    client, _, path, interview, _ = demo
+    login(client, 'hr')
+    delivery = client.post(f'/api/google/interviews/{interview}/deliveries', json={
+        'kind': 'calendar', 'confirmed': True,
+    }).json()
+    with connect(path) as db:
+        db.execute("UPDATE google_deliveries SET state='rejected' WHERE id=?", (delivery['id'],))
+    target = f"/api/google/deliveries/{delivery['id']}/reprepare"
+    barrier = threading.Barrier(2)
+    def request():
+        barrier.wait(timeout=5)
+        return client.post(target, json={'confirmed': True, 'expected_generation': 0}).status_code
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(lambda _: request(), range(2))) == [200, 409]
+    with connect(path) as db:
+        assert db.execute('SELECT count(*) FROM google_rejected_attempts').fetchone()[0] == 1
+        row = db.execute('SELECT state,retry_generation,event_id FROM google_deliveries WHERE id=?', (delivery['id'],)).fetchone()
+        assert row['state'] == 'pending' and row['retry_generation'] == 1 and row['event_id'] != delivery['event_id']
+
+
+def test_old_send_cannot_claim_reprepared_generation_after_preflight(demo):
+    client, app, path, interview, _ = demo
+    login(client, 'hr')
+    delivery = client.post(f'/api/google/interviews/{interview}/deliveries', json={
+        'kind': 'email', 'recipient': 'person@example.test', 'confirmed': True,
+    }).json()
+    target = f"/api/google/deliveries/{delivery['id']}"
+    calls = []
+    def preflight(kind):
+        # Simulate a concurrent request which was definitely rejected and then
+        # explicitly reprepared while this request performed its preflight.
+        with connect(path) as db:
+            db.execute("UPDATE google_deliveries SET state='rejected' WHERE id=?", (delivery['id'],))
+        assert client.post(target + '/reprepare', json={'confirmed': True, 'expected_generation': 0}).status_code == 200
+        return lambda **kw: calls.append(kw)
+    app.state.google_preflight = preflight
+    result = client.post(target + '/send', json={'confirmed': True, 'expected_generation': 0,
+                                                'expected_recipient': 'person@example.test'})
+    assert result.status_code == 409 and calls == []
+    with connect(path) as db:
+        row = db.execute('SELECT state,retry_generation FROM google_deliveries WHERE id=?', (delivery['id'],)).fetchone()
+        assert row['state'] == 'pending' and row['retry_generation'] == 1
+
+
 def test_drafts_require_hr_and_confirmation_and_never_send_by_default(demo):
     client, _, path, interview, _ = demo
     endpoint = f'/api/google/interviews/{interview}/deliveries'
