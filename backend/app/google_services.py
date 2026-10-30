@@ -32,6 +32,13 @@ def _times(start: str, end: str) -> tuple[str, str]:
     return tuple(value.astimezone(UTC).isoformat().replace('+00:00', 'Z') for value in (first, last))
 
 
+def _calendar_time_matches(actual: str, expected: str) -> bool:
+    """Match exactly, or allow Google to omit the original fractional second."""
+    observed = datetime.fromisoformat(actual)
+    original = datetime.fromisoformat(expected)
+    return observed == original or (observed.microsecond == 0 and observed == original.replace(microsecond=0))
+
+
 def _post(session, url: str, payload: dict, *, params: dict | None = None,
           expected_id: str | None = None, require_etag: bool = False) -> dict:
     try:
@@ -99,7 +106,8 @@ def remove_calendar_event(session, *, event_id: str, etag: str, start: str, end:
         if (event.get('id') != event_id or event.get('etag') != etag
                 or event.get('summary') != 'TawzeefAI interview'
                 or event.get('status') != 'confirmed' or event.get('visibility') != 'private'
-                or event.get('attendees') or actual_start != start or actual_end != end
+                or event.get('attendees') or not _calendar_time_matches(actual_start, start)
+                or not _calendar_time_matches(actual_end, end)
                 or event['extendedProperties']['private']['tawzeefai_delivery'] != event_id):
             return {'status': 'uncertain'}
     except (requests.RequestException, OSError, TimeoutError, ValueError, TypeError, KeyError):

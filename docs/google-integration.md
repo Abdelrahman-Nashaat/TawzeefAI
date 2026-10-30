@@ -5,7 +5,9 @@ Windows, and provider calls and a durable delivery outbox are covered by tests
 with fake Google responses. An explicitly enabled Windows host can configure a
 live dispatcher using the current Windows user's credentials. A private synthetic
 Calendar event was created and removed with the service adapter on 30 October
-2026. The complete UI-to-provider flow and real Gmail delivery have not yet
+2026. A subsequent synthetic private event without attendees was created and
+removed through the local UI and Google Calendar; Google reported it cancelled.
+Real Gmail delivery has not yet
 been tested end-to-end.
 
 The backend has an experimental, explicit Calendar removal API for newly
