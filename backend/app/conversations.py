@@ -53,6 +53,11 @@ def initialize_conversations(path: str | Path) -> None:
             );
             CREATE INDEX IF NOT EXISTS conversation_messages_owner ON conversation_messages(conversation_id, id);
         ''')
+        columns = {row['name'] for row in db.execute('PRAGMA table_info(conversation_messages)')}
+        if 'context_role' not in columns:
+            # Old messages cannot prove which role authored them; they remain
+            # visible under existing rules but are never used as model context.
+            db.execute('ALTER TABLE conversation_messages ADD COLUMN context_role TEXT')
 
 
 class ConversationCreate(BaseModel):
@@ -148,6 +153,24 @@ def _digest(source: Source) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _context_still_allowed(db, user: User, conversation_id: int, previous: dict) -> bool:
+    row = db.execute('SELECT * FROM conversation_messages WHERE id=? AND conversation_id=?',
+                     (previous['id'], conversation_id)).fetchone()
+    if row is None or any(row[key] != previous[key] for key in ('question', 'sources_json', 'mode', 'context_role')):
+        return False
+    if row['context_role'] != user.role or row['mode'] not in ('extractive', 'groq'):
+        return False
+    visible = _visible_message(row, _authorized_sources(db, user.role))
+    return visible['mode'] in ('extractive', 'groq') and bool(visible['sources'])
+
+
+def _assert_conversation_head(db, conversation_id: int, previous: dict | None) -> None:
+    row = db.execute('SELECT id FROM conversation_messages WHERE conversation_id=? ORDER BY id DESC LIMIT 1',
+                     (conversation_id,)).fetchone()
+    if (row['id'] if row else None) != (previous['id'] if previous else None):
+        raise HTTPException(status_code=409, detail='Conversation changed; please retry')
+
+
 @router.post('', status_code=201)
 def create_conversation(payload: ConversationCreate, request: Request, user: Authenticated):
     with connect(request.app.state.database_path) as db:
@@ -179,21 +202,41 @@ def get_conversation(conversation_id: int, request: Request, user: Authenticated
 def add_message(conversation_id: int, payload: MessageCreate, request: Request, user: Authenticated):
     path = request.app.state.database_path
     with connect(path) as db:
+        db.execute('BEGIN')
         _owned(db, conversation_id, user, request)
+        row = db.execute('SELECT * FROM conversation_messages WHERE conversation_id=? ORDER BY id DESC LIMIT 1',
+                         (conversation_id,)).fetchone()
+        previous = dict(row) if row else None
+        available_context = bool(previous and _context_still_allowed(db, user, conversation_id, previous))
+    limit = min(500, max(0, 1999 - len(payload.question)))
+    previous_question = previous['question'][:limit] if available_context and limit else ''
+    if previous_question:
+        context_notice = 'The previous question was used as context for this search; verify the sources.'
+    elif previous:
+        context_notice = 'Previous context was unavailable or exceeded the limit; this search used only the current question.'
+    else:
+        context_notice = ''
+
     def authorize_sources(sources):
         with connect(path) as db:
             db.execute('BEGIN')
             _owned(db, conversation_id, user, request)
+            _assert_conversation_head(db, conversation_id, previous)
+            if previous_question and not _context_still_allowed(db, user, conversation_id, previous):
+                raise HTTPException(status_code=409, detail='Previous context access changed; please retry')
             available = _authorized_sources(db, user.role)
             if any(available.get(source.id) != source for source in sources):
                 raise HTTPException(status_code=409, detail='Source access changed; please retry')
     answer = answer_question(payload.question, user.role, database_path=path,
                              enable_groq=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1',
-                             authorize_sources=authorize_sources)
+                             authorize_sources=authorize_sources, previous_question=previous_question)
     source_records = [{'id': source.id, 'digest': _digest(source)} for source in answer.sources]
     with connect(path) as db:
         db.execute('BEGIN IMMEDIATE')
         _owned(db, conversation_id, user, request)
+        _assert_conversation_head(db, conversation_id, previous)
+        if previous_question and not _context_still_allowed(db, user, conversation_id, previous):
+            raise HTTPException(status_code=409, detail='Previous context access changed; please retry')
         available = _authorized_sources(db, user.role)
         if (not source_records and answer.mode != 'abstain') or any(
             source['id'] not in available or _digest(available[source['id']]) != source['digest']
@@ -201,7 +244,8 @@ def add_message(conversation_id: int, payload: MessageCreate, request: Request, 
         ):
             raise HTTPException(status_code=409, detail='Source access changed; please retry')
         row = db.execute('''INSERT INTO conversation_messages
-            (conversation_id,question,answer,sources_json,mode,notice) VALUES (?,?,?,?,?,?)
+            (conversation_id,question,answer,sources_json,mode,notice,context_role) VALUES (?,?,?,?,?,?,?)
             RETURNING *''', (conversation_id, payload.question, answer.answer,
-                              json.dumps(source_records), answer.mode, answer.notice)).fetchone()
+                              json.dumps(source_records), answer.mode,
+                              ' '.join(filter(None, (answer.notice, context_notice))) or None, user.role)).fetchone()
         return _visible_message(row, available)

@@ -209,6 +209,7 @@ def answer_question(
     enable_groq: bool = False,
     database_path: Path | str | None = None,
     authorize_sources=None,
+    previous_question: str = '',
 ) -> KnowledgeAnswer:
     """Find authorized evidence and optionally ask Groq to summarize it.
 
@@ -222,7 +223,12 @@ def answer_question(
         raise TypeError('question must be a string')
     if len(question) > 2000:
         raise ValueError('Question exceeds 2000 characters')
-    terms = _tokens(question)
+    if not isinstance(previous_question, str) or len(previous_question) > 500:
+        raise ValueError('Previous question exceeds context limit')
+    if previous_question and len(question) + len(previous_question) + 1 > 2000:
+        raise ValueError('Combined retrieval question exceeds 2000 characters')
+    retrieval_question = question + ('\n' + previous_question if previous_question else '')
+    terms = _tokens(retrieval_question)
     if not terms:
         return KnowledgeAnswer('No answer was found in the accessible sample documents.', [], 'abstain')
 
@@ -232,7 +238,7 @@ def answer_question(
         try:
             from app.hybrid_api import retrieve_hybrid
 
-            result = retrieve_hybrid(database_path, role, question)
+            result = retrieve_hybrid(database_path, role, retrieval_question)
             if not isinstance(result, dict) or not isinstance(result.get('sources'), list):
                 raise TypeError('Invalid hybrid response')
             hybrid_rows = result['sources']
@@ -310,9 +316,13 @@ def answer_question(
         if authorize_sources is not None:
             authorize_sources(sources)
         try:
-            answer = generate_with_groq(question, [
+            passages = [
                 {'id': s.id, 'title': s.title, 'text': s.text[:4000]} for s in sources
-            ])
+            ]
+            if previous_question:
+                answer = generate_with_groq(question, passages, previous_question=previous_question)
+            else:
+                answer = generate_with_groq(question, passages)
             if not _has_valid_citations(answer, sources):
                 return KnowledgeAnswer(
                     extractive, sources, 'extractive',
