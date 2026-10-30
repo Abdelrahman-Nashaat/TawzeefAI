@@ -66,6 +66,7 @@ def compare_job_rubrics(job_id: str, request: Request, user: HR):
                             'criterion_ref': claim.criterion_ref, 'criterion': label,
                             'status': claim.status,
                             'question': f'Can you describe any relevant experience or evidence for: {label}?',
+                            'question_ar': f'هل يمكنك وصف خبرتك أو تقديم مثال ذي صلة بالمعيار التالي: {label}؟',
                         })
         applications.append(item)
 

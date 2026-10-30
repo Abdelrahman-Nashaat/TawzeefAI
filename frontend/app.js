@@ -392,7 +392,7 @@ function renderComparison(target, data) {
     if (item.questions?.length) {
       card.append(element("p", "subtle-note", "أسئلة مقترحة للاستيضاح، تحتاج مراجعة بشرية:"));
       const list = element("ul", "evidence-list");
-      for (const question of item.questions) list.append(element("li", "", `${question.criterion}: ${question.question}`));
+      for (const question of item.questions) list.append(element("li", "", question.question_ar || question.question));
       card.append(list);
     }
     target.append(card);

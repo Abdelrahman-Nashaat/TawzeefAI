@@ -60,6 +60,11 @@ def test_comparison_is_authorized_uncertainty_aware_and_ignores_outdated(tmp_pat
         assert items[ids[3]]['status'] == 'not_assessed'
         assert items[ids[0]]['questions'] == []
         assert len(items[ids[1]]['questions']) == len(items[ids[2]]['questions']) == 5
+        for app_id in (ids[1], ids[2]):
+            for question in items[app_id]['questions']:
+                label = question['criterion']
+                assert question['question_ar'] == f'هل يمكنك وصف خبرتك أو تقديم مثال ذي صلة بالمعيار التالي: {label}؟'
+                assert question['question'] == f'Can you describe any relevant experience or evidence for: {label}?'
         relations = {(r['left_application_id'], r['right_application_id']): r['relation'] for r in result['comparisons']}
         assert relations == {(ids[0], ids[1]): 'left_higher', (ids[0], ids[2]): 'inconclusive',
                              (ids[1], ids[2]): 'inconclusive'}
