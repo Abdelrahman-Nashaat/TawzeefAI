@@ -21,15 +21,14 @@ import time
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
-from itertools import pairwise
 from pathlib import Path
-from typing import Annotated, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.agent import AgentError, run_agent
 from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_digest
@@ -49,6 +48,15 @@ logger = logging.getLogger(__name__)
 class ReviewRequest(BaseModel):
     application_id: int = Field(gt=0)
     policy_question: str = Field(default="", max_length=2000)
+    intent: Literal['full', 'policy', 'scheduling', 'status'] = 'full'
+
+    @model_validator(mode='after')
+    def check_policy_question(self):
+        if self.intent == 'policy' and not self.policy_question.strip():
+            raise ValueError('Policy review requires a question')
+        if self.intent in ('scheduling', 'status') and self.policy_question.strip():
+            raise ValueError('Policy question is not used by this review')
+        return self
 
 
 class ReviewReply(BaseModel):
@@ -57,6 +65,7 @@ class ReviewReply(BaseModel):
 
 class ReviewState(TypedDict, total=False):
     application_id: int
+    intent: str
     plan: list[str]
     parsed: dict
     matching: dict
@@ -133,7 +142,13 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
                        user: User | None = None, authorize=None, enable_agent: bool = False):
     """Compile a bounded graph around existing, read-only domain operations."""
     def plan(state: ReviewState):
-        return {"plan": ["parser", "matching", "policy", "scheduler", "status", "agent_review", "human_review"]}
+        plans = {
+            'full': ['parser', 'matching', 'policy', 'scheduler', 'status', 'agent_review', 'human_review'],
+            'policy': ['policy', 'human_review'],
+            'scheduling': ['scheduler', 'human_review'],
+            'status': ['status', 'human_review'],
+        }
+        return {'plan': plans[state.get('intent', 'full')]}
 
     def parser(state: ReviewState):
         with connect(path) as db:
@@ -194,9 +209,16 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
              "human_review": human_review}
     for name, node in nodes.items():
         builder.add_node(name, node)
-    chain = [START, *nodes, END]
-    for first, second in pairwise(chain):
-        builder.add_edge(first, second)
+    builder.add_edge(START, 'plan')
+    def next_after(name):
+        def route(state: ReviewState):
+            steps = state['plan']
+            return steps[0] if name == 'plan' else steps[steps.index(name) + 1]
+        return route
+    choices = ['parser', 'matching', 'policy', 'scheduler', 'status', 'agent_review', 'human_review']
+    for name in ['plan', *choices[:-1]]:
+        builder.add_conditional_edges(name, next_after(name), choices)
+    builder.add_edge('human_review', END)
     return builder.compile(checkpointer=checkpointer)
 
 
@@ -254,6 +276,16 @@ def _review_lock(path: str | Path, thread_id: str):
 def _view(snapshot, path: str | Path | None = None, *, request: Request | None = None,
           user: User | None = None) -> dict:
     state = dict(snapshot.values)
+    # Old checkpoints lack intent and retain the historical full-review view.
+    # Never expose stale stage data outside an explicitly selected scope.
+    selected = state.get('intent', 'full')
+    scoped_fields = {'parsed': 'full', 'matching': 'full', 'agent_review': 'full',
+                     'policy': 'policy', 'scheduling': 'scheduling', 'status': 'status'}
+    if selected not in {'full', 'policy', 'scheduling', 'status'}:
+        selected = 'invalid'
+    for field, scope in scoped_fields.items():
+        if selected != 'full' and scope != selected:
+            state.pop(field, None)
     # Old checkpoints may contain data from a previous version of the graph.
     # Never return their question, answer, or source metadata to a caller.
     state.pop("policy_question", None)
@@ -297,7 +329,12 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                             'notice': 'Extractive excerpts; review the source for relevance.'}
             application = get_application(db, state["application_id"])
             state["status"] = {"application_status": application["status"]}
-        state["scheduling"] = _current_scheduling(path, state["application_id"])
+        if selected in ('full', 'scheduling') and 'scheduler' in state.get('plan', []):
+            state["scheduling"] = _current_scheduling(path, state["application_id"])
+        else:
+            state.pop('scheduling', None)
+        if selected not in ('full', 'status') or 'status' not in state.get('plan', []):
+            state.pop('status', None)
     return {"state": state, "awaiting_review": bool(snapshot.next)}
 
 
@@ -321,7 +358,7 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
                                        user=user, authorize=authorize,
                                        enable_agent=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1')
             config = _config(thread_id)
-            graph.invoke({"application_id": payload.application_id}, config)
+            graph.invoke({"application_id": payload.application_id, "intent": payload.intent}, config)
             authorize()
             return {"id": thread_id, **_view(graph.get_state(config), path, request=request, user=user)}
     except Exception as exc:

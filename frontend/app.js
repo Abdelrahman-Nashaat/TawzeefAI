@@ -735,10 +735,24 @@ function setupGraphReview(target, application) {
   const note = element("p", "subtle-note", "تجمع المراجعة نتائج أدوات محلية وتتوقف لتأكيد بشري. عند تفعيل Groq يختار المساعد أدوات قراءة محددة؛ لا تتخذ المراجعة قرار توظيف أو تحجز موعدًا أو ترسل دعوة. المواعيد لقطة قد تتغير.");
   const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
   const form = element("form", "decision-form");
+  const intentLabel = element("label", "", "نوع المراجعة");
+  const intent = element("select");
+  for (const [value, text] of [["full", "مراجعة شاملة"], ["policy", "سؤال سياسة"], ["scheduling", "المواعيد"], ["status", "حالة الطلب"]]) {
+    const option = element("option", "", text); option.value = value; intent.append(option);
+  }
+  intentLabel.append(intent);
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
   const question = element("textarea"); question.maxLength = 2000; question.placeholder = "يمكن تركه فارغًا"; questionLabel.append(question);
+  intent.addEventListener("change", () => {
+    const supportsPolicy = intent.value === "full" || intent.value === "policy";
+    questionLabel.hidden = !supportsPolicy; question.disabled = !supportsPolicy;
+    question.required = intent.value === "policy";
+    questionLabel.firstChild.textContent = question.required ? "سؤال السياسة المطلوب للبحث المحلي" : "سؤال سياسة اختياري للبحث المحلي";
+    question.placeholder = question.required ? "اكتب سؤالك عن السياسة" : "يمكن تركه فارغًا";
+    if (!supportsPolicy) question.value = "";
+  });
   const start = element("button", "small-button", "بدء مراجعة المراحل"); start.type = "submit";
-  form.append(questionLabel, element("p", "subtle-note", "يُعرض مقتطف من المصادر المصرح بها عند إدخال سؤال، ويُعاد فحصها عند تحميل المراجعة. لا يُحفظ نص السؤال في المراجعة."), start);
+  form.append(intentLabel, questionLabel, element("p", "subtle-note", "يُعرض مقتطف من المصادر المصرح بها عند إدخال سؤال، ويُعاد فحصها عند تحميل المراجعة. لا يُحفظ نص السؤال في المراجعة."), start);
   const restore = element("form", "decision-form");
   const idLabel = element("label", "", "معرّف مراجعة سابقة لهذا الطلب");
   const idInput = element("input"); idInput.maxLength = 100; idLabel.append(idInput);
@@ -807,7 +821,7 @@ function setupGraphReview(target, application) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); start.disabled = true; open.disabled = true; output.replaceChildren(); report("جارٍ تنفيذ المراحل حتى نقطة المراجعة البشرية...");
     try {
-      const review = await api("/api/graph-reviews", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ application_id: application.id, policy_question: question.value.trim() }) });
+      const review = await api("/api/graph-reviews", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ application_id: application.id, intent: intent.value, policy_question: question.value.trim() }) });
       if (target.isConnected) { question.value = ""; display(review); report(""); }
     } catch (error) { if (!isStale(error) && target.isConnected) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
     finally { start.disabled = false; open.disabled = false; }
