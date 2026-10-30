@@ -1,0 +1,29 @@
+{
+  "version": "fictional-rag-postgres-development-1",
+  "description": "Synthetic diagnostic cases, not a held-out benchmark or real company policy.",
+  "documents": [
+    {"title": "Annual leave EN", "audience": "public", "active": true, "pages": ["Company handbook introduction.", "Employees receive 21 working days of annual leave per calendar year."]},
+    {"title": "الإجازة السنوية", "audience": "public", "active": true, "pages": ["مقدمة الدليل.", "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام."]},
+    {"title": "Remote policy", "audience": "public", "active": true, "pages": ["Employees may work remotely two days each week with manager approval."]},
+    {"title": "Probation", "audience": "public", "active": true, "pages": ["The probation period for a newly hired employee lasts three months."]},
+    {"title": "Interview schedule", "audience": "public", "active": true, "pages": ["Interviews are held at the office on Mondays."]},
+    {"title": "Staff expenses", "audience": "staff", "active": true, "pages": ["STAFF_ONLY_317: Employees must submit receipts to claim travel expense reimbursement."]},
+    {"title": "HR allocation", "audience": "hr", "active": true, "pages": ["HR_ONLY_924: The confidential recruitment allocation is 44000 fictional credits."]},
+    {"title": "Inactive leave", "audience": "public", "active": false, "pages": ["INACTIVE_ONLY_615: Old annual leave was 99 days."]}
+  ],
+  "cases": [
+    {"id": "en-leave", "role": "candidate", "language": "en", "question": "How many annual leave days do employees receive?", "expected": {"title": "Annual leave EN", "page": 2}},
+    {"id": "ar-leave", "role": "candidate", "language": "ar", "question": "كم عدد أيام الإجازة السنوية للموظفين؟", "expected": {"title": "الإجازة السنوية", "page": 2}},
+    {"id": "en-remote", "role": "employee", "language": "en", "question": "How many days each week can employees work remotely?", "expected": {"title": "Remote policy", "page": 1}},
+    {"id": "en-interview", "role": "candidate", "language": "en", "question": "On which day do interviews take place?", "expected": {"title": "Interview schedule", "page": 1}},
+    {"id": "ar-probation", "role": "employee", "language": "ar", "question": "ما مدة فترة التجربة للموظف الجديد؟", "expected": {"title": "Probation", "page": 1}},
+    {"id": "staff-expense", "role": "employee", "language": "en", "question": "How do employees claim travel expense reimbursement?", "expected": {"title": "Staff expenses", "page": 1}},
+    {"id": "hr-allocation", "role": "hr", "language": "en", "question": "What is the confidential recruitment allocation?", "expected": {"title": "HR allocation", "page": 1}},
+    {"id": "candidate-staff-restricted", "role": "candidate", "language": "en", "question": "What is the travel expense reimbursement process?", "expected": null},
+    {"id": "employee-hr-restricted", "role": "employee", "language": "en", "question": "What is the confidential recruitment allocation?", "expected": null},
+    {"id": "candidate-hr-restricted", "role": "candidate", "language": "ar", "question": "ما ميزانية التوظيف السرية؟", "expected": null},
+    {"id": "en-no-parental-policy", "role": "candidate", "language": "en", "question": "How long is parental leave?", "expected": null},
+    {"id": "ar-no-annual-bonus", "role": "employee", "language": "ar", "question": "ما سياسة المكافآت السنوية؟", "expected": null},
+    {"id": "en-no-health-premium", "role": "hr", "language": "en", "question": "How much is the monthly health insurance premium?", "expected": null}
+  ]
+}
