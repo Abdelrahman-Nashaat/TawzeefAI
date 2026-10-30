@@ -97,7 +97,10 @@ WORK_CONTEXT = re.compile(
 
 def score_resume(job: dict, text: str) -> dict:
     blind = redact_resume(text)
-    segments = [normalize(part) for part in re.split(r"[\n.!?;؛]+", blind.text) if part.strip()]
+    # Keep semicolon-separated lists together so a preceding negation applies
+    # conservatively to every item. A dot inside Node.js or .NET is not a
+    # sentence boundary; split dots only when followed by whitespace or EOF.
+    segments = [normalize(part) for part in re.split(r"[\n!?]+|\.+(?=\s|$)", blind.text) if part.strip()]
     usable = [segment for segment in segments if not UNSAFE_CONTEXT.search(segment)]
 
     def assess(skill: str) -> dict:

@@ -1,7 +1,7 @@
-import sqlite3
 import json
-from hashlib import sha256
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
 from io import BytesIO
 
 import pytest
@@ -120,6 +120,25 @@ def test_negated_and_instructional_mentions_are_not_evidence():
     mixed = score_resume(job, "Built Python services and used SQL. No REST API experience.")
     assert mixed["score"] == 67
     assert [s["mentioned"] for s in mixed["required"]] == [True, True, False]
+
+
+def test_semicolon_does_not_separate_negation_from_later_skills():
+    job = {"required_skills": ["Python", "SQL", "HTTP APIs"], "preferred_skills": []}
+    for text in ("No experience with Python; SQL; REST API.",
+                 "No experience with Python؛ SQL؛ REST API."):
+        result = score_resume(job, text)
+        assert result["score"] == 0
+        assert all(not item["mentioned"] and not item["evidence"] for item in result["required"])
+
+
+def test_dotted_skill_names_are_matched_without_losing_sentence_context():
+    job = {"required_skills": ["Node.js", ".NET"], "preferred_skills": []}
+    positive = score_resume(job, "Built Node.js services and used .NET.")
+    assert positive["score"] == 100
+    assert all(item["mentioned"] and item["evidence"] for item in positive["required"])
+    negative = score_resume(job, "No experience with Node.js or .NET.")
+    assert negative["score"] == 0
+    assert all(not item["evidence"] for item in negative["required"])
 
 
 def test_bulleted_and_bold_personal_fields_do_not_inflate_screening_score():
