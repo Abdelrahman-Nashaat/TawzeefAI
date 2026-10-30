@@ -1,4 +1,4 @@
-"""A local, human-supervised LangGraph review; it never changes hiring data.
+"""A local, human-supervised LangGraph review with explicit slot approval.
 
 Each review belongs to the authenticated HR user who started it. SQLite
 checkpoints contain the review results (including potentially sensitive CV
@@ -13,6 +13,7 @@ Old checkpoint payloads are redacted from responses, but may still exist on disk
 
 import errno
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -39,6 +40,7 @@ from app.knowledge import answer_question
 from app.recruitment import get_application, job_data, score_resume
 from app.resume_structure import structure_resume
 from app.scheduling import utc_text
+from app.slots import SlotCreate, create_slot_record
 
 router = APIRouter(prefix="/api/graph-reviews")
 HR = Annotated[User, Depends(require_roles("hr"))]
@@ -48,7 +50,8 @@ logger = logging.getLogger(__name__)
 class ReviewRequest(BaseModel):
     application_id: int = Field(gt=0)
     policy_question: str = Field(default="", max_length=2000)
-    intent: Literal['full', 'policy', 'scheduling', 'status'] = 'full'
+    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot'] = 'full'
+    slot: SlotCreate | None = None
 
     @model_validator(mode='after')
     def check_policy_question(self):
@@ -56,11 +59,16 @@ class ReviewRequest(BaseModel):
             raise ValueError('Policy review requires a question')
         if self.intent in ('scheduling', 'status') and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
+        if (self.intent == 'create_slot') != (self.slot is not None):
+            raise ValueError('Slot details are required only for create_slot')
+        if self.intent == 'create_slot' and self.policy_question.strip():
+            raise ValueError('Policy question is not used by this review')
         return self
 
 
 class ReviewReply(BaseModel):
     reviewed: bool
+    approval_fingerprint: str | None = Field(default=None, max_length=64)
 
 
 class ReviewState(TypedDict, total=False):
@@ -74,6 +82,10 @@ class ReviewState(TypedDict, total=False):
     status: dict
     agent_review: dict
     reviewed: bool
+    slot: dict
+    operation_id: str
+    action_proposal: dict
+    action_result: dict
 
 
 class _AtomicResumeSaver(SqliteSaver):
@@ -139,14 +151,16 @@ def _current_scheduling(path: str | Path, application_id: int) -> dict:
 
 
 def build_review_graph(path: str | Path, checkpointer, *, policy_question: str = "",
-                       user: User | None = None, authorize=None, enable_agent: bool = False):
-    """Compile a bounded graph around existing, read-only domain operations."""
+                       user: User | None = None, authorize=None, enable_agent: bool = False,
+                       action_db=None):
+    """Compile a bounded graph around supervised domain operations."""
     def plan(state: ReviewState):
         plans = {
             'full': ['parser', 'matching', 'policy', 'scheduler', 'status', 'agent_review', 'human_review'],
             'policy': ['policy', 'human_review'],
             'scheduling': ['scheduler', 'human_review'],
             'status': ['status', 'human_review'],
+            'create_slot': ['prepare_slot', 'human_review', 'execute_slot'],
         }
         return {'plan': plans[state.get('intent', 'full')]}
 
@@ -198,15 +212,59 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         # Never persist model output or tool payloads in the graph checkpoint.
         return {"agent_review": {"status": result['status'], "tool_trace": result['tool_trace']}}
 
+    def prepare_slot(state: ReviewState):
+        with connect(path) as db:
+            application = get_application(db, state['application_id'])
+            if application['status'] != 'advanced':
+                raise HTTPException(status_code=409, detail='Application is not eligible for candidate booking')
+            proposal = {'type': 'create_slot', 'application_id': state['application_id'],
+                        'operation_id': state['operation_id'], 'slot': state['slot'],
+                        'candidate_id': application['candidate_id'],
+                        'application_updated_at': application['updated_at'],
+                        'availability_scope': 'all_eligible_candidates',
+                        'notice': 'This creates a shared slot available to all eligible candidates. '
+                                  'It is not reserved for this application; the application is used '
+                                  'to verify eligibility and conflicts.'}
+        encoded = json.dumps(proposal, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+        proposal['approval_fingerprint'] = hashlib.sha256(encoded).hexdigest()
+        return {'action_proposal': proposal}
+
+    def execute_slot(state: ReviewState):
+        if not state['reviewed']:
+            return {'action_result': {'status': 'declined'}}
+        if action_db is None or user is None:
+            raise RuntimeError('An authorized resume transaction is required')
+        proposal = state['action_proposal']
+        application = get_application(action_db, state['application_id'])
+        if (application['status'] != 'advanced' or application['candidate_id'] != proposal['candidate_id']
+                or application['updated_at'] != proposal['application_updated_at']):
+            raise HTTPException(status_code=409, detail='Application changed; start a new review')
+        slot = SlotCreate.model_validate(proposal['slot'])
+        start, end = utc_text(slot.start_at), utc_text(slot.end_at)
+        if action_db.execute("SELECT 1 FROM interviews WHERE status='scheduled' AND application_id=?", (state['application_id'],)).fetchone():
+            raise HTTPException(status_code=409, detail='Application already has an interview')
+        if action_db.execute("""SELECT 1 FROM interviews WHERE status='scheduled' AND start_at < ? AND end_at > ?
+                AND (candidate_id=? OR interviewer_key=?)""", (end, start, application['candidate_id'], slot.interviewer.casefold())).fetchone():
+            raise HTTPException(status_code=409, detail='Candidate or interviewer has a conflicting interview')
+        if action_db.execute("""SELECT 1 FROM interview_slots WHERE withdrawn=0 AND start_at < ? AND end_at > ?
+                AND interviewer_key=?""", (end, start, slot.interviewer.casefold())).fetchone():
+            raise HTTPException(status_code=409, detail='Interviewer has a conflicting slot')
+        created = create_slot_record(action_db, slot, user.id)
+        return {'action_result': {'status': 'created', 'slot': created}}
+
     def human_review(state: ReviewState):
+        notice = ('Approve creation of a shared slot available to all eligible candidates. '
+                  'It is not reserved for this application; a candidate must book it separately.'
+                  if state.get('intent') == 'create_slot' else
+                  'Acknowledge review; no hiring or booking action will be taken.')
         reviewed = interrupt({"type": "human_review", "application_id": state["application_id"],
-                              "notice": "Acknowledge review; no hiring or booking action will be taken."})
+                              "notice": notice, "action_proposal": state.get('action_proposal')})
         return {"reviewed": reviewed}
 
     builder = StateGraph(ReviewState)
     nodes = {"plan": plan, "parser": parser, "matching": matching, "policy": policy,
              "scheduler": scheduler, "status": status, "agent_review": agent_review,
-             "human_review": human_review}
+             "human_review": human_review, "prepare_slot": prepare_slot, "execute_slot": execute_slot}
     for name, node in nodes.items():
         builder.add_node(name, node)
     builder.add_edge(START, 'plan')
@@ -215,10 +273,12 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             steps = state['plan']
             return steps[0] if name == 'plan' else steps[steps.index(name) + 1]
         return route
-    choices = ['parser', 'matching', 'policy', 'scheduler', 'status', 'agent_review', 'human_review']
-    for name in ['plan', *choices[:-1]]:
+    choices = ['parser', 'matching', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'human_review', 'execute_slot']
+    for name in ['plan', *choices[:-2]]:
         builder.add_conditional_edges(name, next_after(name), choices)
-    builder.add_edge('human_review', END)
+    builder.add_conditional_edges('human_review', lambda state: 'execute_slot' if state.get('intent') == 'create_slot' else END,
+                                  {'execute_slot': 'execute_slot', END: END})
+    builder.add_edge('execute_slot', END)
     return builder.compile(checkpointer=checkpointer)
 
 
@@ -281,7 +341,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     selected = state.get('intent', 'full')
     scoped_fields = {'parsed': 'full', 'matching': 'full', 'agent_review': 'full',
                      'policy': 'policy', 'scheduling': 'scheduling', 'status': 'status'}
-    if selected not in {'full', 'policy', 'scheduling', 'status'}:
+    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot'}:
         selected = 'invalid'
     for field, scope in scoped_fields.items():
         if selected != 'full' and scope != selected:
@@ -358,7 +418,10 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
                                        user=user, authorize=authorize,
                                        enable_agent=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1')
             config = _config(thread_id)
-            graph.invoke({"application_id": payload.application_id, "intent": payload.intent}, config)
+            initial = {"application_id": payload.application_id, "intent": payload.intent}
+            if payload.slot is not None:
+                initial.update(slot=payload.slot.model_dump(mode='json'), operation_id=thread_id)
+            graph.invoke(initial, config)
             authorize()
             return {"id": thread_id, **_view(graph.get_state(config), path, request=request, user=user)}
     except Exception as exc:
@@ -394,15 +457,22 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
     initialize_graph_reviews(path)
     _owner(path, thread_id, user)
     with _review_lock(path, thread_id), closing(sqlite3.connect(str(path), timeout=10, check_same_thread=False)) as db:
+        db.row_factory = sqlite3.Row
         saver = _AtomicResumeSaver(db)
         saver.setup()
-        graph = build_review_graph(path, saver)
+        graph = build_review_graph(path, saver, user=user, action_db=db)
         config = _config(thread_id)
         db.execute('BEGIN IMMEDIATE')
         try:
             _authorize_resume(db, request, user, thread_id)
-            if not graph.get_state(config).next:
+            snapshot = graph.get_state(config)
+            if not snapshot.next:
                 raise HTTPException(status_code=409, detail="Review is not awaiting input")
+            if snapshot.values.get('intent') == 'create_slot' and payload.reviewed:
+                expected = snapshot.values.get('action_proposal', {}).get('approval_fingerprint', '')
+                if (not expected or not payload.approval_fingerprint or
+                        not secrets.compare_digest(expected.encode('utf-8'), payload.approval_fingerprint.encode('utf-8'))):
+                    raise HTTPException(status_code=409, detail='Approval must match the displayed slot proposal')
             graph.invoke(Command(resume=payload.reviewed), config)
             # Time can advance while the SQLite write lock is held.
             _authorize_resume(db, request, user, thread_id)

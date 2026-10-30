@@ -109,19 +109,24 @@ def _require_current_role(db, request: Request, user: User, role: str) -> None:
 
 @router.post('/slots', status_code=201)
 def create_slot(payload: SlotCreate, request: Request, user: HR):
-    if payload.start_at <= datetime.now(UTC):
-        raise HTTPException(status_code=422, detail='Slot start must be in the future')
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN IMMEDIATE')
         _require_current_role(db, request, user, 'hr')
-        cursor = db.execute(
-            'INSERT INTO interview_slots (start_at,end_at,interviewer,interviewer_key,created_by) VALUES (?,?,?,?,?)',
-            (utc_text(payload.start_at), utc_text(payload.end_at), payload.interviewer,
-             payload.interviewer.casefold(), user.id),
-        )
-        db.execute('INSERT INTO slot_audit_events (slot_id,actor_id,action) VALUES (?, ?, ?)',
-                   (cursor.lastrowid, user.id, 'slot_created'))
-        return slot_view(db.execute('SELECT * FROM interview_slots WHERE id = ?', (cursor.lastrowid,)).fetchone())
+        return create_slot_record(db, payload, user.id)
+
+
+def create_slot_record(db, payload: SlotCreate, actor_id: int) -> dict:
+    """Create a slot and its audit record inside the caller's transaction."""
+    if payload.start_at <= datetime.now(UTC):
+        raise HTTPException(status_code=422, detail='Slot start must be in the future')
+    cursor = db.execute(
+        'INSERT INTO interview_slots (start_at,end_at,interviewer,interviewer_key,created_by) VALUES (?,?,?,?,?)',
+        (utc_text(payload.start_at), utc_text(payload.end_at), payload.interviewer,
+         payload.interviewer.casefold(), actor_id),
+    )
+    db.execute('INSERT INTO slot_audit_events (slot_id,actor_id,action) VALUES (?, ?, ?)',
+               (cursor.lastrowid, actor_id, 'slot_created'))
+    return slot_view(db.execute('SELECT * FROM interview_slots WHERE id = ?', (cursor.lastrowid,)).fetchone())
 
 
 @router.get('/slots')

@@ -732,17 +732,23 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
 function setupGraphReview(target, application) {
   const storageKey = `tawzeef-graph-${currentUserId}-${application.id}`;
   const title = element("h4", "", "مراجعة متعددة المراحل باستخدام LangGraph");
-  const note = element("p", "subtle-note", "تجمع المراجعة نتائج أدوات محلية وتتوقف لتأكيد بشري. عند تفعيل Groq يختار المساعد أدوات قراءة محددة؛ لا تتخذ المراجعة قرار توظيف أو تحجز موعدًا أو ترسل دعوة. المواعيد لقطة قد تتغير.");
+  const note = element("p", "subtle-note", "تجمع المراجعة نتائج أدوات محلية وتتوقف لتأكيد بشري. يمكن اقتراح موعد عام متاح بعد مراجعة تفاصيله والموافقة عليه؛ يمكن لأي مرشح مؤهل اختياره. لا ينشئ هذا المسار حدث Google أو يرسل دعوة. المواعيد لقطة قد تتغير.");
   const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
   const form = element("form", "decision-form");
   const intentLabel = element("label", "", "نوع المراجعة");
   const intent = element("select");
-  for (const [value, text] of [["full", "مراجعة شاملة"], ["policy", "سؤال سياسة"], ["scheduling", "المواعيد"], ["status", "حالة الطلب"]]) {
+  for (const [value, text] of [["full", "مراجعة شاملة"], ["policy", "سؤال سياسة"], ["scheduling", "المواعيد"], ["status", "حالة الطلب"], ["create_slot", "اقتراح موعد متاح"]]) {
     const option = element("option", "", text); option.value = value; intent.append(option);
   }
   intentLabel.append(intent);
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
   const question = element("textarea"); question.maxLength = 2000; question.placeholder = "يمكن تركه فارغًا"; questionLabel.append(question);
+  const slotFields = element("div"); slotFields.hidden = true;
+  const slotStartLabel = element("label", "", "بداية الموعد"); const slotStart = element("input"); slotStart.type = "datetime-local"; slotStart.disabled = true; slotStartLabel.append(slotStart);
+  const slotEndLabel = element("label", "", "نهاية الموعد"); const slotEnd = element("input"); slotEnd.type = "datetime-local"; slotEnd.disabled = true; slotEndLabel.append(slotEnd);
+  const interviewerLabel = element("label", "", "اسم المحاور"); const interviewer = element("input"); interviewer.maxLength = 120; interviewer.disabled = true; interviewerLabel.append(interviewer);
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "التوقيت المحلي";
+  slotFields.append(element("p", "subtle-note", `الوقت المدخل حسب المنطقة الزمنية لجهازك: ${timezone}.`), slotStartLabel, slotEndLabel, interviewerLabel);
   intent.addEventListener("change", () => {
     const supportsPolicy = intent.value === "full" || intent.value === "policy";
     questionLabel.hidden = !supportsPolicy; question.disabled = !supportsPolicy;
@@ -750,9 +756,12 @@ function setupGraphReview(target, application) {
     questionLabel.firstChild.textContent = question.required ? "سؤال السياسة المطلوب للبحث المحلي" : "سؤال سياسة اختياري للبحث المحلي";
     question.placeholder = question.required ? "اكتب سؤالك عن السياسة" : "يمكن تركه فارغًا";
     if (!supportsPolicy) question.value = "";
+    const createSlot = intent.value === "create_slot";
+    slotFields.hidden = !createSlot;
+    for (const field of [slotStart, slotEnd, interviewer]) { field.disabled = !createSlot; field.required = createSlot; }
   });
   const start = element("button", "small-button", "بدء مراجعة المراحل"); start.type = "submit";
-  form.append(intentLabel, questionLabel, element("p", "subtle-note", "يُعرض مقتطف من المصادر المصرح بها عند إدخال سؤال، ويُعاد فحصها عند تحميل المراجعة. لا يُحفظ نص السؤال في المراجعة."), start);
+  form.append(intentLabel, questionLabel, slotFields, element("p", "subtle-note", "يُعرض مقتطف من المصادر المصرح بها عند إدخال سؤال، ويُعاد فحصها عند تحميل المراجعة. لا يُحفظ نص السؤال في المراجعة."), start);
   const restore = element("form", "decision-form");
   const idLabel = element("label", "", "معرّف مراجعة سابقة لهذا الطلب");
   const idInput = element("input"); idInput.maxLength = 100; idLabel.append(idInput);
@@ -760,7 +769,7 @@ function setupGraphReview(target, application) {
   restore.append(idLabel, open);
   const output = element("div"); output.setAttribute("aria-live", "polite");
   target.replaceChildren(title, note, message, form, restore, output);
-  const labels = { parser: "قراءة النص المستخرج", matching: "فحص المهارات المذكورة", policy: "بحث السياسة المحلي", scheduler: "استعراض المواعيد المحلية", status: "حالة الطلب", agent_review: "مساعد أدوات القراءة", human_review: "مراجعة بشرية" };
+  const labels = { parser: "قراءة النص المستخرج", matching: "فحص المهارات المذكورة", policy: "بحث السياسة المحلي", scheduler: "استعراض المواعيد المحلية", status: "حالة الطلب", agent_review: "مساعد أدوات القراءة", prepare_slot: "تجهيز مقترح الموعد", human_review: "مراجعة بشرية", execute_slot: "إضافة الموعد بعد الموافقة" };
   function report(text, error = false) { message.textContent = text; message.className = error ? "form-error" : "subtle-note"; }
   function remember(id) { try { sessionStorage.setItem(storageKey, id); } catch { /* Manual restore remains available. */ } }
   function display(review) {
@@ -800,7 +809,40 @@ function setupGraphReview(target, application) {
       const toolLabels = { job_requirements: "متطلبات الوظيفة", workflow_status: "حالة سير الطلب", screening_evidence: "مؤشرات الفحص" };
       if (agent.tool_trace?.length) output.append(element("p", "subtle-note", `الأدوات المستخدمة: ${agent.tool_trace.map((tool) => toolLabels[tool] || "أداة غير معروفة").join("، ")}.`));
     }
-    if (review.awaiting_review) {
+    const proposal = review.state.action_proposal;
+    const result = review.state.action_result;
+    if (proposal?.type === "create_slot" && proposal.slot) {
+      output.append(element("h4", "", "تفاصيل الموعد المقترح"),
+        element("p", "", `طلب سياق المراجعة: #${proposal.application_id}`),
+        element("p", "", `من ${displayDate(proposal.slot.start_at)} إلى ${displayDate(proposal.slot.end_at)}`),
+        element("p", "", `المحاور: ${proposal.slot.interviewer}`),
+        element("p", "subtle-note", "الموافقة تضيف موعدًا عامًا يستطيع أي مرشح مؤهل حجزه؛ الموعد غير مخصص للطلب المعروض. لا تعني الموافقة حجزه أو إرسال دعوة."));
+    }
+    if (result?.status === "created") output.append(element("p", "result-badge", "تمت إضافة موعد عام متاح للمرشحين المؤهلين بعد الموافقة."));
+    else if (result?.status === "declined") output.append(element("p", "result-badge", "رُفض المقترح ولم يُضف موعد."));
+    if (review.awaiting_review && (proposal || review.state.intent === "create_slot")) {
+      output.append(element("p", "result-badge", "المقترح بانتظار قرار الموارد البشرية."));
+      if (proposal?.type !== "create_slot" || proposal.availability_scope !== "all_eligible_candidates" || proposal.application_id !== application.id || !proposal.slot?.start_at || !proposal.slot?.end_at || !proposal.slot?.interviewer || !proposal.approval_fingerprint) {
+        output.append(element("p", "form-error", "تعذّرت مراجعة تفاصيل المقترح بأمان. أعد تحميل المراجعة."));
+        return;
+      }
+      const approve = element("button", "small-button", "أوافق على إضافة هذا الموعد"); approve.type = "button";
+      const decline = element("button", "outline-button", "أرفض المقترح"); decline.type = "button";
+      async function decide(reviewed) {
+        let uncertain = false;
+        approve.disabled = true; decline.disabled = true; start.disabled = true; open.disabled = true; report("جارٍ تسجيل القرار...");
+        try {
+          const body = reviewed ? { reviewed: true, approval_fingerprint: proposal.approval_fingerprint } : { reviewed: false };
+          const updated = await api(`/api/graph-reviews/${encodeURIComponent(review.id)}/resume`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+          if (target.isConnected) { display(updated); report(""); }
+        } catch (error) {
+          uncertain = error instanceof TypeError;
+          if (!isStale(error) && target.isConnected) report(uncertain ? "تعذّر الاتصال بالخادم. أعد تحميل المراجعة للتحقق من حالة القرار قبل المحاولة مجددًا." : error.message, true);
+        } finally { approve.disabled = uncertain; decline.disabled = uncertain; start.disabled = false; open.disabled = false; }
+      }
+      approve.addEventListener("click", () => decide(true)); decline.addEventListener("click", () => decide(false));
+      output.append(approve, decline);
+    } else if (review.awaiting_review) {
       output.append(element("p", "result-badge", "توقفت المراجعة بانتظار التأكيد البشري."));
       const resume = element("button", "small-button", "أؤكد أنني راجعت النتائج واستكمل المراجعة"); resume.type = "button";
       resume.addEventListener("click", async () => {
@@ -812,7 +854,7 @@ function setupGraphReview(target, application) {
         finally { resume.disabled = false; start.disabled = false; open.disabled = false; }
       });
       output.append(resume);
-    } else output.append(element("p", "result-badge", review.state.reviewed === true ? "اكتملت المراجعة بتأكيد بشري." : "انتهت المراجعة دون تأكيد بأن النتائج روجعت."));
+    } else if (!result) output.append(element("p", "result-badge", review.state.reviewed === true ? "اكتملت المراجعة بتأكيد بشري." : "انتهت المراجعة دون تأكيد بأن النتائج روجعت."));
   }
   async function load(id) {
     const review = await api(`/api/graph-reviews/${encodeURIComponent(id)}`);
@@ -821,7 +863,13 @@ function setupGraphReview(target, application) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); start.disabled = true; open.disabled = true; output.replaceChildren(); report("جارٍ تنفيذ المراحل حتى نقطة المراجعة البشرية...");
     try {
-      const review = await api("/api/graph-reviews", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ application_id: application.id, intent: intent.value, policy_question: question.value.trim() }) });
+      const body = { application_id: application.id, intent: intent.value, policy_question: question.value.trim() };
+      if (intent.value === "create_slot") {
+        const startTime = new Date(slotStart.value), endTime = new Date(slotEnd.value);
+        if (!interviewer.value.trim() || Number.isNaN(startTime.valueOf()) || Number.isNaN(endTime.valueOf()) || endTime <= startTime) throw new Error("تحقق من اسم المحاور وأن نهاية الموعد بعد بدايته.");
+        body.slot = { start_at: startTime.toISOString(), end_at: endTime.toISOString(), interviewer: interviewer.value.trim() };
+      }
+      const review = await api("/api/graph-reviews", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (target.isConnected) { question.value = ""; display(review); report(""); }
     } catch (error) { if (!isStale(error) && target.isConnected) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
     finally { start.disabled = false; open.disabled = false; }
