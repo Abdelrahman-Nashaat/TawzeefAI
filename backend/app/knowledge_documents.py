@@ -21,6 +21,7 @@ from app.document_text import (
 router = APIRouter(prefix="/api/knowledge")
 HR = Annotated[User, Depends(require_roles("hr"))]
 Audience = Literal["public", "staff", "hr"]
+Collection = Literal["legacy_unclassified", "handbook", "job_description", "past_hire_patterns"]
 
 
 def initialize_knowledge_documents(path: str | Path, *, include_samples: bool = False) -> None:
@@ -62,6 +63,10 @@ def initialize_knowledge_documents(path: str | Path, *, include_samples: bool = 
             db.execute('ALTER TABLE knowledge_documents ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))')
         if 'pages_json' not in columns:
             db.execute('ALTER TABLE knowledge_documents ADD COLUMN pages_json TEXT')
+        if 'collection' not in columns:
+            db.execute("""ALTER TABLE knowledge_documents ADD COLUMN collection TEXT NOT NULL
+                DEFAULT 'legacy_unclassified' CHECK (collection IN
+                ('legacy_unclassified', 'handbook', 'job_description', 'past_hire_patterns'))""")
         db.execute('INSERT OR IGNORE INTO knowledge_settings (id, include_sample_policies) VALUES (1, ?)', (int(include_samples),))
 
 
@@ -83,6 +88,7 @@ def clean_filename(value: str) -> str:
 class TextDocument(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     audience: Audience
+    collection: Collection = 'legacy_unclassified'
     text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
 
     @field_validator("title")
@@ -99,18 +105,23 @@ class TextDocument(BaseModel):
 
 
 def store_document(path: str | Path, user: User, title: str, audience: str, text: str, filename: str | None,
-                   pages: list[dict] | None = None) -> dict:
+                   pages: list[dict] | None = None, collection: Collection = 'legacy_unclassified') -> dict:
+    if collection not in ('legacy_unclassified', 'handbook', 'job_description', 'past_hire_patterns'):
+        raise ValueError('Unsupported knowledge collection')
+    # Historical hire patterns must never become public through their audience.
+    if collection == 'past_hire_patterns':
+        audience = 'hr'
     with connect(path) as db:
         cursor = db.execute(
-            "INSERT INTO knowledge_documents (title,audience,filename,text,created_by,pages_json) VALUES (?,?,?,?,?,?)",
-            (title, audience, filename, text, user.id, json.dumps(pages, ensure_ascii=False) if pages is not None else None),
+            "INSERT INTO knowledge_documents (title,audience,filename,text,created_by,pages_json,collection) VALUES (?,?,?,?,?,?,?)",
+            (title, audience, filename, text, user.id, json.dumps(pages, ensure_ascii=False) if pages is not None else None, collection),
         )
         db.execute(
             "INSERT INTO knowledge_document_audit (document_id,actor_id,action) VALUES (?,?,'created')",
             (cursor.lastrowid, user.id),
         )
         row = db.execute(
-            "SELECT id,title,audience,filename,created_at FROM knowledge_documents WHERE id=?", (cursor.lastrowid,)
+            "SELECT id,title,audience,collection,filename,created_at FROM knowledge_documents WHERE id=?", (cursor.lastrowid,)
         ).fetchone()
         result = dict(row)
         if pages is not None:
@@ -119,25 +130,33 @@ def store_document(path: str | Path, user: User, title: str, audience: str, text
         return result
 
 
-def fetch_authorized_documents(path: str | Path, role: str) -> list[dict]:
-    """Return documents permitted for role; unknown roles get no documents."""
+def authorized_documents_in_db(db, role: str) -> list[dict]:
+    """Apply role and collection restrictions in the caller's transaction."""
     allowed = {"candidate": ("public",), "employee": ("public", "staff"), "hr": ("public", "staff", "hr")}.get(role, ())
     if not allowed:
         return []
     placeholders = ",".join("?" for _ in allowed)
+    rows = db.execute(
+        f"""SELECT id,title,audience,text,pages_json,collection FROM knowledge_documents
+            WHERE active = 1 AND audience IN ({placeholders}) AND
+            (collection IN ('legacy_unclassified','handbook','job_description') OR
+             (collection = 'past_hire_patterns' AND ? = 'hr')) ORDER BY id""",
+        (*allowed, role),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def fetch_authorized_documents(path: str | Path, role: str) -> list[dict]:
+    """Return documents permitted for role; unknown roles get no documents."""
     with connect(path) as db:
-        rows = db.execute(
-            f"SELECT id,title,audience,text,pages_json FROM knowledge_documents WHERE active = 1 AND audience IN ({placeholders}) ORDER BY id",
-            allowed,
-        ).fetchall()
-        return [dict(row) for row in rows]
+        return authorized_documents_in_db(db, role)
 
 
 @router.get("/documents")
 def list_documents(request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         rows = db.execute(
-            "SELECT id,title,audience,filename,created_at,active FROM knowledge_documents ORDER BY id DESC"
+            "SELECT id,title,audience,collection,filename,created_at,active FROM knowledge_documents ORDER BY id DESC"
         )
         return [{**dict(row), 'active': bool(row['active'])} for row in rows]
 
@@ -156,7 +175,7 @@ def deactivate_document(document_id: int, request: Request, user: HR):
             "INSERT INTO knowledge_document_audit (document_id,actor_id,action) VALUES (?,?,'deactivated')",
             (document_id, user.id),
         )
-        return {'id': row['id'], 'title': row['title'], 'audience': row['audience'],
+        return {'id': row['id'], 'title': row['title'], 'audience': row['audience'], 'collection': row['collection'],
                 'filename': row['filename'], 'created_at': row['created_at'], 'active': False}
 
 
@@ -188,11 +207,13 @@ def set_settings(payload: KnowledgeSettings, request: Request, user: HR):
 
 @router.post("/documents/text", status_code=201)
 def add_text_document(payload: TextDocument, request: Request, user: HR):
-    return store_document(request.app.state.database_path, user, payload.title, payload.audience, payload.text, None)
+    return store_document(request.app.state.database_path, user, payload.title, payload.audience, payload.text, None,
+                          collection=payload.collection)
 
 
 @router.post("/documents", status_code=201)
-async def add_document(request: Request, user: HR, title: str, audience: Audience, filename: str):
+async def add_document(request: Request, user: HR, title: str, audience: Audience, filename: str,
+                       collection: Collection = 'legacy_unclassified'):
     try:
         title = clean_title(title)
         filename = clean_filename(filename)
@@ -212,4 +233,5 @@ async def add_document(request: Request, user: HR, title: str, audience: Audienc
             text = await run_in_threadpool(extract_document_text, filename, bytes(chunks))
     except DocumentTextError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
-    return store_document(request.app.state.database_path, user, title, audience, text, filename, pages)
+    return store_document(request.app.state.database_path, user, title, audience, text, filename, pages,
+                          collection=collection)

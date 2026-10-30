@@ -1109,10 +1109,12 @@ function setupKnowledgeDocuments() {
     const documents = await api("/api/knowledge/documents");
     if (!Array.isArray(documents)) throw new Error("تعذّر قراءة قائمة المستندات.");
     const labels = { public: "المرشح والموظف وHR", staff: "الموظف وHR", hr: "HR فقط" };
+    const collections = { legacy_unclassified: "غير مصنّف", handbook: "دليل الموظفين والسياسات", job_description: "وصف وظيفة", past_hire_patterns: "أنماط توظيف سابقة" };
     const rows = [];
     for (const document of documents) {
       const card = element("article", "job-card");
-      card.append(element("h4", "", document.title), element("p", "", `الصلاحية: ${labels[document.audience] || "غير معروفة"}`));
+      const effectiveAudience = document.collection === "past_hire_patterns" ? "hr" : document.audience;
+      card.append(element("h4", "", document.title), element("p", "", `النوع: ${collections[document.collection] || "غير مصنّف"}`), element("p", "", `الصلاحية: ${labels[effectiveAudience] || "غير معروفة"}`));
       if (document.filename) card.append(element("p", "", `الملف: ${document.filename}`));
       if (document.active === true) {
         card.append(element("p", "", "الحالة: نشط في البحث"));
@@ -1150,8 +1152,19 @@ function setupKnowledgeDocuments() {
       const option = element("option", "", label); option.value = value; audience.append(option);
     }
     audienceLabel.append(audience);
-    form.append(titleLabel, audienceLabel);
-    return { titleInput, audience };
+    const collectionLabel = element("label", "", "نوع المستند");
+    const collection = element("select"); collection.id = `${prefix}-collection`;
+    collectionLabel.htmlFor = collection.id;
+    for (const [value, label] of [["legacy_unclassified", "غير مصنّف"], ["handbook", "دليل الموظفين والسياسات"], ["job_description", "وصف وظيفة"], ["past_hire_patterns", "أنماط توظيف سابقة — HR فقط"]]) {
+      const option = element("option", "", label); option.value = value; collection.append(option);
+    }
+    collectionLabel.append(collection);
+    collection.addEventListener("change", () => {
+      if (collection.value === "past_hire_patterns") audience.value = "hr";
+      for (const option of audience.options) option.disabled = collection.value === "past_hire_patterns" && option.value !== "hr";
+    });
+    form.append(titleLabel, collectionLabel, audienceLabel, element("p", "subtle-note", "أنماط التوظيف للـHR فقط؛ استخدم أمثلة صناعية ولا ترفع بيانات متقدمين حقيقيين في هذه النسخة."));
+    return { titleInput, audience, collection };
   }
 
   const textForm = element("form", "decision-form");
@@ -1171,8 +1184,10 @@ function setupKnowledgeDocuments() {
     if (!documentTitle || !documentText || !textFields.audience.value) { report("أكمل العنوان والنص والصلاحية.", true); return; }
     textButton.disabled = true;
     try {
-      await api("/api/knowledge/documents/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: documentTitle, audience: textFields.audience.value, text: documentText }) });
+      await api("/api/knowledge/documents/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: documentTitle, audience: textFields.audience.value, collection: textFields.collection.value, text: documentText }) });
       textForm.reset();
+      textFields.collection.dispatchEvent(new Event("change"));
+      textFields.audience.value = "";
       report("حُفظ المستند النصي.");
       try { await refresh(); }
       catch (error) { if (!isStale(error)) report("حُفظ النص، لكن تعذّر تحديث قائمة المستندات. أعد تحميل الصفحة.", true); }
@@ -1198,9 +1213,11 @@ function setupKnowledgeDocuments() {
     if (file.size > 5 * 1024 * 1024) { report("حجم الملف أكبر من 5 ميجابايت.", true); return; }
     fileButton.disabled = true;
     try {
-      const params = new URLSearchParams({ title: documentTitle, audience: fileFields.audience.value, filename: file.name });
+      const params = new URLSearchParams({ title: documentTitle, audience: fileFields.audience.value, collection: fileFields.collection.value, filename: file.name });
       const uploaded = await api(`/api/knowledge/documents?${params}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
       fileForm.reset();
+      fileFields.collection.dispatchEvent(new Event("change"));
+      fileFields.audience.value = "";
       const pages = Number.isInteger(uploaded.page_count)
         ? ` رُفع الملف: ${uploaded.pages_with_text} من ${uploaded.page_count} صفحة تحتوي نصًا قابلًا للاستخراج. الصفحات المصوّرة لا تُفهرس لأن OCR غير متاح.` : "";
       report(`رُفع المستند وحُفظ نصه.${pages}`);

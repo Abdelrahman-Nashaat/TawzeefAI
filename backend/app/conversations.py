@@ -25,6 +25,7 @@ from app.knowledge import (
     _documents,
     answer_question,
 )
+from app.knowledge_documents import authorized_documents_in_db
 
 router = APIRouter(prefix='/api/conversations')
 Authenticated = Annotated[User, Depends(get_current_user)]
@@ -105,9 +106,8 @@ def _authorized_sources(db, role: str) -> dict:
         for field in ('required_skills', 'preferred_skills', 'responsibilities'):
             fields.extend(json.loads(row[field]))
         sources.append(Source(id=f"job-db-{row['id']}", title=row['title'], text='; '.join(fields)))
-    for row in db.execute('SELECT id,title,audience,text,pages_json FROM knowledge_documents WHERE active = 1'):
-        if row['audience'] in allowed:
-            sources.extend(_document_passages(dict(row)))
+    for row in authorized_documents_in_db(db, role):
+        sources.extend(_document_passages(row))
     # Ambiguous IDs must never authorize a stale stored response.
     by_id = {source.id: source for source in sources}
     if len(by_id) != len(sources):
