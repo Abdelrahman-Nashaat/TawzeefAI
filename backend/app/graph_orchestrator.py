@@ -16,8 +16,9 @@ import hashlib
 import logging
 import os
 import secrets
+import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from itertools import pairwise
@@ -64,6 +65,37 @@ class ReviewState(TypedDict, total=False):
     status: dict
     agent_review: dict
     reviewed: bool
+
+
+class _AtomicResumeSaver(SqliteSaver):
+    """Keep LangGraph's writes in the caller's single resume transaction."""
+
+    @contextmanager
+    def cursor(self, transaction: bool = True):
+        # setup() must run before BEGIN: its executescript commits transactions.
+        with self.lock:
+            if not self.is_setup or not self.conn.in_transaction:
+                raise RuntimeError('Resume transaction is not active')
+            cursor = self.conn.cursor()
+            try:
+                yield cursor
+            finally:
+                cursor.close()
+
+
+def _authorize_resume(db, request: Request, user: User, thread_id: str) -> None:
+    token = request.cookies.get(COOKIE_NAME, '')
+    actor = db.execute('''SELECT u.id, u.username, u.role, u.active FROM sessions s
+        JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.user_id=? AND s.expires_at>?''',
+        (token_digest(token), user.id, int(time.time()))).fetchone()
+    if actor is None or not actor[3] or actor[1] != user.username:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    if actor[2] != 'hr':
+        raise HTTPException(status_code=403, detail='HR access required')
+    owner = db.execute('SELECT 1 FROM graph_review_owners WHERE thread_id=? AND owner_id=?',
+                       (thread_id, user.id)).fetchone()
+    if owner is None:
+        raise HTTPException(status_code=404, detail='Review not found')
 
 
 def initialize_graph_reviews(path: str | Path) -> None:
@@ -324,16 +356,25 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
     path = request.app.state.database_path
     initialize_graph_reviews(path)
     _owner(path, thread_id, user)
-    with _review_lock(path, thread_id), SqliteSaver.from_conn_string(str(path)) as saver:
-        # Authentication and ownership may have changed while acquiring the
-        # lock or opening the checkpointer. Recheck before writing a resume.
-        current = get_current_user(request)
-        if current.id != user.id or current.role != 'hr':
-            raise HTTPException(status_code=403, detail='HR access required')
-        _owner(path, thread_id, current)
+    with _review_lock(path, thread_id), closing(sqlite3.connect(str(path), timeout=10, check_same_thread=False)) as db:
+        saver = _AtomicResumeSaver(db)
+        saver.setup()
         graph = build_review_graph(path, saver)
         config = _config(thread_id)
-        if not graph.get_state(config).next:
-            raise HTTPException(status_code=409, detail="Review is not awaiting input")
-        graph.invoke(Command(resume=payload.reviewed), config)
-        return {"id": thread_id, **_view(graph.get_state(config), path, request=request, user=user)}
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            _authorize_resume(db, request, user, thread_id)
+            if not graph.get_state(config).next:
+                raise HTTPException(status_code=409, detail="Review is not awaiting input")
+            graph.invoke(Command(resume=payload.reviewed), config)
+            # Time can advance while the SQLite write lock is held.
+            _authorize_resume(db, request, user, thread_id)
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        # Read the committed checkpoint with the normal saver; the transaction
+        # is deliberately complete before _view opens its own connections.
+        with SqliteSaver.from_conn_string(str(path)) as reader:
+            graph = build_review_graph(path, reader)
+            return {"id": thread_id, **_view(graph.get_state(config), path, request=request, user=user)}
