@@ -4,14 +4,16 @@ Reviewers work against a partially redacted resume; this is not a guarantee of
 anonymity. Neither a score nor an assessment changes an application decision.
 """
 
+import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
-from app.auth import User, require_roles
+from app.auth import COOKIE_NAME, User, require_roles, token_digest
 from app.blind import redact_resume
 from app.db import connect
 from app.recruitment import get_application
@@ -73,10 +75,19 @@ class CriterionCreate(BaseModel):
         return value
 
 
+class ExpectedCriterion(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    criterion_ref: str = Field(pattern=r'^c-[1-9][0-9]{0,3}$')
+    category: Category
+    label: str = Field(min_length=1, max_length=200)
+
+
 class EvidenceCreate(BaseModel):
     model_config = ConfigDict(extra='forbid')
     start: int = Field(ge=0)
     end: int = Field(gt=0)
+    expected_source_sha256: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
+    expected_criterion: ExpectedCriterion | None = None
 
     @model_validator(mode='after')
     def validate_range(self):
@@ -173,6 +184,51 @@ def blind_source(application_id: int, request: Request, user: HR):
     return {'text': blind.text, 'requires_review': True, 'notice': blind.notice}
 
 
+@router.post('/applications/{application_id}/rubric/suggestions')
+def semantic_suggestions(application_id: int, request: Request, user: HR):
+    """Suggest spans locally, then recheck the session, source and rubric."""
+    from app.semantic_screening import suggest
+
+    path = request.app.state.database_path
+    with connect(path) as db:
+        db.execute('BEGIN')
+        application = get_application(db, application_id)
+        job_id = application['job_id']
+        source = application['resume_text']
+        criteria = [public_criterion(row) for row in db.execute(
+            'SELECT * FROM rubric_criteria WHERE job_id = ? ORDER BY id', (job_id,))]
+    if not criteria:
+        raise HTTPException(status_code=409, detail='No rubric criteria are configured for this job')
+    blind = redact_resume(source)
+    from app.resume_structure import structure_resume
+
+    sections = structure_resume(blind.text)['sections']
+    recognized = [name for name, section in sections.items() if section['items']]
+    truncated = any(section['truncated'] for section in sections.values())
+    candidates = suggest(blind.text, criteria)
+    with connect(path) as db:
+        db.execute('BEGIN')
+        token = request.cookies.get(COOKIE_NAME, '')
+        actor = db.execute('''SELECT u.id,u.username,u.role FROM sessions s
+            JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND u.active=1''',
+            (token_digest(token), int(time.time()))).fetchone()
+        if actor is None or actor['id'] != user.id or actor['username'] != user.username or actor['role'] != 'hr':
+            raise HTTPException(status_code=401, detail='Session changed during screening')
+        current = get_application(db, application_id)
+        current_criteria = [public_criterion(row) for row in db.execute(
+            'SELECT * FROM rubric_criteria WHERE job_id = ? ORDER BY id', (job_id,))]
+        if current['job_id'] != job_id or current['resume_text'] != source or current_criteria != criteria:
+            raise HTTPException(status_code=409, detail='Source or criteria changed; retry screening')
+    return {'source_sha256': hashlib.sha256(blind.text.encode('utf-8')).hexdigest(),
+            'offset_unit': 'unicode_code_points', 'criteria': candidates, 'requires_human_review': True,
+            'status': 'ok' if recognized else 'no_recognized_sections',
+            'recognized_sections': recognized, 'sections_truncated': truncated,
+            'notice': ('Experimental local suggestions only. Similarity does not establish a qualification; '
+                       'redaction is partial and missing suggestions do not prove absence. Some sections may be '
+                       'unrecognized or truncated; review the full source and each suggested excerpt.'
+                       + (' No recognizable resume sections were found.' if not recognized else ''))}
+
+
 @router.get('/applications/{application_id}/rubric/evidence')
 def list_evidence(application_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
@@ -187,6 +243,16 @@ def create_evidence(application_id: int, payload: EvidenceCreate, request: Reque
         db.execute('BEGIN IMMEDIATE')
         application = get_application(db, application_id)
         blind = redact_resume(application['resume_text'])
+        if payload.expected_source_sha256 is not None:
+            digest = hashlib.sha256(blind.text.encode('utf-8')).hexdigest()
+            if digest != payload.expected_source_sha256:
+                raise HTTPException(status_code=409, detail='Source changed; request fresh suggestions')
+        if payload.expected_criterion is not None:
+            expected = payload.expected_criterion
+            criterion = db.execute('SELECT * FROM rubric_criteria WHERE id=? AND job_id=?',
+                                   (int(expected.criterion_ref[2:]), application['job_id'])).fetchone()
+            if criterion is None or criterion['category'] != expected.category or criterion['label'] != expected.label:
+                raise HTTPException(status_code=409, detail='Criterion changed; request fresh suggestions')
         if payload.end > len(blind.text):
             raise HTTPException(status_code=422, detail='Evidence range exceeds the source')
         excerpt = blind.text[payload.start:payload.end]

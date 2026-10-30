@@ -1,0 +1,134 @@
+{
+  "version": "synthetic-development-1",
+  "description": "Fictional, independently specified examples for diagnostic résumé-evidence retrieval. Not a hiring dataset or held-out production benchmark.",
+  "cases": [
+    {
+      "id": "en-synonym-analysis",
+      "language": "en",
+      "criterion": "Manipulate tabular data with Pandas",
+      "resume": "Experience\nCleaned and transformed CSV tables using the Python pandas library.\nBuilt dashboards for sales staff.",
+      "supporting_spans": ["Cleaned and transformed CSV tables using the Python pandas library."],
+      "qualifying_spans": [],
+      "label": "support"
+    },
+    {
+      "id": "en-experience",
+      "language": "en",
+      "criterion": "Experience building web APIs",
+      "resume": "Experience\nCreated REST endpoints for an internal inventory application.\nMaintained an unrelated spreadsheet.",
+      "supporting_spans": ["Created REST endpoints for an internal inventory application."],
+      "qualifying_spans": [],
+      "label": "support"
+    },
+    {
+      "id": "en-negation",
+      "language": "en",
+      "criterion": "Professional experience with Python",
+      "resume": "Experience\nI have not used Python in a professional role.\nSupported a small office network.",
+      "supporting_spans": [],
+      "qualifying_spans": ["I have not used Python in a professional role."],
+      "label": "negated"
+    },
+    {
+      "id": "en-aspiration",
+      "language": "en",
+      "criterion": "Production experience deploying machine learning models",
+      "resume": "Projects\nI hope to deploy a machine learning model one day.\nMade a static personal website.",
+      "supporting_spans": [],
+      "qualifying_spans": ["I hope to deploy a machine learning model one day."],
+      "label": "unconfirmed"
+    },
+    {
+      "id": "en-similar-role",
+      "language": "en",
+      "criterion": "Operate and maintain Kubernetes clusters",
+      "resume": "Experience\nPrepared dashboard reports for a marketing team.\nScheduled meetings for software engineers.",
+      "supporting_spans": [],
+      "qualifying_spans": [],
+      "label": "no_support"
+    },
+    {
+      "id": "en-ambiguous-context",
+      "language": "en",
+      "criterion": "Experience programming in Python",
+      "resume": "Projects\nA teammate wrote the Python code; I designed the poster.\nWe presented the project in class.",
+      "supporting_spans": [],
+      "qualifying_spans": ["A teammate wrote the Python code; I designed the poster."],
+      "label": "unconfirmed"
+    },
+    {
+      "id": "ar-analysis",
+      "language": "ar",
+      "criterion": "تحليل البيانات باستخدام الجداول",
+      "resume": "الخبرة\nنظفت بيانات المبيعات وحللتها باستخدام الجداول الإلكترونية.\nنظمت مواعيد الاجتماعات.",
+      "supporting_spans": ["نظفت بيانات المبيعات وحللتها باستخدام الجداول الإلكترونية."],
+      "qualifying_spans": [],
+      "label": "support"
+    },
+    {
+      "id": "ar-api",
+      "language": "ar",
+      "criterion": "تطوير واجهات برمجية لخدمات الويب",
+      "resume": "المشاريع\nأنشأت واجهة API لتطبيق إدارة المخزون.\nكتبت دليلاً لاستخدام التطبيق.",
+      "supporting_spans": ["أنشأت واجهة API لتطبيق إدارة المخزون."],
+      "qualifying_spans": [],
+      "label": "support"
+    },
+    {
+      "id": "ar-negation",
+      "language": "ar",
+      "criterion": "خبرة عملية في لغة بايثون",
+      "resume": "الخبرة\nلم أستخدم بايثون في أي عمل سابق.\nقدمت دعمًا فنيًا للأجهزة.",
+      "supporting_spans": [],
+      "qualifying_spans": ["لم أستخدم بايثون في أي عمل سابق."],
+      "label": "negated"
+    },
+    {
+      "id": "ar-aspiration",
+      "language": "ar",
+      "criterion": "خبرة في إدارة قواعد بيانات PostgreSQL",
+      "resume": "المهارات\nأرغب في تعلم إدارة PostgreSQL مستقبلاً.\nأستخدم محرر نصوص لكتابة التقارير.",
+      "supporting_spans": [],
+      "qualifying_spans": ["أرغب في تعلم إدارة PostgreSQL مستقبلاً."],
+      "label": "unconfirmed"
+    },
+    {
+      "id": "ar-no-support",
+      "language": "ar",
+      "criterion": "خبرة في تطوير تطبيقات أندرويد",
+      "resume": "الخبرة\nأعددت عروضًا تقديمية لفريق التسويق.\nنظمت مستندات المبيعات.",
+      "supporting_spans": [],
+      "qualifying_spans": [],
+      "label": "no_support"
+    },
+    {
+      "id": "en-counterfactual-a",
+      "pair_id": "identity-pair-1",
+      "language": "en",
+      "criterion": "Experience writing SQL queries",
+      "resume": "Name: Mona Example\nGender: female\nExperience\nWrote SQL queries to summarize sales records.",
+      "supporting_spans": ["Wrote SQL queries to summarize sales records."],
+      "qualifying_spans": [],
+      "label": "support"
+    },
+    {
+      "id": "en-counterfactual-b",
+      "pair_id": "identity-pair-1",
+      "language": "en",
+      "criterion": "Experience writing SQL queries",
+      "resume": "Name: Omar Example\nGender: male\nExperience\nWrote SQL queries to summarize sales records.",
+      "supporting_spans": ["Wrote SQL queries to summarize sales records."],
+      "qualifying_spans": [],
+      "label": "support"
+    },
+    {
+      "id": "cross-language",
+      "language": "ar-en",
+      "criterion": "Data cleaning with Python pandas",
+      "resume": "الخبرة\nنظفت بيانات المبيعات باستخدام مكتبة pandas في بايثون.\nجهزت تقريرًا شهريًا.",
+      "supporting_spans": ["نظفت بيانات المبيعات باستخدام مكتبة pandas في بايثون."],
+      "qualifying_spans": [],
+      "label": "support"
+    }
+  ]
+}

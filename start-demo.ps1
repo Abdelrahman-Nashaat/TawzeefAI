@@ -1,7 +1,16 @@
 # Local development demo. Do not expose this server to the public network.
-param([switch]$Google)
+param([switch]$Google, [switch]$SemanticScreening)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$modelDir = Join-Path $projectRoot '.tooling\multilingual-e5-small'
+if ($SemanticScreening -and (-not (Test-Path -LiteralPath (Join-Path $modelDir 'model.onnx')) -or
+    -not (Test-Path -LiteralPath (Join-Path $modelDir 'tokenizer.json')))) {
+    throw 'The local embedding model is missing; see docs/local-semantic-experiment.md.'
+}
+$priorSemantic = [Environment]::GetEnvironmentVariable('TAWZEEF_ENABLE_SEMANTIC_SCREENING', 'Process')
+$priorModel = [Environment]::GetEnvironmentVariable('TAWZEEF_EMBEDDING_MODEL_DIR', 'Process')
+$env:TAWZEEF_ENABLE_SEMANTIC_SCREENING = if ($SemanticScreening) { '1' } else { '0' }
+if ($SemanticScreening) { $env:TAWZEEF_EMBEDDING_MODEL_DIR = $modelDir }
 $credentialPath = Join-Path $projectRoot '.tooling\groq-key.dpapi'
 $env:TAWZEEF_DEMO = '1'
 $env:TAWZEEF_ENABLE_GROQ = '0'
@@ -20,12 +29,16 @@ Push-Location (Join-Path $projectRoot 'backend')
 try {
     Write-Host 'Starting TawzeefAI at http://127.0.0.1:8000; press Ctrl+C to stop.'
     if ($Google) { Write-Host 'Google delivery enabled for explicit HR actions on this Windows account.' }
-    if ($Google) {
-        uv run --locked --extra google uvicorn app.main:app --host 127.0.0.1 --port 8000
-    } else {
-        uv run --locked uvicorn app.main:app --host 127.0.0.1 --port 8000
-    }
+    if ($SemanticScreening) { Write-Host 'Experimental local semantic screening enabled; HR review is required.' }
+    $runArgs = @('run', '--locked')
+    if ($Google) { $runArgs += @('--extra', 'google') }
+    if ($SemanticScreening) { $runArgs += @('--extra', 'semantic') }
+    $runArgs += @('uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000')
+    & uv @runArgs
+    if ($LASTEXITCODE -ne 0) { throw 'The local server failed.' }
 } finally {
     Remove-Item Env:GROQ_API_KEY -ErrorAction SilentlyContinue
+    [Environment]::SetEnvironmentVariable('TAWZEEF_ENABLE_SEMANTIC_SCREENING', $priorSemantic, 'Process')
+    [Environment]::SetEnvironmentVariable('TAWZEEF_EMBEDDING_MODEL_DIR', $priorModel, 'Process')
     Pop-Location
 }

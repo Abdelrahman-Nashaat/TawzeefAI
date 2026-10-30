@@ -533,6 +533,8 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
   const sourceText = element("textarea", "resume-preview rubric-source"); sourceText.readOnly = true; sourceText.rows = 8; sourceText.value = source.text; sourceLabel.append(sourceText);
   const privacyNote = element("p", "subtle-note", "إخفاء البيانات الشخصية جزئي وقد لا يكتشف كل المعلومات المعرِّفة؛ راجع النص قبل استخدامه.");
   const addEvidence = element("button", "outline-button", "حفظ النص المحدد كدليل"); addEvidence.type = "button";
+  const suggestEvidence = element("button", "outline-button", "اقتراح مقتطفات لكل معيار"); suggestEvidence.type = "button";
+  const suggestions = element("div"); suggestions.setAttribute("aria-live", "polite");
   const evidenceList = element("ul", "evidence-list");
   const evaluation = element("form", "decision-form");
   const judgmentList = element("div");
@@ -540,10 +542,11 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
   const result = element("div"); result.setAttribute("aria-live", "polite");
   evaluation.append(judgmentList, save);
   target.replaceChildren(heading, notice, message, element("h4", "", "معايير الوظيفة"), criterionForm,
-    element("h4", "", "أدلة المراجعة"), privacyNote, sourceLabel, addEvidence, evidenceList,
+    element("h4", "", "أدلة المراجعة"), privacyNote, sourceLabel, addEvidence, suggestEvidence, suggestions, evidenceList,
     element("h4", "", "تقييم كل معيار"), evaluation, result);
 
   let drafts = new Map();
+  let criteriaRevision = 0;
   if (assessment) for (const component of assessment.result.components) for (const claim of component.claims) drafts.set(claim.criterion_ref, { status: claim.status, evidence_refs: claim.evidence_refs });
 
   function rememberDrafts() {
@@ -608,11 +611,77 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
     try {
       const item = await api(jobPath, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ category: category.value, label: criterionInput.value }) });
       if (!target.isConnected) return;
-      rememberDrafts(); criteria.push(item); criterionInput.value = ""; renderJudgments();
+      rememberDrafts(); criteria.push(item); criteriaRevision++; suggestions.replaceChildren(); criterionInput.value = ""; renderJudgments();
       if (assessment) { assessment.outdated = true; renderResult(assessment); }
       setMessage("تمت إضافة معيار الوظيفة. احفظ تقييمًا جديدًا بعد مراجعته.");
     } catch (error) { if (!isStale(error) && target.isConnected) setMessage(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
     finally { addCriterion.disabled = false; }
+  });
+  suggestEvidence.addEventListener("click", async () => {
+    const revision = criteriaRevision;
+    suggestEvidence.disabled = true;
+    suggestions.replaceChildren(element("p", "subtle-note", "جارٍ البحث عن مقتطفات للمراجعة..."));
+    try {
+      const response = await api(`${base}/suggestions`, { method: "POST" });
+      if (!target.isConnected) return;
+      if (revision !== criteriaRevision) {
+        suggestions.replaceChildren(element("p", "form-error", "تغيرت المعايير أثناء البحث؛ اطلب الاقتراحات مجددًا."));
+        return;
+      }
+      if (response.offset_unit !== "unicode_code_points" || !Array.isArray(response.criteria) || !/^[a-f0-9]{64}$/.test(response.source_sha256 || "")) {
+        throw new Error("تعذّر قراءة الاقتراحات؛ حاول مرة أخرى.");
+      }
+      const sourcePoints = Array.from(source.text);
+      const allowed = new Map(criteria.map((criterion) => [criterion.criterion_ref, criterion]));
+      suggestions.replaceChildren(element("p", "subtle-note", "المقتطفات مقترحة بالتشابه فقط، وقد تكون غير مناسبة أو منفية. راجع السياق بنفسك؛ لا تُثبت الاقتراحات المعيار ولا تغيّر التقييم أو قرار التوظيف."));
+      suggestions.append(element("p", "subtle-note", "يبحث الاقتراح في الأقسام التي تم التعرف عليها من السيرة فقط؛ غياب النتائج لا يثبت غياب الخبرة."));
+      if (response.status === "no_recognized_sections") suggestions.append(element("p", "form-error", "تعذّر التعرف على أقسام السيرة للبحث فيها. راجع السيرة كاملة وحدد الأدلة يدويًا."));
+      if (response.sections_truncated) suggestions.append(element("p", "form-error", "لم يشمل البحث كل الأقسام بسبب حدود المعالجة؛ راجع السيرة كاملة."));
+      if (!response.criteria.length) suggestions.append(element("p", "subtle-note", "لا توجد معايير للبحث؛ أضف معايير الوظيفة أولًا."));
+      for (const criterion of response.criteria) {
+        const current = allowed.get(criterion.criterion_ref);
+        if (!current || current.category !== criterion.category || current.label !== criterion.label || !Array.isArray(criterion.candidates)) {
+          suggestions.replaceChildren(element("p", "form-error", "تغيرت المعايير؛ أعد فتح الطلب ثم اطلب الاقتراحات مجددًا."));
+          return;
+        }
+        const group = element("section", "rubric-criterion");
+        group.append(element("h4", "", criterion.label));
+        if (!criterion.candidates.length) group.append(element("p", "subtle-note", "لم يُقترح مقتطف لهذا المعيار؛ لا يعني ذلك غياب الخبرة."));
+        for (const candidate of criterion.candidates) {
+          const { start, end, excerpt, similarity } = candidate;
+          if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end - start > 500 || sourcePoints.slice(start, end).join("") !== excerpt) {
+            suggestions.replaceChildren(element("p", "form-error", "تغير نص السيرة أو تعذّر مطابقة المقتطف؛ أعد فتح الطلب ثم اطلب الاقتراحات مجددًا."));
+            return;
+          }
+          const item = element("div");
+          item.append(element("p", "resume-preview", excerpt));
+          if (Number.isFinite(similarity)) item.append(element("p", "subtle-note", `درجة التشابه: ${similarity.toFixed(2)}؛ ليست تقييمًا للمؤهل.`));
+          const accept = element("button", "outline-button", "حفظ المقتطف بعد مراجعته"); accept.type = "button";
+          accept.addEventListener("click", async () => {
+            if (revision !== criteriaRevision || !target.isConnected || !accept.isConnected) {
+              setMessage("تغيرت المعايير؛ اطلب الاقتراحات مجددًا.", true);
+              return;
+            }
+            accept.disabled = true;
+            try {
+              const saved = await api(`${base}/evidence`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ start, end, expected_source_sha256: response.source_sha256,
+                expected_criterion: { criterion_ref: criterion.criterion_ref, category: criterion.category, label: criterion.label } }) });
+              if (!target.isConnected) return;
+              rememberDrafts(); evidence.push(saved); renderEvidence(); renderJudgments();
+              setMessage("تم حفظ المقتطف كدليل؛ اربطه بالمعيار وحدد حكمك بعد المراجعة.");
+              accept.textContent = "تم حفظ المقتطف";
+            } catch (error) {
+              if (!isStale(error) && target.isConnected) setMessage(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true);
+              accept.disabled = false;
+            }
+          });
+          item.append(accept); group.append(item);
+        }
+        suggestions.append(group);
+      }
+    } catch (error) {
+      if (!isStale(error) && target.isConnected) suggestions.replaceChildren(element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message));
+    } finally { suggestEvidence.disabled = false; }
   });
   addEvidence.addEventListener("click", async () => {
     // Textareas normalize CRLF to LF and JS uses UTF-16 offsets; the API uses
