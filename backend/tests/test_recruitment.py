@@ -122,6 +122,33 @@ def test_negated_and_instructional_mentions_are_not_evidence():
     assert [s["mentioned"] for s in mixed["required"]] == [True, True, False]
 
 
+@pytest.mark.parametrize('text', [
+    'Zero experience with Python.',
+    'I am unfamiliar with Python.',
+    'I have yet to learn Python.',
+    'Seeking to learn Python.',
+    'عديم الخبرة في Python',
+    'أتمنى تعلم Python',
+])
+def test_explicit_inexperience_or_aspiration_is_not_positive_evidence(text):
+    job = {"required_skills": ["Python"], "preferred_skills": []}
+    result = score_resume(job, text)
+    assert result['score'] == 0
+    assert result['evidence_status'] == 'insufficient'
+    assert not result['required'][0]['mentioned']
+    assert not result['required'][0]['evidence']
+
+
+def test_distinct_positive_sentences_remain_visible_after_negated_or_aspirational_ones():
+    job = {"required_skills": ["Python", "SQL"], "preferred_skills": []}
+    result = score_resume(job, 'Zero experience with Python. Built SQL services.')
+    assert [item['mentioned'] for item in result['required']] == [False, True]
+    assert result['score'] == 50
+    arabic = score_resume(job, 'أتمنى تعلم Python. استخدمت SQL في العمل.')
+    assert [item['mentioned'] for item in arabic['required']] == [False, True]
+    assert arabic['score'] == 50
+
+
 def test_semicolon_does_not_separate_negation_from_later_skills():
     job = {"required_skills": ["Python", "SQL", "HTTP APIs"], "preferred_skills": []}
     for text in ("No experience with Python; SQL; REST API.",

@@ -82,9 +82,11 @@ ALIASES = {
 # and human review. These patterns cannot detect every phrasing or language.
 UNSAFE_CONTEXT = re.compile(
     r"\b(?:no|not|never|without|lack(?:s|ing|ed)?|none|neither|cannot|can't|unable)\b"
+    r"|\b(?:zero\s+(?:prior\s+)?experience|unfamiliar|yet\s+to\s+learn|seeking\s+to\s+learn)\b"
     r"|\b(?:ignore|disregard|override|reveal|bypass)\b"
     r"|\b(?:system prompt|previous instructions|assign (?:a )?(?:perfect|highest) score)\b"
-    r"|(?:لا|لم|ليس|بدون|تنقصني|تجاهل|اكشف)(?=\s|$)",
+    r"|(?:لا|لم|ليس|بدون|تنقصني|تجاهل|اكشف)(?=\s|$)"
+    r"|(?:عديم(?:ة)?\s+الخبرة|أتمنى\s+تعلم|اتمنى\s+تعلم)",
     re.IGNORECASE,
 )
 WORK_CONTEXT = re.compile(
