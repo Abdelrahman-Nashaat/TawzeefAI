@@ -47,6 +47,30 @@ _OTHER_HEADINGS = frozenset(('skills', 'technical skills', 'languages', 'summary
                              'المهارات', 'اللغات', 'الملخص', 'البيانات الشخصية', 'المراجع',
                              'الشهادات', 'معلومات التواصل'))
 _PREFIX = re.compile(r'^\s*(?:(?:[-+*•▪◦‣]|\d+[.)])\s+|#{1,6}\s+)?')
+_YEAR = r'[0-9٠-٩۰-۹]{4}'
+_RANGE = rf'{_YEAR}\s*(?:[-–—]|\bto\b|إلى|الى)\s*(?:{_YEAR}|present|current|الآن|الان|حتى\s+الآن|حتى\s+الان)'
+_EXPERIENCE_PIPE = re.compile(rf'^(?P<role>[^|:：\[\]]{{1,120}})\s*\|\s*(?P<organization>[^|:：\[\]]{{1,120}})\s*\|\s*(?P<period>{_RANGE})\s*$', re.IGNORECASE)
+_EXPERIENCE_AT = re.compile(rf'^(?P<role>[^|,:：،\[\]]{{1,120}}?)\s+(?:at|في)\s+(?P<organization>[^|,:：،\[\]]{{1,120}}?)\s*[,،]\s*(?P<period>{_RANGE})\s*$', re.IGNORECASE)
+_EDUCATION_PIPE = re.compile(rf'^(?P<qualification>[^|:：\[\]]{{1,120}})\s*\|\s*(?P<institution>[^|:：\[\]]{{1,120}})\s*\|\s*(?P<period>{_YEAR})\s*$', re.IGNORECASE)
+
+
+def _unlabelled_candidate(section: str, text: str, position: int) -> dict | None:
+    """Recognize narrow patterns as unverified, literal candidates only."""
+    patterns = {'experience': (_EXPERIENCE_PIPE, _EXPERIENCE_AT), 'education': (_EDUCATION_PIPE,)}
+    for pattern in patterns.get(section, ()):
+        match = pattern.fullmatch(text)
+        if not match:
+            continue
+        fields = {name: None for name in _FIELDS[section]}
+        for name, raw in match.groupdict().items():
+            value = raw.strip()
+            if not value or len(value) > MAX_FIELD_CHARS or not any(c.isalpha() for c in value) and name != 'period':
+                return None
+            start = position + match.start(name) + len(raw) - len(raw.lstrip())
+            fields[name] = {'value': value, 'start': start, 'end': start + len(value)}
+        return {'fields': fields, 'origin': 'pattern',
+                'reason': 'A common delimiter pattern was recognized; grouping and labels require human review.'}
+    return None
 
 
 def resume_fields_for_display(blind_source: str) -> dict:
@@ -116,11 +140,18 @@ def extract_resume_fields(blind_source: str) -> dict:
         elif active is not None:
             match = re.match(r'([^:：]{1,80})[:：](.*)$', body[prefix:])
             if not match:
-                # An unrecognized line may be a heading, so stop attribution
-                # until another recognized heading appears.
-                sections[active]['unclassified_lines'] = True
-                active = None
-                current = None
+                candidate = _unlabelled_candidate(active, body[prefix:], position + prefix)
+                if candidate is not None:
+                    current = new_record(active)
+                    if current is not None:
+                        current.update(candidate)
+                    current = None
+                else:
+                    # It may be a heading; stop rather than assign later lines
+                    # to a potentially unrelated section.
+                    sections[active]['unclassified_lines'] = True
+                    active = None
+                    current = None
             else:
                 label = _normalize(match.group(1).strip())
                 field = field_names[active].get(label)
@@ -148,6 +179,6 @@ def extract_resume_fields(blind_source: str) -> dict:
         'offset_unit': 'unicode_code_points',
         'sections': sections,
         'requires_human_review': True,
-        'notice': ('Only explicitly labelled values are extracted. Record grouping is tentative; '
+        'notice': ('Values are extracted from explicit labels or limited delimiter patterns. Record grouping is tentative; '
                    'values are unverified and missing fields are unknown. Redaction may be incomplete.'),
     }

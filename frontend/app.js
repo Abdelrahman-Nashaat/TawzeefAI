@@ -862,7 +862,7 @@ function setupGraphReview(target, application) {
       if (fields.status === "limit_exceeded") output.append(element("p", "form-error", "النص بعد الحجب أكبر من حد تحليل الحقول؛ راجع السيرة يدويًا."));
       else if (fields.status !== "current") output.append(element("p", "form-error", "تغيرت السيرة أو لا يمكن التحقق من المراجعة القديمة؛ ابدأ مراجعة جديدة."));
       else {
-        output.append(element("p", "subtle-note", "قيم مقتبسة من حقول مسماة صراحةً؛ تجميع السجلات تقديري والحجب جزئي. راجع السيرة قبل الاعتماد عليها، والحقول المفقودة غير معروفة."));
+        output.append(element("p", "subtle-note", "قيم مقتبسة من تسميات صريحة أو صيغ محدودة؛ تجميع السجلات تقديري والحجب جزئي. راجع السيرة قبل الاعتماد عليها، والحقول المفقودة غير معروفة."));
         const sectionLabels = { experience: "الخبرة", education: "التعليم", projects: "المشاريع" };
         const fieldLabels = { role: "الدور", organization: "الجهة", period: "الفترة", qualification: "المؤهل", institution: "المؤسسة التعليمية", name: "اسم المشروع", technologies: "التقنيات" };
         for (const [name, section] of Object.entries(fields.sections || {})) {
@@ -873,7 +873,7 @@ function setupGraphReview(target, application) {
             list.append(item);
           }
           output.append(element("h5", "", sectionLabels[name] || name));
-          if (list.childNodes.length) output.append(list); else output.append(element("p", "subtle-note", "لم تُستخرج حقول مؤكدة التسمية؛ المعلومات غير معروفة."));
+          if (list.childNodes.length) output.append(list); else output.append(element("p", "subtle-note", "لم تُستخرج حقول؛ المعلومات غير معروفة."));
           if (section.unclassified_lines || section.truncated) output.append(element("p", "subtle-note", "توجد أسطر غير مصنفة أو اقتُطع التحليل؛ راجع المصدر كاملًا."));
         }
       }
