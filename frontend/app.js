@@ -1554,10 +1554,16 @@ function setupConversations() {
   const create = element("button", "outline-button", "بدء محادثة جديدة"); create.type = "button";
   const history = element("div", "knowledge-result"); history.setAttribute("aria-live", "polite");
   const form = element("form");
+  const modeLabel = element("label", "", "نوع السؤال");
+  const questionMode = element("select");
+  for (const [value, label] of [["general", "بحث عام في المعرفة والوظائف"], ["policy", "وكيل سياسات الموظفين"]]) {
+    const option = element("option", "", label); option.value = value; questionMode.append(option);
+  }
+  modeLabel.append(questionMode);
   const questionLabel = element("label", "", "سؤالك في المحادثة");
   const question = element("textarea"); question.required = true; question.maxLength = 2000; questionLabel.append(question);
   const send = element("button", "small-button", "إرسال السؤال"); send.type = "submit";
-  form.append(questionLabel, send);
+  form.append(modeLabel, element("p", "subtle-note", "وكيل السياسات يبحث في مصادر السياسات المصرح بها فقط؛ راجع المراجع قبل الاعتماد على الإجابة. لا يستخدم سؤالًا سابقًا كسياق."), questionLabel, send);
   panel.append(note, message, selectorLabel, create, history, form); sectionNode.append(heading, panel);
   document.getElementById("knowledge-form").closest("section").after(sectionNode);
   let selected = null, loadGeneration = 0, sendPending = false, creationPending = false;
@@ -1615,15 +1621,15 @@ function setupConversations() {
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); const id = selected; const text = question.value.trim();
     if (!id || !text || sendPending || creationPending) return;
-    sendPending = true; send.disabled = true; selector.disabled = true; create.disabled = true; question.disabled = true; report("جارٍ البحث عن إجابة...");
+    sendPending = true; send.disabled = true; selector.disabled = true; create.disabled = true; question.disabled = true; questionMode.disabled = true; report("جارٍ البحث عن إجابة...");
     try {
-      await api(`/api/conversations/${encodeURIComponent(id)}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: text }) });
+      await api(`/api/conversations/${encodeURIComponent(id)}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: text, mode: questionMode.value }) });
       if (!sectionNode.isConnected) return;
       if (selected === id) { question.value = ""; await openConversation(id); }
     } catch (error) { if (!isStale(error) && sectionNode.isConnected && selected === id) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
     finally {
       sendPending = false;
-      if (sectionNode.isConnected) { send.disabled = !selected; selector.disabled = false; create.disabled = false; question.disabled = false; }
+      if (sectionNode.isConnected) { send.disabled = !selected; selector.disabled = false; create.disabled = false; question.disabled = false; questionMode.disabled = false; }
     }
   });
   send.disabled = true; selector.disabled = true; create.disabled = true; question.disabled = true;

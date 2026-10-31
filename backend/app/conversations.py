@@ -10,7 +10,7 @@ import os
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
@@ -59,6 +59,9 @@ def initialize_conversations(path: str | Path) -> None:
             # Old messages cannot prove which role authored them; they remain
             # visible under existing rules but are never used as model context.
             db.execute('ALTER TABLE conversation_messages ADD COLUMN context_role TEXT')
+        if 'source_scope' not in columns:
+            # Earlier messages used the general knowledge collection.
+            db.execute("ALTER TABLE conversation_messages ADD COLUMN source_scope TEXT NOT NULL DEFAULT 'general'")
 
 
 class ConversationCreate(BaseModel):
@@ -74,6 +77,7 @@ class ConversationCreate(BaseModel):
 
 class MessageCreate(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
+    mode: Literal['general', 'policy'] = 'general'
 
     @field_validator('question')
     @classmethod
@@ -121,8 +125,20 @@ def _authorized_sources(db, role: str) -> dict:
     return by_id
 
 
-def _visible_message(row, available: dict) -> dict:
+def _policy_sources(db, role: str) -> dict:
+    from app.policy_agent import authorized_policy_sources
+
+    sources = authorized_policy_sources(db, role)
+    by_id = {source.id: source for source in sources}
+    return by_id if len(by_id) == len(sources) else {}
+
+
+def _visible_message(row, available: dict, policy_available: dict | None = None) -> dict:
     try:
+        if row['source_scope'] == 'policy':
+            available = policy_available or {}
+        elif row['source_scope'] != 'general':
+            raise ValueError('Invalid source scope')
         stored = json.loads(row['sources_json'])
         if not isinstance(stored, list) or any(not isinstance(item, dict) for item in stored):
             raise ValueError('Invalid sources')
@@ -157,11 +173,12 @@ def _digest(source: Source) -> str:
 def _context_still_allowed(db, user: User, conversation_id: int, previous: dict) -> bool:
     row = db.execute('SELECT * FROM conversation_messages WHERE id=? AND conversation_id=?',
                      (previous['id'], conversation_id)).fetchone()
-    if row is None or any(row[key] != previous[key] for key in ('question', 'sources_json', 'mode', 'context_role')):
+    if row is None or any(row[key] != previous[key] for key in ('question', 'sources_json', 'mode', 'context_role', 'source_scope')):
         return False
     if row['context_role'] != user.role or row['mode'] not in ('extractive', 'groq'):
         return False
-    visible = _visible_message(row, _authorized_sources(db, user.role))
+    policy_available = _policy_sources(db, user.role) if row['source_scope'] == 'policy' else None
+    visible = _visible_message(row, _authorized_sources(db, user.role), policy_available)
     return visible['mode'] in ('extractive', 'groq') and bool(visible['sources'])
 
 
@@ -196,21 +213,23 @@ def get_conversation(conversation_id: int, request: Request, user: Authenticated
         available = _authorized_sources(db, user.role)
         messages = db.execute('SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY id',
                               (conversation_id,)).fetchall()
-        return {**dict(conversation), 'messages': [_visible_message(row, available) for row in messages]}
+        policy_available = _policy_sources(db, user.role) if any(row['source_scope'] == 'policy' for row in messages) else None
+        return {**dict(conversation), 'messages': [_visible_message(row, available, policy_available) for row in messages]}
 
 
 @router.post('/{conversation_id}/messages', status_code=201)
 def add_message(conversation_id: int, payload: MessageCreate, request: Request, user: Authenticated):
     path = request.app.state.database_path
+    # The policy specialist receives one explicit question, without prior context.
+    wants_context = payload.mode == 'general' and is_context_followup(payload.question)
     with connect(path) as db:
         db.execute('BEGIN')
         _owned(db, conversation_id, user, request)
         row = db.execute('SELECT * FROM conversation_messages WHERE conversation_id=? ORDER BY id DESC LIMIT 1',
                          (conversation_id,)).fetchone()
         previous = dict(row) if row else None
-        available_context = bool(previous and _context_still_allowed(db, user, conversation_id, previous))
+        available_context = bool(wants_context and previous and _context_still_allowed(db, user, conversation_id, previous))
     limit = min(500, max(0, 1999 - len(payload.question)))
-    wants_context = is_context_followup(payload.question)
     previous_question = previous['question'][:limit] if wants_context and available_context and limit else ''
     if previous_question:
         context_notice = 'The previous question was used as context for this search; verify the sources.'
@@ -229,9 +248,22 @@ def add_message(conversation_id: int, payload: MessageCreate, request: Request, 
             available = _authorized_sources(db, user.role)
             if any(available.get(source.id) != source for source in sources):
                 raise HTTPException(status_code=409, detail='Source access changed; please retry')
-    answer = answer_question(payload.question, user.role, database_path=path,
-                             enable_groq=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1',
-                             authorize_sources=authorize_sources, previous_question=previous_question)
+    if payload.mode == 'policy':
+        from app.policy_agent import run_policy_agent
+
+        # The specialist revalidates its selected handbook sources; this
+        # callback separately enforces owner, session and conversation order.
+        try:
+            result = run_policy_agent(path, user, payload.question,
+                                      enabled=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1',
+                                      authorize=lambda: authorize_sources([]))
+        except PermissionError as exc:
+            raise HTTPException(status_code=409, detail='Policy access changed; please retry') from exc
+        answer = result.answer
+    else:
+        answer = answer_question(payload.question, user.role, database_path=path,
+                                 enable_groq=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1',
+                                 authorize_sources=authorize_sources, previous_question=previous_question)
     source_records = [{'id': source.id, 'digest': _digest(source)} for source in answer.sources]
     with connect(path) as db:
         db.execute('BEGIN IMMEDIATE')
@@ -239,15 +271,15 @@ def add_message(conversation_id: int, payload: MessageCreate, request: Request, 
         _assert_conversation_head(db, conversation_id, previous)
         if previous_question and not _context_still_allowed(db, user, conversation_id, previous):
             raise HTTPException(status_code=409, detail='Previous context access changed; please retry')
-        available = _authorized_sources(db, user.role)
+        available = _policy_sources(db, user.role) if payload.mode == 'policy' else _authorized_sources(db, user.role)
         if (not source_records and answer.mode != 'abstain') or any(
             source['id'] not in available or _digest(available[source['id']]) != source['digest']
             for source in source_records
         ):
             raise HTTPException(status_code=409, detail='Source access changed; please retry')
         row = db.execute('''INSERT INTO conversation_messages
-            (conversation_id,question,answer,sources_json,mode,notice,context_role) VALUES (?,?,?,?,?,?,?)
+            (conversation_id,question,answer,sources_json,mode,notice,context_role,source_scope) VALUES (?,?,?,?,?,?,?,?)
             RETURNING *''', (conversation_id, payload.question, answer.answer,
                               json.dumps(source_records), answer.mode,
-                              ' '.join(filter(None, (answer.notice, context_notice))) or None, user.role)).fetchone()
-        return _visible_message(row, available)
+                              ' '.join(filter(None, (answer.notice, context_notice))) or None, user.role, payload.mode)).fetchone()
+        return _visible_message(row, available, available if payload.mode == 'policy' else None)
