@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_digest
 from app.db import connect
 from app.scheduling import interview_view, utc_text
+from app.slot_reservations import private_slot_conflict
 
 router = APIRouter(prefix='/api')
 HR = Annotated[User, Depends(require_roles('hr'))]
@@ -231,6 +232,8 @@ def create_slot_record(db, payload: SlotCreate, actor_id: int) -> dict:
     """Create a slot and its audit record inside the caller's transaction."""
     if payload.start_at <= datetime.now(UTC):
         raise HTTPException(status_code=422, detail='Slot start must be in the future')
+    if private_slot_conflict(db, utc_text(payload.start_at), utc_text(payload.end_at), payload.interviewer.casefold()):
+        raise HTTPException(status_code=409, detail='Interviewer has a reserved private slot')
     cursor = db.execute(
         'INSERT INTO interview_slots (start_at,end_at,interviewer,interviewer_key,created_by) VALUES (?,?,?,?,?)',
         (utc_text(payload.start_at), utc_text(payload.end_at), payload.interviewer,
@@ -266,7 +269,11 @@ def list_slots(request: Request, user: Authenticated, application_id: int | None
             AND NOT EXISTS (SELECT 1 FROM interviews i WHERE i.status = 'scheduled'
                 AND i.start_at < s.end_at AND i.end_at > s.start_at
                 AND (i.candidate_id = ? OR i.interviewer_key = s.interviewer_key))
-            ORDER BY s.start_at, s.id''', (now, application_id, user.id, application['candidate_id'])).fetchall()
+            AND NOT EXISTS (SELECT 1 FROM interview_slots reserved
+                WHERE reserved.target_application_id IS NOT NULL AND reserved.withdrawn=0 AND reserved.id != s.id
+                AND reserved.start_at < s.end_at AND reserved.end_at > s.start_at
+                AND (reserved.interviewer_key=s.interviewer_key OR reserved.target_candidate_id=?))
+            ORDER BY s.start_at, s.id''', (now, application_id, user.id, application['candidate_id'], user.id)).fetchall()
         return [slot_view(row) for row in rows]
 
 
@@ -286,6 +293,9 @@ def book_slot(slot_id: int, payload: BookSlot, request: Request, user: Candidate
         now = utc_text(datetime.now(UTC))
         if slot['withdrawn'] or slot['start_at'] <= now or slot['interview_status'] == 'scheduled':
             raise HTTPException(status_code=409, detail='Slot is not available')
+        if private_slot_conflict(db, slot['start_at'], slot['end_at'], slot['interviewer_key'],
+                                 candidate_id=user.id, exclude_slot_id=slot_id):
+            raise HTTPException(status_code=409, detail='Candidate or interviewer has a reserved private slot')
         if db.execute("""SELECT 1 FROM interviews i WHERE i.application_id = ? AND i.status = 'scheduled'
                       AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id)""", (payload.application_id,)).fetchone():
             raise HTTPException(status_code=409, detail='Application already has an interview')

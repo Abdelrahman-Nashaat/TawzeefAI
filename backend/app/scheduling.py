@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_digest
 from app.db import connect
 from app.google_outbox import cancellation_block_reason
+from app.slot_reservations import private_slot_conflict
 
 router = APIRouter(prefix="/api")
 HR = Annotated[User, Depends(require_roles("hr"))]
@@ -140,6 +141,8 @@ def create_interview(payload: InterviewCreate, request: Request, user: HR):
             raise HTTPException(status_code=404, detail="Application not found")
         if application["status"] not in {"submitted", "advanced"}:
             raise HTTPException(status_code=409, detail="Cannot schedule a finalized application")
+        if private_slot_conflict(db, start, end, interviewer_key, candidate_id=application['candidate_id']):
+            raise HTTPException(status_code=409, detail="Candidate or interviewer has a reserved private slot")
         if db.execute("""SELECT 1 FROM interviews i WHERE i.application_id = ? AND i.status = 'scheduled'
                       AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) LIMIT 1""",
                       (payload.application_id,)).fetchone():

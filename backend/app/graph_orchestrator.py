@@ -43,6 +43,7 @@ from app.recruitment import get_application, job_data, score_resume
 from app.resume_fields import resume_fields_for_display
 from app.resume_structure import structure_resume
 from app.scheduling import utc_text
+from app.slot_reservations import private_slot_conflict
 from app.slots import SlotCreate, create_slot_record
 
 router = APIRouter(prefix="/api/graph-reviews")
@@ -171,8 +172,12 @@ def _current_scheduling(path: str | Path, application_id: int) -> dict:
                 AND i.start_at < s.end_at AND i.end_at > s.start_at
                 AND (i.candidate_id = ? OR i.interviewer_key = s.interviewer_key)
                 AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id))
+            AND NOT EXISTS (SELECT 1 FROM interview_slots reserved
+                WHERE reserved.target_application_id IS NOT NULL AND reserved.withdrawn=0 AND reserved.id != s.id
+                AND reserved.start_at < s.end_at AND reserved.end_at > s.start_at
+                AND (reserved.interviewer_key=s.interviewer_key OR reserved.target_candidate_id=?))
             ORDER BY s.start_at, s.id LIMIT 10""",
-            (utc_text(datetime.now(UTC)), application_id, application["candidate_id"], application["candidate_id"])).fetchall()
+            (utc_text(datetime.now(UTC)), application_id, application["candidate_id"], application["candidate_id"], application["candidate_id"])).fetchall()
     return {"available_slots": [dict(r) for r in rows], "eligible": True, "interview_completed": completed,
             "notice": ("A previous interview was completed. Availability is a snapshot; booking remains a separate action."
                        if completed else "Availability is a snapshot; booking remains a separate action.")}
@@ -296,6 +301,9 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             raise HTTPException(status_code=409, detail='Application changed; start a new review')
         slot = SlotCreate.model_validate(proposal['slot'])
         start, end = utc_text(slot.start_at), utc_text(slot.end_at)
+        if private_slot_conflict(action_db, start, end, slot.interviewer.casefold(),
+                                 candidate_id=application['candidate_id']):
+            raise HTTPException(status_code=409, detail='Candidate or interviewer has a reserved private slot')
         if action_db.execute("""SELECT 1 FROM interviews i WHERE i.status='scheduled' AND i.application_id=?
                 AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id)""", (state['application_id'],)).fetchone():
             raise HTTPException(status_code=409, detail='Application already has an interview')
