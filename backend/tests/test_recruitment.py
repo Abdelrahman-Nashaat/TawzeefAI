@@ -216,12 +216,14 @@ def test_arabic_attached_conjunctions_and_insufficient_evidence():
     assert partial["required"][0]["evidence"]
 
 
-def test_pipeline_transitions_are_ordered_and_final_decisions_cannot_change(client):
+def test_pipeline_transitions_are_ordered_and_final_decisions_cannot_change(client, accepted_offer):
     login(client, "candidate")
     application_id = apply(client).json()["id"]
     login(client, "hr")
     assert client.post(f"/api/applications/{application_id}/decision", json={"decision": "hire"}).status_code == 409
     assert client.post(f"/api/applications/{application_id}/decision", json={"decision": "advance"}).status_code == 200
+    assert client.post(f"/api/applications/{application_id}/decision", json={"decision": "hire"}).status_code == 409
+    accepted_offer(client, application_id)
     assert client.post(f"/api/applications/{application_id}/decision", json={"decision": "hire"}).status_code == 200
     assert client.post(f"/api/applications/{application_id}/decision", json={"decision": "reject"}).status_code == 409
     assert client.get(f"/api/applications/{application_id}").json()["status"] == "hired"
@@ -229,11 +231,12 @@ def test_pipeline_transitions_are_ordered_and_final_decisions_cannot_change(clie
     assert len(decision_events) == 2
 
 
-def test_concurrent_final_decisions_only_apply_once(client):
+def test_concurrent_final_decisions_only_apply_once(client, accepted_offer):
     login(client, "candidate")
     app_id = apply(client).json()["id"]
     login(client, "hr")
     assert client.post(f"/api/applications/{app_id}/decision", json={"decision": "advance"}).status_code == 200
+    accepted_offer(client, app_id)
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(lambda decision: client.post(f"/api/applications/{app_id}/decision", json={"decision": decision}).status_code, ["hire", "reject"]))
     assert sorted(results) == [200, 409]

@@ -54,6 +54,17 @@ def initialize(path: str | Path) -> None:
                 score_json TEXT
             );
             CREATE INDEX IF NOT EXISTS applications_owner ON applications(candidate_id);
+            CREATE TABLE IF NOT EXISTS job_offers (
+                id INTEGER PRIMARY KEY,
+                application_id INTEGER NOT NULL REFERENCES applications(id),
+                details TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('presented', 'accepted', 'declined', 'withdrawn')),
+                created_by INTEGER NOT NULL REFERENCES users(id),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                responded_at TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS job_offer_current ON job_offers(application_id)
+                WHERE status IN ('presented', 'accepted');
             CREATE TABLE IF NOT EXISTS audit_events (
                 id INTEGER PRIMARY KEY,
                 application_id INTEGER NOT NULL REFERENCES applications(id),

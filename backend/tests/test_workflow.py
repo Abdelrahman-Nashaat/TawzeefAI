@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 
 
-def test_workflow_screens_once_then_waits_for_hr_and_scheduling(tmp_path):
+def test_workflow_screens_once_then_waits_for_hr_and_scheduling(tmp_path, accepted_offer):
     with TestClient(create_app(tmp_path / 'workflow.sqlite3', seed_demo=True)) as client:
         def login(role):
             assert client.post('/api/auth/login', json={
@@ -44,10 +44,13 @@ def test_workflow_screens_once_then_waits_for_hr_and_scheduling(tmp_path):
         assert client.get(path).json()['next_step'] == 'human_decision'
         assert client.post(f"/api/interviews/{created.json()['id']}/cancel").status_code == 200
         assert client.get(path).json()['next_step'] == 'schedule_interview'
-        assert client.post('/api/interviews', json={
+        second = client.post('/api/interviews', json={
             'application_id': application['id'], 'start_at': '2099-01-01T10:00:00Z',
             'end_at': '2099-01-01T11:00:00Z', 'interviewer': 'Demo HR',
-        }).status_code == 201
+        })
+        assert second.status_code == 201
+        assert client.post(f"/api/interviews/{second.json()['id']}/cancel").status_code == 200
+        accepted_offer(client, application['id'])
         assert client.post(f"/api/applications/{application['id']}/decision", json={'decision': 'hire'}).status_code == 200
         assert client.get(path).json()['next_step'] == 'complete'
         assert client.post(path + '/run').status_code == 409

@@ -285,6 +285,101 @@ def screen(application_id: int, request: Request, user: HR):
         return score
 
 
+class OfferCreate(BaseModel):
+    details: str = Field(min_length=1, max_length=4000)
+
+
+class OfferReply(BaseModel):
+    decision: Literal['accepted', 'declined']
+
+
+def _offer_audit(db, application_id: int, actor_id: int, action: str, offer_id: int) -> None:
+    db.execute('INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,?,?)',
+               (application_id, actor_id, action, json.dumps({'offer_id': offer_id})))
+
+
+def _upcoming_interview(db, application_id: int) -> bool:
+    return bool(db.execute("""SELECT 1 FROM interviews WHERE application_id=? AND status='scheduled'
+        AND end_at>? LIMIT 1""", (application_id, utc_text(datetime.now(UTC)))).fetchone())
+
+
+def _offer_view(row) -> dict:
+    return {key: row[key] for key in ('id', 'application_id', 'details', 'status', 'created_at', 'responded_at')}
+
+
+@router.get('/applications/{application_id}/offers')
+def list_offers(application_id: int, request: Request, user: Authenticated):
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_role(db, request, user, user.role)
+        application = get_application(db, application_id)
+        require_owner_or_hr(user, application['candidate_id'])
+        return [_offer_view(row) for row in db.execute(
+            'SELECT * FROM job_offers WHERE application_id=? ORDER BY id DESC', (application_id,))]
+
+
+@router.post('/applications/{application_id}/offers', status_code=201)
+def create_offer(application_id: int, payload: OfferCreate, request: Request, user: HR):
+    details = payload.details.strip()
+    if not details:
+        raise HTTPException(status_code=422, detail='Offer details are required')
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _require_current_role(db, request, user, 'hr')
+        application = get_application(db, application_id)
+        if application['status'] != 'advanced':
+            raise HTTPException(status_code=409, detail='Application is not ready for an offer')
+        if not db.execute('''SELECT 1 FROM interviews i JOIN interview_completions c ON c.interview_id=i.id
+                             WHERE i.application_id=? LIMIT 1''', (application_id,)).fetchone():
+            raise HTTPException(status_code=409, detail='A completed interview is required')
+        if _upcoming_interview(db, application_id):
+            raise HTTPException(status_code=409, detail='Resolve active interviews before presenting an offer')
+        cursor = db.execute("INSERT INTO job_offers(application_id,details,status,created_by) VALUES (?,?,'presented',?)",
+                            (application_id, details, user.id))
+        db.execute("UPDATE applications SET status='offered',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (application_id,))
+        _offer_audit(db, application_id, user.id, 'offer_presented', cursor.lastrowid)
+        _require_current_role(db, request, user, 'hr')
+        return _offer_view(db.execute('SELECT * FROM job_offers WHERE id=?', (cursor.lastrowid,)).fetchone())
+
+
+@router.post('/offers/{offer_id}/respond')
+def respond_offer(offer_id: int, payload: OfferReply, request: Request, user: Candidate):
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _require_current_role(db, request, user, 'candidate')
+        offer = db.execute('''SELECT o.*,a.candidate_id,a.status AS application_status FROM job_offers o
+                              JOIN applications a ON a.id=o.application_id WHERE o.id=? AND a.candidate_id=?''',
+                           (offer_id, user.id)).fetchone()
+        if not offer:
+            raise HTTPException(status_code=404, detail='Offer not found')
+        if offer['status'] != 'presented' or offer['application_status'] != 'offered':
+            raise HTTPException(status_code=409, detail='Offer is no longer awaiting a response')
+        db.execute("UPDATE job_offers SET status=?,responded_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (payload.decision, offer_id))
+        if payload.decision == 'declined':
+            db.execute("UPDATE applications SET status='advanced',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (offer['application_id'],))
+        _offer_audit(db, offer['application_id'], user.id, 'offer_' + payload.decision, offer_id)
+        _require_current_role(db, request, user, 'candidate')
+        return _offer_view(db.execute('SELECT * FROM job_offers WHERE id=?', (offer_id,)).fetchone())
+
+
+@router.post('/offers/{offer_id}/withdraw')
+def withdraw_offer(offer_id: int, request: Request, user: HR):
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _require_current_role(db, request, user, 'hr')
+        offer = db.execute('''SELECT o.*,a.status AS application_status FROM job_offers o JOIN applications a
+                              ON a.id=o.application_id WHERE o.id=?''', (offer_id,)).fetchone()
+        if not offer:
+            raise HTTPException(status_code=404, detail='Offer not found')
+        if offer['status'] != 'presented' or offer['application_status'] != 'offered':
+            raise HTTPException(status_code=409, detail='Only pending offers can be withdrawn')
+        db.execute("UPDATE job_offers SET status='withdrawn',responded_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (offer_id,))
+        db.execute("UPDATE applications SET status='advanced',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (offer['application_id'],))
+        _offer_audit(db, offer['application_id'], user.id, 'offer_withdrawn', offer_id)
+        _require_current_role(db, request, user, 'hr')
+        return _offer_view(db.execute('SELECT * FROM job_offers WHERE id=?', (offer_id,)).fetchone())
+
+
 class Decision(BaseModel):
     decision: Literal["advance", "reject", "hire"]
     note: str = Field(default="", max_length=1000)
@@ -298,12 +393,23 @@ def decide(application_id: int, payload: Decision, request: Request, user: HR):
         application = get_application(db, application_id)
         permitted = {
             "submitted": {"advance", "reject"},
-            "advanced": {"hire", "reject"},
+            "advanced": {"reject"},
+            "offered": {"hire", "reject"},
             "hired": set(),
             "rejected": set(),
         }
         if payload.decision not in permitted.get(application["status"], set()):
             raise HTTPException(status_code=409, detail="Decision is not allowed from current status")
+        if payload.decision == 'hire':
+            if not db.execute("SELECT 1 FROM job_offers WHERE application_id=? AND status='accepted'", (application_id,)).fetchone():
+                raise HTTPException(status_code=409, detail='Candidate must accept an offer before hiring')
+            if _upcoming_interview(db, application_id):
+                raise HTTPException(status_code=409, detail='Resolve active interviews before hiring')
+        if payload.decision == 'reject':
+            offered = db.execute("SELECT id FROM job_offers WHERE application_id=? AND status='presented'", (application_id,)).fetchone()
+            if offered:
+                db.execute("UPDATE job_offers SET status='withdrawn', responded_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (offered['id'],))
+                _offer_audit(db, application_id, user.id, 'offer_withdrawn', offered['id'])
         state = {"advance": "advanced", "reject": "rejected", "hire": "hired"}[payload.decision]
         db.execute("UPDATE applications SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?", (state, application_id))
         details = json.dumps({"decision": payload.decision, "note": payload.note}, ensure_ascii=False)
@@ -322,6 +428,7 @@ def decide(application_id: int, payload: Decision, request: Request, user: HR):
                     "INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",
                     (application_id, user.id, "interview_cancelled", json.dumps({"interview_id": interview["id"], "reason": "application_rejected"})),
                 )
+        _require_current_role(db, request, user, 'hr')
         return application_view(get_application(db, application_id), user)
 
 

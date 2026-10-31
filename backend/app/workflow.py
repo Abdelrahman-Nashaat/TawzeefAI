@@ -38,6 +38,8 @@ def describe(db, application) -> dict:
     status = application["status"]
     if status in {"hired", "rejected"}:
         next_step = "complete"
+    elif status == "offered":
+        next_step = "human_decision"
     elif not screened:
         next_step = "screen"
     elif status == "submitted":
@@ -79,7 +81,7 @@ def candidate_progress(application_id: int, request: Request, user: Candidate):
         if application is None:
             raise HTTPException(status_code=404, detail="Application not found")
         status = application['status']
-        if status in ('hired', 'rejected'):
+        if status in ('hired', 'rejected', 'offered'):
             stage = status
         else:
             interview = db.execute("""SELECT i.id, EXISTS(SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) AS completed

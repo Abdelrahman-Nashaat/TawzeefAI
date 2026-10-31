@@ -101,7 +101,7 @@ def test_concurrent_booking_cannot_double_book_same_candidate(client):
     assert len(client.get("/api/interviews").json()) == 1
 
 
-def test_dashboard_zero_and_known_hire_duration(client):
+def test_dashboard_zero_and_known_hire_duration(client, accepted_offer):
     login(client, "hr")
     empty = client.get("/api/dashboard").json()
     assert empty["applications_total"] == 0 and empty["screening_events"] == 0
@@ -112,6 +112,7 @@ def test_dashboard_zero_and_known_hire_duration(client):
     assert client.post(f"/api/applications/{app_id}/screen").status_code == 200
     assert client.post(f"/api/applications/{app_id}/screen").status_code == 200
     assert client.post(f"/api/applications/{app_id}/decision", json={"decision": "advance"}).status_code == 200
+    accepted_offer(client, app_id)
     assert client.post(f"/api/applications/{app_id}/decision", json={"decision": "hire"}).status_code == 200
     with connect(client.app.state.database_path) as db:
         db.execute("UPDATE applications SET created_at = '2030-01-01T00:00:00Z' WHERE id = ?", (app_id,))

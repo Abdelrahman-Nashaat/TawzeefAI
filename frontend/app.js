@@ -109,7 +109,7 @@ function setupLogout() {
   });
 }
 
-const statusLabels = { submitted: "تم التقديم", advanced: "المرحلة التالية", rejected: "مرفوض", hired: "تم التوظيف" };
+const statusLabels = { submitted: "تم التقديم", advanced: "المرحلة التالية", offered: "عرض توظيف", rejected: "مرفوض", hired: "تم التوظيف" };
 const documentErrors = {
   unsupported_type: "صيغة الملف غير مدعومة. ارفع PDF نصيًا أو DOCX.",
   empty_file: "الملف فارغ.", file_too_large: "حجم الملف أكبر من 5 ميجابايت.",
@@ -935,6 +935,12 @@ function renderApplicationDetail(target, application, role) {
     panel.append(slotsPanel);
     loadCandidateSlots(slotsPanel, application.id, candidateProgress);
   }
+  if (role === "candidate" || role === "hr") {
+    const offersPanel = element("section", "application-detail");
+    offersPanel.setAttribute("aria-label", "عروض التوظيف");
+    panel.append(offersPanel);
+    loadApplicationOffers(offersPanel, application, role);
+  }
   if (role === "hr") {
     panel.append(element("p", "", `الملف: ${application.filename}`));
     panel.append(element("h4", "", "النص المستخرج من السيرة"), element("pre", "resume-preview", application.resume_text));
@@ -1001,7 +1007,7 @@ function renderApplicationDetail(target, application, role) {
     const form = element("form", "decision-form");
     const label = element("label", "", "قرار المراجع البشري");
     const select = element("select");
-    const decisions = { submitted: [["advance", "نقل للمرحلة التالية"], ["reject", "رفض الطلب"]], advanced: [["hire", "توظيف"], ["reject", "رفض الطلب"]] };
+    const decisions = { submitted: [["advance", "نقل للمرحلة التالية"], ["reject", "رفض الطلب"]], advanced: [["reject", "رفض الطلب"]], offered: [["hire", "توظيف بعد قبول العرض"], ["reject", "رفض الطلب"]] };
     const available = decisions[application.status] || [];
     for (const [value, text] of [["", "اختر القرار"], ...available]) { const option = element("option", "", text); option.value = value; select.append(option); }
     select.required = true; label.append(select);
@@ -1029,8 +1035,90 @@ function renderApplicationDetail(target, application, role) {
   target.replaceChildren(panel);
 }
 
+async function loadApplicationOffers(target, application, role) {
+  target.replaceChildren(element("h4", "", "عروض التوظيف"), element("p", "subtle-note", "جارٍ تحميل العروض..."));
+  try {
+    const offers = await api(`/api/applications/${encodeURIComponent(application.id)}/offers`);
+    if (!target.isConnected) return;
+    if (!Array.isArray(offers)) throw new Error("تعذّر قراءة العروض.");
+    const heading = element("h4", "", "عروض التوظيف");
+    const notice = element("p", "subtle-note", "تُعرض التفاصيل داخل التطبيق؛ لا يُرسل هذا الإجراء رسالة بريد. راجع التفاصيل جيدًا قبل الرد.");
+    const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
+    const controls = [];
+    target.replaceChildren(heading, notice, message);
+    const labels = { presented: "بانتظار رد المرشح", accepted: "قبله المرشح", declined: "رفضه المرشح", withdrawn: "تم سحبه" };
+    const refresh = element("button", "outline-button", "تحديث العروض والطلب"); refresh.type = "button";
+    refresh.addEventListener("click", async () => {
+      refresh.disabled = true;
+      try {
+        if (await loadRecruitment(role)) announce("تم تحديث الطلبات. افتح تفاصيل الطلب لرؤية أحدث العروض.");
+        else announce("تعذّر تحديث الطلبات. حاول مجددًا.", true);
+      } catch (error) { if (!isStale(error)) announce(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
+      finally { refresh.disabled = false; }
+    });
+    target.append(refresh);
+    async function submitAction(path, body, success) {
+      for (const control of controls) control.disabled = true;
+      message.className = "subtle-note"; message.textContent = "جارٍ تسجيل الإجراء...";
+      let uncertain = false;
+      try {
+        const options = { method: "POST" };
+        if (body !== null) { options.headers = { "Content-Type": "application/json" }; options.body = JSON.stringify(body); }
+        await api(path, options);
+        if (!target.isConnected) return;
+        if (await loadRecruitment(role)) announce(success);
+        else { message.className = "form-error"; message.textContent = "تم تسجيل الإجراء، لكن تعذّر تحديث الطلب. استخدم زر التحديث للتحقق."; uncertain = true; }
+        await loadOperations(role);
+      } catch (error) {
+        uncertain = error instanceof TypeError;
+        if (!isStale(error) && target.isConnected) {
+          message.className = "form-error";
+          message.textContent = uncertain ? "تعذّر الاتصال. حدّث الطلب والعروض للتحقق قبل إعادة المحاولة." : error.message;
+        }
+      } finally {
+        if (!uncertain) for (const control of controls) control.disabled = false;
+      }
+    }
+    if (!offers.length) target.append(element("p", "empty-note", "لا يوجد عرض توظيف لهذا الطلب حتى الآن."));
+    for (const offer of offers) {
+      if (!offer || offer.application_id !== application.id || typeof offer.details !== "string") throw new Error("تعذّر قراءة تفاصيل العرض بأمان.");
+      const card = element("article", "job-card");
+      card.append(element("h5", "", `عرض #${offer.id}`), element("p", "", `الحالة: ${labels[offer.status] || "غير معروفة"}`), element("pre", "resume-preview", offer.details));
+      if (offer.created_at) card.append(element("p", "subtle-note", `تاريخ العرض: ${displayDate(offer.created_at)}`));
+      if (role === "candidate" && offer.status === "presented") {
+        const accept = element("button", "small-button", "أقبل هذا العرض"); accept.type = "button";
+        const decline = element("button", "outline-button", "أرفض هذا العرض"); decline.type = "button";
+        accept.addEventListener("click", () => submitAction(`/api/offers/${encodeURIComponent(offer.id)}/respond`, { decision: "accepted" }, "تم تسجيل قبولك للعرض داخل التطبيق."));
+        decline.addEventListener("click", () => submitAction(`/api/offers/${encodeURIComponent(offer.id)}/respond`, { decision: "declined" }, "تم تسجيل رفضك للعرض داخل التطبيق."));
+        controls.push(accept, decline); card.append(accept, decline);
+      }
+      if (role === "hr" && offer.status === "presented") {
+        const withdraw = element("button", "outline-button", "سحب هذا العرض"); withdraw.type = "button";
+        withdraw.addEventListener("click", () => submitAction(`/api/offers/${encodeURIComponent(offer.id)}/withdraw`, null, "تم سحب العرض داخل التطبيق."));
+        controls.push(withdraw); card.append(withdraw);
+      }
+      target.append(card);
+    }
+    if (role === "hr" && application.status === "advanced") {
+      const form = element("form", "decision-form");
+      const label = element("label", "", "تفاصيل عرض التوظيف للمرشح");
+      const details = element("textarea"); details.required = true; details.maxLength = 4000; label.append(details);
+      const create = element("button", "small-button", "تسجيل العرض للمرشح"); create.type = "submit";
+      form.append(element("p", "subtle-note", "يتطلب العرض تسجيل إجراء مقابلة وانتهاء أي مقابلة جارية أو مستقبلية. لا يتم إرسال بريد."), label, create);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const value = details.value.trim(); if (!value) return;
+        submitAction(`/api/applications/${encodeURIComponent(application.id)}/offers`, { details: value }, "تم تسجيل العرض داخل التطبيق.");
+      });
+      controls.push(details, create); target.append(form);
+    }
+  } catch (error) {
+    if (!isStale(error) && target.isConnected) target.replaceChildren(element("h4", "", "عروض التوظيف"), element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم لتحميل العروض." : error.message));
+  }
+}
+
 async function loadCandidateProgress(target, applicationId) {
-  const labels = { applied: "تم التقديم", screened: "تم فحص الطلب", shortlisted: "تمت الموافقة على الانتقال للمرحلة التالية", interview_scheduled: "تم تسجيل موعد مقابلة", interviewed: "تم تسجيل إجراء المقابلة", hired: "تم التوظيف", rejected: "انتهى الطلب بالرفض" };
+  const labels = { applied: "تم التقديم", screened: "تم فحص الطلب", shortlisted: "تمت الموافقة على الانتقال للمرحلة التالية", interview_scheduled: "تم تسجيل موعد مقابلة", interviewed: "تم تسجيل إجراء المقابلة", offered: "عرض توظيف", hired: "تم التوظيف", rejected: "انتهى الطلب بالرفض" };
   try {
     const progress = await api(`/api/workflows/${encodeURIComponent(applicationId)}/progress`);
     if (target.isConnected) target.textContent = `مرحلة الطلب: ${labels[progress.stage] || "غير متاحة"}`;
