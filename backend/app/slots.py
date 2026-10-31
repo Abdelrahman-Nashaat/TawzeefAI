@@ -187,7 +187,9 @@ def book_slot(slot_id: int, payload: BookSlot, request: Request, user: Candidate
                    (application['id'], user.id, 'interview_scheduled', json.dumps({
                        'interview_id': cursor.lastrowid, 'slot_id': slot_id, 'source': 'candidate_selection',
                    })))
-        return interview_view(db.execute('SELECT * FROM interviews WHERE id = ?', (cursor.lastrowid,)).fetchone())
+        result = interview_view(db.execute('SELECT * FROM interviews WHERE id = ?', (cursor.lastrowid,)).fetchone())
+        _require_current_role(db, request, user, 'candidate')
+        return result
 
 
 @router.post('/slots/{slot_id}/withdraw')

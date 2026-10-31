@@ -132,6 +132,7 @@ def create_interview(payload: InterviewCreate, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         # Serialize conflict checking and insertion across concurrent requests.
         db.execute("BEGIN IMMEDIATE")
+        _require_current_hr(db, request, user)
         if payload.start_at <= datetime.now(UTC):
             raise HTTPException(status_code=422, detail="Interview start must be in the future")
         application = db.execute("SELECT candidate_id, status FROM applications WHERE id = ?", (payload.application_id,)).fetchone()
@@ -161,6 +162,7 @@ def create_interview(payload: InterviewCreate, request: Request, user: HR):
             (payload.application_id, user.id, "interview_scheduled", json.dumps({"interview_id": cursor.lastrowid})),
         )
         row = db.execute("SELECT * FROM interviews WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        _require_current_hr(db, request, user)
         return interview_view(row)
 
 
@@ -168,6 +170,7 @@ def create_interview(payload: InterviewCreate, request: Request, user: HR):
 def cancel_interview(interview_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         db.execute("BEGIN IMMEDIATE")
+        _require_current_hr(db, request, user)
         row = db.execute("SELECT * FROM interviews WHERE id = ?", (interview_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Interview not found")
@@ -182,7 +185,9 @@ def cancel_interview(interview_id: int, request: Request, user: HR):
             "INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",
             (row["application_id"], user.id, "interview_cancelled", json.dumps({"interview_id": interview_id, "reason": "hr_cancelled"})),
         )
-        return interview_view(db.execute("SELECT * FROM interviews WHERE id = ?", (interview_id,)).fetchone())
+        result = interview_view(db.execute("SELECT * FROM interviews WHERE id = ?", (interview_id,)).fetchone())
+        _require_current_hr(db, request, user)
+        return result
 
 
 @router.get("/interviews")
