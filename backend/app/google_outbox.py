@@ -8,8 +8,10 @@ write transaction before changing an interview, otherwise a send can race a
 cancellation. Google Calendar and Gmail delivery are distinct from local booking.
 """
 
+import hashlib
 import json
 import re
+import secrets
 import time
 import uuid
 from datetime import UTC, datetime
@@ -21,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from app.auth import COOKIE_NAME, User, require_roles, token_digest
 from app.db import connect
+from app.google_templates import CALENDAR_SUMMARY, confirmation_content
 
 router = APIRouter(prefix='/api/google')
 HR = Annotated[User, Depends(require_roles('hr'))]
@@ -134,6 +137,29 @@ class Reprepare(Confirm):
     expected_generation: int = Field(strict=True, ge=0)
 
 
+class DeliveryProposal(BaseModel):
+    """An HR-supplied address is not a verified candidate contact."""
+    model_config = ConfigDict(extra='forbid')
+    recipient: str = Field(max_length=254)
+
+    @model_validator(mode='after')
+    def validate_recipient(self):
+        if not _EMAIL.fullmatch(self.recipient):
+            raise ValueError('One valid email address is required')
+        return self
+
+
+class PrepareProposal(DeliveryProposal):
+    confirmed: StrictBool
+    fingerprint: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+    @model_validator(mode='after')
+    def validate_confirmation(self):
+        if not self.confirmed:
+            raise ValueError('Explicit review is required')
+        return self
+
+
 def _check_generation(row, expected: int | None) -> None:
     if (expected is None and row['retry_generation'] != 0) or (expected is not None and expected != row['retry_generation']):
         raise HTTPException(status_code=409, detail='Delivery changed; review the current draft')
@@ -180,6 +206,46 @@ def _audit(db, application_id: int, actor_id: int, delivery_id: int, kind: str, 
 def _public(row) -> dict:
     return {key: row[key] for key in ('id', 'interview_id', 'kind', 'recipient', 'event_id',
                                        'start_at', 'end_at', 'state', 'provider_id', 'created_at', 'updated_at', 'retry_generation')}
+
+
+def _proposal(db, interview_id: int, recipient: str, reviewer_id: int) -> dict:
+    """Build an exact, currently reviewable proposal without side effects."""
+    interview = _interview(db, interview_id)
+    _eligible(interview)
+    application = db.execute('SELECT id,candidate_id,status FROM applications WHERE id=?',
+                             (interview['application_id'],)).fetchone()
+    if (application is None or application['candidate_id'] != interview['candidate_id']
+            or application['status'] != 'advanced'):
+        raise HTTPException(status_code=409, detail='Application is not eligible for a delivery proposal')
+    existing = {row['kind']: row for row in db.execute(
+        'SELECT * FROM google_deliveries WHERE interview_id=? ORDER BY id', (interview_id,))}
+    drafts = []
+    for kind in ('calendar', 'email'):
+        row = existing.get(kind)
+        drafts.append({'kind': kind, 'state': row['state'] if row else 'not_prepared',
+                       'id': row['id'] if row else None,
+                       'recipient': row['recipient'] if row else (recipient if kind == 'email' else None),
+                       'event_id': row['event_id'] if row else None,
+                       'start_at': row['start_at'] if row else interview['start_at'],
+                       'end_at': row['end_at'] if row else interview['end_at'],
+                       'retry_generation': row['retry_generation'] if row else None,
+                       'updated_at': row['updated_at'] if row else None})
+    blockers = any(draft['state'] not in ('not_prepared', 'pending')
+                   or draft['start_at'] != interview['start_at'] or draft['end_at'] != interview['end_at']
+                   or (draft['kind'] == 'email' and draft['recipient'] != recipient)
+                   for draft in drafts)
+    subject, body = confirmation_content(interview['start_at'], interview['end_at'])
+    snapshot = {'version': 1, 'reviewer_id': reviewer_id, 'interview_id': interview_id,
+                'application_id': application['id'], 'candidate_id': application['candidate_id'],
+                'application_status': application['status'], 'interviewer': interview['interviewer'],
+                'start_at': interview['start_at'], 'end_at': interview['end_at'],
+                'recipient': recipient, 'recipient_verified': False, 'drafts': drafts,
+                'calendar': {'summary': CALENDAR_SUMMARY, 'visibility': 'private', 'attendees': []},
+                'email': {'subject': subject, 'body': body},
+                'can_prepare': not blockers,
+                'notice': 'Address supplied by HR is unverified. This prepares local drafts only; each Google action requires separate confirmation.'}
+    encoded = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return {**snapshot, 'fingerprint': hashlib.sha256(encoded).hexdigest()}
 
 
 def cancellation_block_reason(db, interview_id: int) -> str | None:
@@ -266,6 +332,48 @@ def list_deliveries(interview_id: int, request: Request, user: HR):
             item['calendar_removal_state'] = removal['state'] if removal else None
             results.append(item)
         return results
+
+
+@router.post('/interviews/{interview_id}/delivery-proposal')
+def preview_delivery_proposal(interview_id: int, payload: DeliveryProposal, request: Request, user: HR):
+    """Preview a local proposal. This neither writes a draft nor contacts Google."""
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _actor(db, request, user)
+        proposal = _proposal(db, interview_id, payload.recipient, user.id)
+        _actor(db, request, user)
+        return proposal
+
+
+@router.post('/interviews/{interview_id}/delivery-proposal/prepare')
+def prepare_delivery_proposal(interview_id: int, payload: PrepareProposal, request: Request, user: HR):
+    """Atomically prepare only missing local drafts for the reviewed proposal."""
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _actor(db, request, user)
+        proposal = _proposal(db, interview_id, payload.recipient, user.id)
+        if not secrets.compare_digest(proposal['fingerprint'], payload.fingerprint):
+            raise HTTPException(status_code=409, detail='Proposal changed; review it again')
+        if not proposal['can_prepare']:
+            raise HTTPException(status_code=409, detail='Existing deliveries need separate review')
+        interview = _interview(db, interview_id)
+        for draft in proposal['drafts']:
+            if draft['state'] != 'not_prepared':
+                continue
+            kind = draft['kind']
+            recipient = payload.recipient if kind == 'email' else None
+            event_id = uuid.uuid4().hex if kind == 'calendar' else None
+            cursor = db.execute('''INSERT INTO google_deliveries
+                (interview_id,application_id,kind,recipient,event_id,start_at,end_at,state,created_by)
+                VALUES (?,?,?,?,?,?,?,'pending',?)''', (interview_id, interview['application_id'], kind,
+                recipient, event_id, interview['start_at'], interview['end_at'], user.id))
+            _audit(db, interview['application_id'], user.id, cursor.lastrowid, kind, 'google_delivery_prepared')
+        # Recheck time and session before the transaction can commit.
+        _eligible(_interview(db, interview_id))
+        _actor(db, request, user)
+        return {'drafts': [_public(row) for row in db.execute(
+            'SELECT * FROM google_deliveries WHERE interview_id=? ORDER BY kind', (interview_id,))],
+            'notice': 'Local drafts only. Each Google action requires separate confirmation.'}
 
 
 @router.post('/interviews/{interview_id}/deliveries', status_code=201)

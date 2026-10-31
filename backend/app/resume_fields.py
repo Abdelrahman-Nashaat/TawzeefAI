@@ -49,6 +49,19 @@ _OTHER_HEADINGS = frozenset(('skills', 'technical skills', 'languages', 'summary
 _PREFIX = re.compile(r'^\s*(?:(?:[-+*•▪◦‣]|\d+[.)])\s+|#{1,6}\s+)?')
 
 
+def resume_fields_for_display(blind_source: str) -> dict:
+    """Report a bounded, non-partial result for an authorized display."""
+    if not isinstance(blind_source, str):
+        raise TypeError('blind_source must be a string')
+    if len(blind_source) > MAX_SOURCE_CHARS:
+        return {
+            'status': 'limit_exceeded',
+            'requires_human_review': True,
+            'notice': 'The redacted resume exceeds the field extraction limit; review the original manually.',
+        }
+    return {'status': 'current', **extract_resume_fields(blind_source)}
+
+
 def _normalize(value: str) -> str:
     return ' '.join(unicodedata.normalize('NFKC', value).casefold().strip().split())
 

@@ -6,30 +6,19 @@ can mean the provider completed an operation even though no reply was received.
 
 import base64
 import re
-from datetime import UTC, datetime
+from datetime import datetime
 from email import policy
 from email.message import EmailMessage
 
 import requests
+
+from app.google_templates import CALENDAR_SUMMARY, _times, confirmation_content
 
 CALENDAR_URL = 'https://www.googleapis.com/calendar/v3/calendars/primary/events'
 GMAIL_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send'
 _EVENT_ID = re.compile(r'^[0-9a-v]{5,1024}$')
 _EMAIL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$')
 _ETAG = re.compile(r'^"[^"\r\n]{1,256}"$')
-
-
-def _times(start: str, end: str) -> tuple[str, str]:
-    try:
-        first = datetime.fromisoformat(start)
-        last = datetime.fromisoformat(end)
-        if first.tzinfo is None or last.tzinfo is None or first.utcoffset() is None or last.utcoffset() is None:
-            raise ValueError('Timezone required')
-        if last <= first:
-            raise ValueError('Invalid interval')
-    except (AttributeError, TypeError, ValueError, OverflowError) as exc:
-        raise ValueError('An ordered timezone-aware interview interval is required') from exc
-    return tuple(value.astimezone(UTC).isoformat().replace('+00:00', 'Z') for value in (first, last))
 
 
 def _calendar_time_matches(actual: str, expected: str) -> bool:
@@ -74,7 +63,7 @@ def create_calendar_event(session, *, event_id: str, start: str, end: str) -> di
     if not isinstance(event_id, str) or not _EVENT_ID.fullmatch(event_id):
         raise ValueError('Invalid Google Calendar event ID')
     start, end = _times(start, end)
-    event = {'id': event_id, 'summary': 'TawzeefAI interview', 'visibility': 'private',
+    event = {'id': event_id, 'summary': CALENDAR_SUMMARY, 'visibility': 'private',
              'start': {'dateTime': start}, 'end': {'dateTime': end},
              'extendedProperties': {'private': {'tawzeefai_delivery': event_id}}}
     # No attendee list; sending invitations is a separate explicit action.
@@ -104,7 +93,7 @@ def remove_calendar_event(session, *, event_id: str, etag: str, start: str, end:
             return {'status': 'uncertain'}
         actual_start, actual_end = _times(event['start']['dateTime'], event['end']['dateTime'])
         if (event.get('id') != event_id or event.get('etag') != etag
-                or event.get('summary') != 'TawzeefAI interview'
+                or event.get('summary') != CALENDAR_SUMMARY
                 or event.get('status') != 'confirmed' or event.get('visibility') != 'private'
                 or event.get('attendees') or not _calendar_time_matches(actual_start, start)
                 or not _calendar_time_matches(actual_end, end)
@@ -123,10 +112,10 @@ def remove_calendar_event(session, *, event_id: str, etag: str, start: str, end:
 def send_confirmation(session, *, recipient: str, start: str, end: str) -> dict:
     if not isinstance(recipient, str) or len(recipient) > 254 or not _EMAIL.fullmatch(recipient):
         raise ValueError('A single valid email recipient is required')
-    start, end = _times(start, end)
+    subject, body = confirmation_content(start, end)
     message = EmailMessage(policy=policy.SMTP)
     message['To'] = recipient
-    message['Subject'] = 'Interview confirmation'
-    message.set_content(f'Your interview is scheduled from {start} to {end}.\n')
+    message['Subject'] = subject
+    message.set_content(body)
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii').rstrip('=')
     return _post(session, GMAIL_URL, {'raw': raw})

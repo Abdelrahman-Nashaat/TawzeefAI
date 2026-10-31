@@ -789,7 +789,8 @@ function setupGraphReview(target, application) {
     const fields = review.state.resume_fields;
     if (fields) {
       output.append(element("h4", "", "حقول مقترحة من السيرة"));
-      if (fields.status !== "current") output.append(element("p", "form-error", "تغيرت السيرة أو لا يمكن التحقق من المراجعة القديمة؛ ابدأ مراجعة جديدة."));
+      if (fields.status === "limit_exceeded") output.append(element("p", "form-error", "النص بعد الحجب أكبر من حد تحليل الحقول؛ راجع السيرة يدويًا."));
+      else if (fields.status !== "current") output.append(element("p", "form-error", "تغيرت السيرة أو لا يمكن التحقق من المراجعة القديمة؛ ابدأ مراجعة جديدة."));
       else {
         output.append(element("p", "subtle-note", "قيم مقتبسة من حقول مسماة صراحةً؛ تجميع السجلات تقديري والحجب جزئي. راجع السيرة قبل الاعتماد عليها، والحقول المفقودة غير معروفة."));
         const sectionLabels = { experience: "الخبرة", education: "التعليم", projects: "المشاريع" };
@@ -1007,6 +1008,10 @@ function renderApplicationDetail(target, application, role) {
     structurePanel.setAttribute("aria-label", "الأقسام المستخرجة من السيرة");
     panel.append(structurePanel);
     loadStructuredResume(structurePanel, application.id);
+    const reviewFieldsPanel = element("section", "application-detail");
+    reviewFieldsPanel.setAttribute("aria-label", "مراجعة حقول السيرة");
+    panel.append(reviewFieldsPanel);
+    loadResumeFieldReview(reviewFieldsPanel, application.id);
     const result = element("div"); panel.append(result); renderScore(result, application.score);
     const rubricPanel = element("section", "application-detail");
     rubricPanel.setAttribute("aria-label", "التقييم الموزون بالمراجعة البشرية");
@@ -1074,6 +1079,62 @@ function renderApplicationDetail(target, application, role) {
     panel.append(form);
   }
   target.replaceChildren(panel);
+}
+
+async function loadResumeFieldReview(target, applicationId) {
+  target.replaceChildren(element("h4", "", "مراجعة حقول السيرة"), element("p", "subtle-note", "جارٍ التحميل..."));
+  try {
+    const review = await api(`/api/applications/${encodeURIComponent(applicationId)}/resume/field-review`);
+    if (!target.isConnected) return;
+    const title = element("h4", "", "مراجعة حقول السيرة");
+    const notice = element("p", "subtle-note", "حدد مقطعًا من النص المحجوب جزئيًا، واختر القسم والحقل ورقم السجل، ثم أضفه للمراجعة. القيم اختيارات بشرية غير متحقق منها ولا تتخذ قرار توظيف.");
+    const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
+    const sourceLabel = element("label", "", "النص المحجوب جزئيًا للاختيار");
+    const source = element("textarea"); source.readOnly = true; source.value = review.source; source.rows = 10; sourceLabel.append(source);
+    const sectionLabel = element("label", "", "القسم"); const section = element("select");
+    for (const [value, label] of [["experience", "الخبرة"], ["education", "التعليم"], ["projects", "المشاريع"]]) { const option = element("option", "", label); option.value = value; section.append(option); }
+    sectionLabel.append(section);
+    const fieldLabel = element("label", "", "الحقل"); const field = element("select"); fieldLabel.append(field);
+    const choices = { experience: [["role", "الدور"], ["organization", "الجهة"], ["period", "الفترة"]], education: [["qualification", "المؤهل"], ["institution", "المؤسسة"], ["period", "الفترة"]], projects: [["name", "المشروع"], ["role", "الدور"], ["technologies", "التقنيات"], ["period", "الفترة"]] };
+    function updateFields() { field.replaceChildren(); for (const [value, label] of choices[section.value]) { const option = element("option", "", label); option.value = value; field.append(option); } }
+    section.addEventListener("change", updateFields); updateFields();
+    const recordLabel = element("label", "", "رقم السجل داخل هذا القسم"); const record = element("input"); record.type = "number"; record.min = "1"; record.max = "100"; record.value = "1"; recordLabel.append(record);
+    const list = element("ul", "evidence-list");
+    const add = element("button", "outline-button", "إضافة المقطع المحدد"); add.type = "button";
+    const save = element("button", "small-button", "حفظ مراجعة الحقول"); save.type = "button";
+    const reload = element("button", "outline-button", "إعادة تحميل المراجعة"); reload.type = "button";
+    let draft = (review.fields || []).map(({ record_ref, section: group, field: name, start, end }) => ({ record_ref, section: group, field: name, start, end }));
+    function renderDraft() {
+      list.replaceChildren();
+      const points = Array.from(review.source);
+      draft.forEach((item, index) => {
+        const li = element("li"); li.append(element("p", "", `${item.section} · ${item.record_ref} · ${item.field}: ${points.slice(item.start, item.end).join("")}`));
+        const remove = element("button", "outline-button", "إزالة"); remove.type = "button"; remove.addEventListener("click", () => { draft.splice(index, 1); renderDraft(); }); li.append(remove); list.append(li);
+      });
+    }
+    function splitsPair(index) { return index > 0 && index < source.value.length && /[\uD800-\uDBFF]/.test(source.value[index - 1]) && /[\uDC00-\uDFFF]/.test(source.value[index]); }
+    add.addEventListener("click", () => {
+      const a = source.selectionStart, b = source.selectionEnd, number = Number(record.value);
+      if (a === b || splitsPair(a) || splitsPair(b) || !Number.isInteger(number) || number < 1 || number > 100) { message.textContent = "حدد مقطعًا صحيحًا ورقم سجل من 1 إلى 100."; message.className = "form-error"; return; }
+      const start = Array.from(source.value.slice(0, a)).length, end = Array.from(source.value.slice(0, b)).length;
+      const record_ref = `r-${section.value}-${number}`;
+      if (draft.some((item) => item.record_ref === record_ref && item.field === field.value)) { message.textContent = "هذا الحقل موجود في السجل؛ أزله قبل استبداله."; message.className = "form-error"; return; }
+      draft.push({ record_ref, section: section.value, field: field.value, start, end }); renderDraft(); message.textContent = "أضيف المقطع للمراجعة غير المحفوظة."; message.className = "subtle-note";
+    });
+    save.addEventListener("click", async () => {
+      save.disabled = true; add.disabled = true; reload.disabled = true;
+      let uncertain = false;
+      try {
+        await api(`/api/applications/${encodeURIComponent(applicationId)}/resume/field-review`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_sha256: review.source_sha256, expected_version: review.version, fields: draft }) });
+        if (target.isConnected) await loadResumeFieldReview(target, applicationId);
+      } catch (error) { uncertain = error instanceof TypeError; if (!isStale(error) && target.isConnected) { message.className = "form-error"; message.textContent = uncertain ? "تعذّر الاتصال؛ أعد التحميل للتحقق قبل المحاولة." : error.message; } }
+      finally { save.disabled = uncertain; add.disabled = uncertain; reload.disabled = false; }
+    });
+    reload.addEventListener("click", () => loadResumeFieldReview(target, applicationId));
+    target.replaceChildren(title, notice, message, sourceLabel, sectionLabel, fieldLabel, recordLabel, add, list, save, reload);
+    if (review.status === "stale") { message.textContent = "تغيرت السيرة منذ المراجعة السابقة؛ أعد اختيار المقاطع قبل الحفظ."; message.className = "form-error"; }
+    renderDraft();
+  } catch (error) { if (!isStale(error) && target.isConnected) target.replaceChildren(element("h4", "", "مراجعة حقول السيرة"), element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال لتحميل المراجعة." : error.message)); }
 }
 
 async function loadApplicationOffers(target, application, role) {
@@ -1767,6 +1828,12 @@ function setupGoogleDeliveries(card, interview) {
   const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
   const list = element("div", "google-delivery-list");
   const reload = element("button", "outline-button", "تحديث سجل Google"); reload.type = "button";
+  const proposalForm = element("form", "decision-form");
+  const proposalAddressLabel = element("label", "", "عنوان البريد المقترح للمرشح (غير متحقق منه)");
+  const proposalAddress = element("input"); proposalAddress.type = "email"; proposalAddress.required = true; proposalAddress.maxLength = 254; proposalAddressLabel.append(proposalAddress);
+  const previewProposal = element("button", "outline-button", "مراجعة مقترح التقويم والبريد"); previewProposal.type = "submit";
+  const proposalView = element("div"); proposalView.setAttribute("aria-live", "polite");
+  proposalForm.append(proposalAddressLabel, previewProposal, proposalView);
   const calendarForm = element("form", "decision-form");
   const calendarReview = element("input"); calendarReview.type = "checkbox";
   const calendarLabel = element("label", "admin-checkbox", "راجعت الموعد وأريد تجهيز مسودة حدث خاص دون مدعوين.");
@@ -1782,10 +1849,40 @@ function setupGoogleDeliveries(card, interview) {
   emailLabel.prepend(emailReview);
   const emailCreate = element("button", "outline-button", "تجهيز مسودة الرسالة"); emailCreate.type = "submit";
   emailForm.append(recipientLabel, emailLabel, emailCreate);
-  panel.append(message, reload, list, calendarForm, emailForm); details.append(panel); card.append(details);
+  panel.append(message, reload, list, proposalForm, calendarForm, emailForm); details.append(panel); card.append(details);
   let loaded = false, busy = false, loading = false, deliveries = [];
   const endpoint = `/api/google/interviews/${encodeURIComponent(interview.id)}/deliveries`;
   function report(text, isError = false) { message.textContent = text; message.className = isError ? "form-error" : "subtle-note"; }
+  proposalAddress.addEventListener("input", () => proposalView.replaceChildren());
+  proposalForm.addEventListener("submit", async (event) => {
+    event.preventDefault(); const recipient = proposalAddress.value.trim(); if (!recipient || !proposalAddress.checkValidity()) return;
+    previewProposal.disabled = true; proposalAddress.disabled = true; proposalView.replaceChildren(element("p", "subtle-note", "جارٍ تجهيز المقترح للمراجعة..."));
+    try {
+      const path = `/api/google/interviews/${encodeURIComponent(interview.id)}/delivery-proposal`;
+      const proposal = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipient }) });
+      if (!proposalView.isConnected) return;
+      proposalView.replaceChildren(element("h5", "", "راجع المقترح قبل تجهيز المسودات"),
+        element("p", "form-error", `المستلم: ${proposal.recipient} — أدخله HR ولم يُتحقق منه.`),
+        element("p", "", `المقابلة: ${displayDate(proposal.start_at)} إلى ${displayDate(proposal.end_at)} · الطلب #${proposal.application_id}`),
+        element("p", "", `التقويم: ${proposal.calendar?.summary || ""} · خاص، دون مدعوين`),
+        element("p", "", `موضوع الرسالة: ${proposal.email?.subject || ""}`), element("pre", "resume-preview", proposal.email?.body || ""),
+        element("p", "subtle-note", "هذا يجهز مسودتين محليتين فقط؛ لا ينشئ حدثًا ولا يرسل بريدًا. لكل إجراء خارجي تأكيد منفصل."));
+      const states = element("ul", "evidence-list"); for (const draft of proposal.drafts || []) states.append(element("li", "", `${draft.kind === "calendar" ? "التقويم" : "البريد"}: ${draft.state}`)); proposalView.append(states);
+      if (!proposal.can_prepare) { proposalView.append(element("p", "form-error", "تحتاج المسودات الحالية إلى مراجعة منفصلة قبل المتابعة.")); return; }
+      const confirmLabel = element("label", "", "راجعت العنوان غير المتحقق منه والتفاصيل وأوافق على تجهيز المسودات المحلية"); const confirm = element("input"); confirm.type = "checkbox"; confirmLabel.prepend(confirm);
+      const prepare = element("button", "small-button", "تجهيز المسودتين محليًا"); prepare.type = "button";
+      prepare.addEventListener("click", async () => {
+        if (!confirm.checked) { report("أكد مراجعة المقترح أولًا.", true); return; }
+        prepare.disabled = true; confirm.disabled = true;
+        try {
+          await api(`${path}/prepare`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipient, fingerprint: proposal.fingerprint, confirmed: true }) });
+          if (proposalView.isConnected) { proposalView.replaceChildren(element("p", "subtle-note", "تم تجهيز المسودات محليًا؛ راجع سجل Google قبل أي إجراء آخر.")); reload.click(); }
+        } catch (error) { if (!isStale(error) && proposalView.isConnected) { report(error instanceof TypeError ? "تعذّر الاتصال؛ حدّث سجل Google للتحقق قبل أي محاولة أخرى." : error.message, true); } }
+      });
+      proposalView.append(confirmLabel, prepare);
+    } catch (error) { if (!isStale(error) && proposalView.isConnected) proposalView.replaceChildren(element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message)); }
+    finally { previewProposal.disabled = false; proposalAddress.disabled = false; }
+  });
   function synchronizeControls() {
     const existing = new Set(deliveries.map((item) => item.kind));
     calendarForm.hidden = existing.has("calendar"); emailForm.hidden = existing.has("email");

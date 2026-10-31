@@ -40,7 +40,7 @@ from app.db import connect
 from app.matching_specialist import matching_snapshot
 from app.policy_agent import authorized_policy_sources, run_policy_agent
 from app.recruitment import get_application, job_data, score_resume
-from app.resume_fields import extract_resume_fields
+from app.resume_fields import resume_fields_for_display
 from app.resume_structure import structure_resume
 from app.scheduling import utc_text
 from app.slots import SlotCreate, create_slot_record
@@ -457,7 +457,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     source = redact_resume(application['resume_text']).text
                     digest = hashlib.sha256(source.encode('utf-8')).hexdigest()
                     if isinstance(parser_ref, str) and secrets.compare_digest(digest.encode(), parser_ref.encode()):
-                        state['resume_fields'] = {'status': 'current', **extract_resume_fields(source)}
+                        state['resume_fields'] = resume_fields_for_display(source)
                     else:
                         state.pop('parsed', None)
                         state['resume_fields'] = {'status': 'stale', 'notice': 'Resume changed or cannot be verified; start a new review.'}

@@ -8,7 +8,7 @@ from app.auth import User, require_roles
 from app.blind import redact_resume
 from app.db import connect
 from app.recruitment import _require_current_role, get_application
-from app.resume_fields import extract_resume_fields
+from app.resume_fields import resume_fields_for_display
 
 router = APIRouter(prefix='/api')
 HR = Annotated[User, Depends(require_roles('hr'))]
@@ -21,6 +21,6 @@ def resume_fields(application_id: int, request: Request, user: HR):
         db.execute('BEGIN')
         _require_current_role(db, request, user, 'hr')
         application = get_application(db, application_id)
-        result = extract_resume_fields(redact_resume(application['resume_text']).text)
+        result = resume_fields_for_display(redact_resume(application['resume_text']).text)
         _require_current_role(db, request, user, 'hr')
         return result

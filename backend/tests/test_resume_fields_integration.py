@@ -10,6 +10,29 @@ def login(client, username):
     }).status_code == 200
 
 
+def test_redaction_expansion_returns_limit_without_breaking_review(tmp_path):
+    path = tmp_path / 'expanded.sqlite3'
+    source = ('Name: x\n' * 24999).rstrip()
+    assert len(source) < 200_000
+    with TestClient(create_app(path, seed_demo=True)) as client:
+        login(client, 'hr')
+        with connect(path) as db:
+            candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
+            application = db.execute("""INSERT INTO applications(candidate_id,job_id,filename,resume_text)
+                VALUES (?, 'job-backend-python', 'example.docx', ?)""", (candidate, source)).lastrowid
+        fields = client.get(f'/api/applications/{application}/resume/fields')
+        assert fields.status_code == 200
+        assert fields.json()['status'] == 'limit_exceeded'
+        assert 'sections' not in fields.json()
+        review = client.post('/api/graph-reviews', json={'application_id': application})
+        assert review.status_code == 201, review.text
+        assert review.json()['state']['resume_fields']['status'] == 'limit_exceeded'
+        assert 'sections' not in review.json()['state']['resume_fields']
+        assert review.json()['awaiting_review']
+        login(client, 'candidate')
+        assert client.get(f'/api/applications/{application}/resume/fields').status_code == 403
+
+
 def test_fields_hr_graph_rechecks_source_and_checkpoint_contains_no_text(tmp_path):
     path = tmp_path / 'fields.sqlite3'
     source = 'Experience\nRole: Synthetic Field Analyst\nCompany: Example Company\n'
