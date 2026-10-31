@@ -45,6 +45,7 @@ from app.knowledge_documents import initialize_knowledge_documents
 from app.knowledge_documents import router as knowledge_documents_router
 from app.recruitment import router as recruitment_router
 from app.recruitment import seed_jobs
+from app.resume_fields_api import router as resume_fields_router
 from app.rubric_admin import initialize_rubric_admin
 from app.rubric_admin import router as rubric_admin_router
 from app.rubric_comparison import router as rubric_comparison_router
@@ -119,6 +120,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         application.state.google_preflight = prepare_dispatch
         application.state.google_calendar_removal_preflight = prepare_calendar_removal
     application.include_router(recruitment_router)
+    application.include_router(resume_fields_router)
     application.include_router(scheduling_router)
     application.include_router(slots_router)
     application.include_router(dashboard_router)

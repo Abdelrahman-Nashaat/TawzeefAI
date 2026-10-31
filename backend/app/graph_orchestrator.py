@@ -40,6 +40,7 @@ from app.db import connect
 from app.matching_specialist import matching_snapshot
 from app.policy_agent import authorized_policy_sources, run_policy_agent
 from app.recruitment import get_application, job_data, score_resume
+from app.resume_fields import extract_resume_fields
 from app.resume_structure import structure_resume
 from app.scheduling import utc_text
 from app.slots import SlotCreate, create_slot_record
@@ -89,6 +90,7 @@ class ReviewState(TypedDict, total=False):
     intent: str
     plan: list[str]
     parsed: dict
+    parser_source_ref: str
     matching: dict
     matching_specialist_ref: str
     policy: dict
@@ -205,11 +207,13 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         with connect(path) as db:
             row = get_application(db, state["application_id"])
             text = row["resume_text"]
-        result = structure_resume(redact_resume(text).text)
+        blind_source = redact_resume(text).text
+        result = structure_resume(blind_source)
         return {"parsed": {"text_available": bool(text.strip()),
                            "sections": {name: section["status"] for name, section in result["sections"].items()},
                            "notice": "Section mentions are unverified; redaction is incomplete. "
-                                     "The structured résumé endpoint exposes text for HR review."}}
+                                     "The structured résumé endpoint exposes text for HR review."},
+                "parser_source_ref": hashlib.sha256(blind_source.encode('utf-8')).hexdigest()}
 
     def matching(state: ReviewState):
         with connect(path) as db:
@@ -401,6 +405,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
           user: User | None = None) -> dict:
     state = dict(snapshot.values)
     specialist_ref = state.pop('matching_specialist_ref', None)
+    parser_ref = state.pop('parser_source_ref', None)
     # Old checkpoints lack intent and retain the historical full-review view.
     # Never expose stale stage data outside an explicitly selected scope.
     selected = state.get('intent', 'full')
@@ -447,6 +452,15 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     raise HTTPException(status_code=401, detail='Authentication required')
                 if actor['role'] != 'hr':
                     raise HTTPException(status_code=403, detail='HR access required')
+                if 'parsed' in state:
+                    application = get_application(db, state['application_id'])
+                    source = redact_resume(application['resume_text']).text
+                    digest = hashlib.sha256(source.encode('utf-8')).hexdigest()
+                    if isinstance(parser_ref, str) and secrets.compare_digest(digest.encode(), parser_ref.encode()):
+                        state['resume_fields'] = {'status': 'current', **extract_resume_fields(source)}
+                    else:
+                        state.pop('parsed', None)
+                        state['resume_fields'] = {'status': 'stale', 'notice': 'Resume changed or cannot be verified; start a new review.'}
                 if (selected in ('full', 'adaptive') and 'matching' in state.get('plan', [])
                         and isinstance(specialist_ref, str)):
                     digest, report = matching_snapshot(db, state['application_id'])

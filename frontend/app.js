@@ -786,6 +786,27 @@ function setupGraphReview(target, application) {
     }
     const parsed = review.state.parsed;
     if (parsed) output.append(element("p", "", parsed.text_available ? "يتوفر نص مستخرج؛ تحليل الأقسام تقديري ويحتاج مراجعة في قسم السيرة المنظمة." : "لا يتوفر نص مستخرج من الملف."));
+    const fields = review.state.resume_fields;
+    if (fields) {
+      output.append(element("h4", "", "حقول مقترحة من السيرة"));
+      if (fields.status !== "current") output.append(element("p", "form-error", "تغيرت السيرة أو لا يمكن التحقق من المراجعة القديمة؛ ابدأ مراجعة جديدة."));
+      else {
+        output.append(element("p", "subtle-note", "قيم مقتبسة من حقول مسماة صراحةً؛ تجميع السجلات تقديري والحجب جزئي. راجع السيرة قبل الاعتماد عليها، والحقول المفقودة غير معروفة."));
+        const sectionLabels = { experience: "الخبرة", education: "التعليم", projects: "المشاريع" };
+        const fieldLabels = { role: "الدور", organization: "الجهة", period: "الفترة", qualification: "المؤهل", institution: "المؤسسة التعليمية", name: "اسم المشروع", technologies: "التقنيات" };
+        for (const [name, section] of Object.entries(fields.sections || {})) {
+          const list = element("ul", "evidence-list");
+          for (const record of section.records || []) {
+            const item = element("li");
+            for (const [field, value] of Object.entries(record.fields || {})) if (value?.value) item.append(element("p", "", `${fieldLabels[field] || field}: ${value.value}`));
+            list.append(item);
+          }
+          output.append(element("h5", "", sectionLabels[name] || name));
+          if (list.childNodes.length) output.append(list); else output.append(element("p", "subtle-note", "لم تُستخرج حقول مؤكدة التسمية؛ المعلومات غير معروفة."));
+          if (section.unclassified_lines || section.truncated) output.append(element("p", "subtle-note", "توجد أسطر غير مصنفة أو اقتُطع التحليل؛ راجع المصدر كاملًا."));
+        }
+      }
+    }
     if (review.state.matching) { const score = element("div"); renderScore(score, review.state.matching); output.append(score); }
     const specialist = review.state.matching_specialist;
     if (specialist) {
