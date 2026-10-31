@@ -85,6 +85,20 @@ def _tokens(text: str) -> set[str]:
     return set(_token_sequence(text))
 
 
+def is_context_followup(question: str) -> bool:
+    """Recognize a small set of reference-only questions, not arbitrary topics."""
+    normalized = unicodedata.normalize('NFKD', question.casefold())
+    normalized = ''.join(char for char in normalized if not unicodedata.combining(char))
+    words = ' '.join(re.findall(r'[^\W_]+', normalized, flags=re.UNICODE))
+    return words in {
+        'what about it', 'what about that', 'what about this', 'what about them',
+        'and what about it', 'and what about that', 'tell me more about it',
+        'tell me more about that', 'how long is it', 'how long does it last',
+        'وماذا عنها', 'ماذا عنها', 'وماذا عنه', 'ماذا عنه',
+        'كم مدتها', 'كم مدته', 'ما مدتها', 'ما مدته',
+    }
+
+
 def _rank_lexical(terms: set[str], documents: list[Source]) -> list[tuple[float, Source]]:
     """Rank authorized passages with BM25, retaining a conservative match gate.
 
@@ -227,7 +241,12 @@ def answer_question(
         raise ValueError('Previous question exceeds context limit')
     if previous_question and len(question) + len(previous_question) + 1 > 2000:
         raise ValueError('Combined retrieval question exceeds 2000 characters')
-    retrieval_question = question + ('\n' + previous_question if previous_question else '')
+    if not is_context_followup(question):
+        previous_question = ''
+    # Reference-only follow-ups add no new topic words for retrieval. Retain
+    # the original question separately for generation; otherwise Arabic or
+    # English pronouns can dilute the lexical match and bury the prior topic.
+    retrieval_question = previous_question or question
     terms = _tokens(retrieval_question)
     if not terms:
         return KnowledgeAnswer('No answer was found in the accessible sample documents.', [], 'abstain')

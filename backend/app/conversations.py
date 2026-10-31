@@ -24,6 +24,7 @@ from app.knowledge import (
     _document_passages,
     _documents,
     answer_question,
+    is_context_followup,
 )
 from app.knowledge_documents import authorized_documents_in_db
 
@@ -209,10 +210,11 @@ def add_message(conversation_id: int, payload: MessageCreate, request: Request, 
         previous = dict(row) if row else None
         available_context = bool(previous and _context_still_allowed(db, user, conversation_id, previous))
     limit = min(500, max(0, 1999 - len(payload.question)))
-    previous_question = previous['question'][:limit] if available_context and limit else ''
+    wants_context = is_context_followup(payload.question)
+    previous_question = previous['question'][:limit] if wants_context and available_context and limit else ''
     if previous_question:
         context_notice = 'The previous question was used as context for this search; verify the sources.'
-    elif previous:
+    elif previous and wants_context:
         context_notice = 'Previous context was unavailable or exceeded the limit; this search used only the current question.'
     else:
         context_notice = ''

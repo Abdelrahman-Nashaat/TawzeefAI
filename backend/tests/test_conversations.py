@@ -59,6 +59,61 @@ def test_followup_uses_authorized_previous_question_in_retrieval(client):
     assert isolated.json()['mode'] == 'abstain'
 
 
+def test_independent_question_does_not_reuse_previous_context(client, monkeypatch):
+    add_staff_document(client)
+    login(client, 'employee')
+    conversation_id = chat(client)
+    assert ask(client, conversation_id).status_code == 201
+    used = []
+    original = conversations.answer_question
+
+    def observe(*args, **kwargs):
+        used.append(kwargs['previous_question'])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(conversations, 'answer_question', observe)
+    result = client.post(f'/api/conversations/{conversation_id}/messages', json={'question': 'parental leave'})
+    assert result.status_code == 201
+    assert used == ['']
+    assert result.json()['mode'] == 'abstain'
+
+
+@pytest.mark.parametrize('question', [
+    'what about parental leave?', 'and what about annual leave?',
+    'وماذا عن إجازة الأمومة؟', 'كم مدة الإجازة السنوية؟',
+])
+def test_topic_bearing_questions_are_not_reference_only(question):
+    assert not knowledge.is_context_followup(question)
+
+
+def test_direct_answer_does_not_send_prior_topic_for_independent_question(monkeypatch):
+    source = knowledge.Source(id='policy-1', title='Parental leave', text='Parental leave is available.')
+    monkeypatch.setattr(knowledge, '_documents', lambda *args, **kwargs: [source])
+    sent = []
+
+    def provider(question, passages, **kwargs):
+        sent.append((question, kwargs))
+        return 'See [policy-1].'
+
+    monkeypatch.setattr(knowledge, 'generate_with_groq', provider)
+    result = knowledge.answer_question('parental leave', 'employee', enable_groq=True,
+                                       previous_question='annual leave')
+    assert result.mode == 'groq'
+    assert sent == [('parental leave', {})]
+
+
+@pytest.mark.parametrize('followup', ['What about it?', 'Tell me more about that.', 'وماذا عنها؟', 'كم مدتها؟'])
+def test_clear_followups_reuse_authorized_context(client, followup):
+    add_staff_document(client)
+    login(client, 'employee')
+    conversation_id = chat(client)
+    assert ask(client, conversation_id).status_code == 201
+    response = client.post(f'/api/conversations/{conversation_id}/messages', json={'question': followup})
+    assert response.status_code == 201
+    assert 'seven days' in response.json()['answer']
+    assert 'previous question' in response.json()['notice'].lower()
+
+
 def test_revoked_context_is_not_used_for_followup(client, monkeypatch):
     doc_id = add_staff_document(client)
     login(client, 'employee')
