@@ -17,7 +17,13 @@ from app.auth import COOKIE_NAME, User, require_roles, token_digest
 from app.blind import redact_resume
 from app.db import connect
 from app.recruitment import get_application
-from app.rubric import WEIGHTS, Assessment, calculate_rubric
+from app.rubric import (
+    WEIGHTS,
+    Assessment,
+    calculate_rubric,
+    criteria_fingerprint,
+    evidence_is_current,
+)
 
 router = APIRouter(prefix='/api')
 HR = Annotated[User, Depends(require_roles('hr'))]
@@ -55,6 +61,11 @@ def initialize_rubric_admin(path: str | Path) -> None:
         CREATE INDEX IF NOT EXISTS rubric_evidence_application ON rubric_evidence(application_id);
         CREATE INDEX IF NOT EXISTS rubric_assessments_application ON rubric_assessments(application_id, id);
         ''')
+        columns = {row['name'] for row in db.execute('PRAGMA table_info(rubric_assessments)')}
+        if 'criteria_fingerprint' not in columns:
+            db.execute('ALTER TABLE rubric_assessments ADD COLUMN criteria_fingerprint TEXT')
+        if 'source_fingerprint' not in columns:
+            db.execute('ALTER TABLE rubric_assessments ADD COLUMN source_fingerprint TEXT')
 
 
 class CriterionCreate(BaseModel):
@@ -271,8 +282,9 @@ def create_evidence(application_id: int, payload: EvidenceCreate, request: Reque
 @router.get('/applications/{application_id}/rubric/assessment')
 def latest_assessment(application_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
         application = get_application(db, application_id)
-        row = db.execute('''SELECT id, actor_id, result_json, created_at FROM rubric_assessments
+        row = db.execute('''SELECT id, actor_id, assessment_json, result_json, created_at, criteria_fingerprint, source_fingerprint FROM rubric_assessments
             WHERE application_id=? ORDER BY id DESC LIMIT 1''', (application_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail='Assessment not found')
@@ -291,10 +303,27 @@ def latest_assessment(application_id: int, request: Request, user: HR):
                 component['category']: component['claims'] for component in result['components']
             }))
         assessed = {claim['criterion_ref'] for component in result['components'] for claim in component['claims']}
-        current = {f"c-{item['id']}" for item in db.execute(
-            'SELECT id FROM rubric_criteria WHERE job_id = ?', (application['job_id'],))}
+        current_rows = db.execute('SELECT id,category,label FROM rubric_criteria WHERE job_id = ?',
+                                  (application['job_id'],)).fetchall()
+        current = {f"c-{item['id']}" for item in current_rows}
+        criteria_changed = (not row['criteria_fingerprint'] or
+                            row['criteria_fingerprint'] != criteria_fingerprint(current_rows))
+        blind_source = redact_resume(application['resume_text']).text
+        source_digest = hashlib.sha256(blind_source.encode('utf-8')).hexdigest()
+        source_changed = not row['source_fingerprint'] or row['source_fingerprint'] != source_digest
+        try:
+            stored_assessment = Assessment.model_validate_json(row['assessment_json'])
+            evidence = db.execute('SELECT * FROM rubric_evidence WHERE application_id=?', (application_id,)).fetchall()
+            evidence_changed = not evidence_is_current(stored_assessment, blind_source, evidence)
+            if not legacy_missing:
+                result = calculate_rubric(stored_assessment)
+            assessed = {claim.criterion_ref: category for category in WEIGHTS
+                        for claim in getattr(stored_assessment, category)}
+            current = {f"c-{item['id']}": item['category'] for item in current_rows}
+        except (TypeError, ValueError):
+            evidence_changed = True
         return {'id': row['id'], 'actor_id': row['actor_id'], 'created_at': row['created_at'],
-                'result': result, 'outdated': legacy_missing or assessed != current,
+                'result': result, 'outdated': legacy_missing or assessed != current or criteria_changed or source_changed or evidence_changed,
                 'requires_absence_review': legacy_missing}
 
 
@@ -330,10 +359,15 @@ def assess(application_id: int, payload: AssessmentCreate, request: Request, use
                 'evidence_refs': refs, 'reviewed_by_hr': status != 'unknown',
                 'absence_review_attested': judgment.absence_review_attested if judgment else False})
         assessment = Assessment.model_validate(grouped)
+        blind = redact_resume(application['resume_text']).text
+        evidence = db.execute('SELECT * FROM rubric_evidence WHERE application_id=?', (application_id,)).fetchall()
+        if not evidence_is_current(assessment, blind, evidence):
+            raise HTTPException(status_code=409, detail='Evidence no longer matches the current resume; review it again')
         result = calculate_rubric(assessment)
         cursor = db.execute('''INSERT INTO rubric_assessments
-            (application_id,actor_id,assessment_json,result_json) VALUES (?,?,?,?)''',
-            (application_id, user.id, assessment.model_dump_json(), json.dumps(result)))
+            (application_id,actor_id,assessment_json,result_json,criteria_fingerprint,source_fingerprint) VALUES (?,?,?,?,?,?)''',
+            (application_id, user.id, assessment.model_dump_json(), json.dumps(result), criteria_fingerprint(criteria),
+             hashlib.sha256(redact_resume(application['resume_text']).text.encode('utf-8')).hexdigest()))
         db.execute('INSERT INTO rubric_audit_events (actor_id,action,application_id,reference_id) VALUES (?, ?, ?, ?)',
                    (user.id, 'assessment_created', application_id, cursor.lastrowid))
         return {'id': cursor.lastrowid, 'actor_id': user.id, 'result': result}

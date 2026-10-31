@@ -787,6 +787,26 @@ function setupGraphReview(target, application) {
     const parsed = review.state.parsed;
     if (parsed) output.append(element("p", "", parsed.text_available ? "يتوفر نص مستخرج؛ تحليل الأقسام تقديري ويحتاج مراجعة في قسم السيرة المنظمة." : "لا يتوفر نص مستخرج من الملف."));
     if (review.state.matching) { const score = element("div"); renderScore(score, review.state.matching); output.append(score); }
+    const specialist = review.state.matching_specialist;
+    if (specialist) {
+      output.append(element("h4", "", "ملخص التقييم البشري الموزون"));
+      const messages = { not_assessed: "لا يوجد تقييم محفوظ لهذا الطلب.", outdated: "التقييم السابق يحتاج تحديثًا بعد تغيير المعايير أو الأدلة.", stale: "تغير الطلب أو تقييمه منذ بدء المراجعة؛ ابدأ مراجعة جديدة." };
+      if (specialist.status !== "current") output.append(element("p", "subtle-note", messages[specialist.status] || "ملخص التقييم غير متاح."));
+      else {
+        if (specialist.notice) output.append(element("p", "subtle-note", specialist.notice));
+        if (specialist.bounds) output.append(element("p", "result-badge", `النطاق: ${specialist.bounds.minimum}–${specialist.bounds.maximum} من 100 · التغطية: ${specialist.bounds.coverage_percent}%`));
+        const list = element("ul", "evidence-list");
+        const claimLabels = { met: "مثبت بالمراجعة", missing: "لم يُثبت بعد المراجعة", unknown: "غير معروف" };
+        for (const criterion of specialist.criteria || []) {
+          const item = element("li");
+          item.append(element("strong", "", criterion.criterion || criterion.criterion_ref), element("p", "", `الحالة: ${claimLabels[criterion.status] || "غير متاحة"}`));
+          for (const evidence of criterion.evidence || []) item.append(element("p", "", evidence.excerpt));
+          if (criterion.question_ar || criterion.question) item.append(element("p", "subtle-note", criterion.question_ar || criterion.question));
+          list.append(item);
+        }
+        output.append(list);
+      }
+    }
     const policy = review.state.policy;
     if (policy?.status === "answer" && typeof policy.answer === "string" && Array.isArray(policy.sources)) {
       output.append(element("h4", "", "نتيجة بحث السياسة"), element("p", "subtle-note", "مقتطفات من المصادر؛ تحقق من السياق قبل الاعتماد عليها."), element("p", "", policy.answer));

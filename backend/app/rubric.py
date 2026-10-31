@@ -5,6 +5,8 @@ Only structured reviewer judgments and opaque local references are accepted.
 It cannot verify that a reviewer actually inspected an evidence source.
 """
 
+import hashlib
+import json
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
@@ -17,6 +19,16 @@ WEIGHTS = {
     'projects': Decimal(15),
     'education': Decimal(10),
 }
+
+
+def criteria_fingerprint(criteria) -> str:
+    """Bind an assessment to its complete, ordered criterion definitions."""
+    snapshot = sorted(
+        ({'id': item['id'], 'category': item['category'], 'label': item['label']} for item in criteria),
+        key=lambda item: item['id'],
+    )
+    return hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True,
+                                    separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
 class Claim(BaseModel):
@@ -137,3 +149,27 @@ def calculate_rubric(assessment: Assessment) -> dict:
         'requires_human_review': True,
         'notice': 'Scores summarize reviewed evidence only; unknowns and missing evidence are not automatic rejections.',
     }
+
+
+def evidence_is_current(assessment: Assessment, source: str, evidence_rows) -> bool:
+    """Check that every referenced excerpt still points to the current source."""
+    evidence = {f"e-{item['id']}": item for item in evidence_rows}
+    for category in WEIGHTS:
+        for claim in getattr(assessment, category):
+            for ref in claim.evidence_refs:
+                item = evidence.get(ref)
+                if (item is None or item['start_offset'] < 0 or item['end_offset'] <= item['start_offset']
+                        or item['end_offset'] > len(source)
+                        or source[item['start_offset']:item['end_offset']] != item['excerpt']):
+                    return False
+    return True
+
+
+def result_requires_absence_review(result_json: str) -> bool:
+    """Older stored results may lack an attestation for a missing judgment."""
+    try:
+        result = json.loads(result_json)
+        return any(claim.get('status') == 'missing' and claim.get('absence_review_attested') is not True
+                   for component in result['components'] for claim in component['claims'])
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return True

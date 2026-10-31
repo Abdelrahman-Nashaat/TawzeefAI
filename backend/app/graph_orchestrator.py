@@ -37,6 +37,7 @@ from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_d
 from app.blind import redact_resume
 from app.conversations import _authorized_sources, _digest
 from app.db import connect
+from app.matching_specialist import matching_snapshot
 from app.policy_agent import authorized_policy_sources, run_policy_agent
 from app.recruitment import get_application, job_data, score_resume
 from app.resume_structure import structure_resume
@@ -89,6 +90,7 @@ class ReviewState(TypedDict, total=False):
     plan: list[str]
     parsed: dict
     matching: dict
+    matching_specialist_ref: str
     policy: dict
     scheduling: dict
     status: dict
@@ -211,6 +213,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
 
     def matching(state: ReviewState):
         with connect(path) as db:
+            db.execute('BEGIN')
             row = get_application(db, state["application_id"])
             job = db.execute("SELECT * FROM jobs WHERE id = ?", (row["job_id"],)).fetchone()
             score = score_resume(job_data(job), row["resume_text"])
@@ -218,7 +221,8 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             for group in ("required", "preferred"):
                 score[group] = [{"skill": item["skill"], "mentioned": item["mentioned"]}
                                 for item in score[group]]
-            return {"matching": score}
+            digest, _ = matching_snapshot(db, state['application_id'])
+            return {"matching": score, "matching_specialist_ref": digest}
 
     def policy(state: ReviewState):
         question = policy_question.strip()
@@ -396,6 +400,7 @@ def _review_lock(path: str | Path, thread_id: str):
 def _view(snapshot, path: str | Path | None = None, *, request: Request | None = None,
           user: User | None = None) -> dict:
     state = dict(snapshot.values)
+    specialist_ref = state.pop('matching_specialist_ref', None)
     # Old checkpoints lack intent and retain the historical full-review view.
     # Never expose stale stage data outside an explicitly selected scope.
     selected = state.get('intent', 'full')
@@ -409,6 +414,10 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
             continue
         if selected != 'full' and scope != selected:
             state.pop(field, None)
+    if 'matching' in state and not isinstance(specialist_ref, str):
+        state.pop('matching', None)
+        state['matching_specialist'] = {
+            'status': 'stale', 'notice': 'This older matching review cannot be verified; start a new review.'}
     # Old checkpoints may contain data from a previous version of the graph.
     # Never return their question, answer, or source metadata to a caller.
     state.pop("policy_question", None)
@@ -438,6 +447,14 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     raise HTTPException(status_code=401, detail='Authentication required')
                 if actor['role'] != 'hr':
                     raise HTTPException(status_code=403, detail='HR access required')
+                if (selected in ('full', 'adaptive') and 'matching' in state.get('plan', [])
+                        and isinstance(specialist_ref, str)):
+                    digest, report = matching_snapshot(db, state['application_id'])
+                    state['matching_specialist'] = report if secrets.compare_digest(
+                        digest.encode('utf-8'), specialist_ref.encode('utf-8')) else {
+                            'status': 'stale', 'notice': 'The matching inputs changed; start a new review.'}
+                    if state['matching_specialist']['status'] == 'stale':
+                        state.pop('matching', None)
                 if policy.get('status') in {'source_refs_v1', 'source_refs_v2'}:
                     refs = policy.get('refs')
                     if policy['status'] == 'source_refs_v2':
