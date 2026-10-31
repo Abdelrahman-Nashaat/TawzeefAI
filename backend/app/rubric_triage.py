@@ -87,7 +87,9 @@ def get_triage(job_id: str, request: Request, user: HR):
         items = []
         for item in comparison['applications']:
             bounds = item['bounds']
-            if item['status'] != 'current' or bounds is None:
+            if stages[item['application_id']] in ('hired', 'rejected'):
+                recommendation = 'finalized'
+            elif item['status'] != 'current' or bounds is None:
                 recommendation = 'unknown'
             elif setting['threshold'] is None:
                 recommendation = 'threshold_not_configured'

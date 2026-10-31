@@ -49,9 +49,19 @@ def test_triage_is_human_review_only_and_marks_stale(tmp_path):
             'priority_review', 'needs_review', 'inconclusive', 'unknown']
         assert all(item['application_status'] == 'submitted' for item in result['items'])
         assert 'Python SQL' not in str(result)
+        # Closed applications remain visible but must not enter the active
+        # review queue, regardless of their current assessment or threshold.
+        with connect(app.state.database_path) as db:
+            db.execute("UPDATE applications SET status='hired' WHERE id=?", (ids[0],))
+            db.execute("UPDATE applications SET status='rejected' WHERE id=?", (ids[1],))
+        closed = client.get(path).json()['items']
+        assert [item['recommendation'] for item in closed] == [
+            'finalized', 'finalized', 'inconclusive', 'unknown']
+        assert [item['application_status'] for item in closed[:2]] == ['hired', 'rejected']
         assert client.post('/api/jobs/job-backend-python/rubric/criteria', json={
             'category': 'mandatory', 'label': 'New criterion'}).status_code == 201
-        assert all(item['recommendation'] == 'unknown' for item in client.get(path).json()['items'])
+        assert [item['recommendation'] for item in client.get(path).json()['items']] == [
+            'finalized', 'finalized', 'unknown', 'unknown']
         with connect(app.state.database_path) as db:
             assert db.execute('SELECT COUNT(*) FROM rubric_triage_audit').fetchone()[0] == 1
             assert db.execute("SELECT COUNT(*) FROM audit_events WHERE action='decision'").fetchone()[0] == 0
