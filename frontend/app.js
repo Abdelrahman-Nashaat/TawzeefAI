@@ -737,7 +737,7 @@ function setupGraphReview(target, application) {
   const form = element("form", "decision-form");
   const intentLabel = element("label", "", "نوع المراجعة");
   const intent = element("select");
-  for (const [value, text] of [["full", "مراجعة شاملة"], ["adaptive", "خطة مراجعة حسب حالة الطلب"], ["policy", "سؤال سياسة"], ["scheduling", "المواعيد"], ["status", "حالة الطلب"], ["create_slot", "اقتراح موعد متاح"]]) {
+  for (const [value, text] of [["full", "مراجعة شاملة"], ["adaptive", "خطة مراجعة حسب حالة الطلب"], ["adaptive_schedule", "خطة جدولة مع مراجعة بشرية"], ["policy", "سؤال سياسة"], ["scheduling", "المواعيد"], ["status", "حالة الطلب"], ["create_slot", "اقتراح موعد متاح"]]) {
     const option = element("option", "", text); option.value = value; intent.append(option);
   }
   intentLabel.append(intent);
@@ -756,7 +756,7 @@ function setupGraphReview(target, application) {
     questionLabel.firstChild.textContent = question.required ? "سؤال السياسة المطلوب للبحث المحلي" : "سؤال سياسة اختياري للبحث المحلي";
     question.placeholder = question.required ? "اكتب سؤالك عن السياسة" : "يمكن تركه فارغًا";
     if (!supportsPolicy) question.value = "";
-    const createSlot = intent.value === "create_slot";
+    const createSlot = intent.value === "create_slot" || intent.value === "adaptive_schedule";
     slotFields.hidden = !createSlot;
     for (const field of [slotStart, slotEnd, interviewer]) { field.disabled = !createSlot; field.required = createSlot; }
   });
@@ -781,7 +781,8 @@ function setupGraphReview(target, application) {
     output.append(element("h4", "", "مراحل المراجعة"), plan);
     if (review.state.intent === "adaptive") {
       const planSources = { model: "اقترح النموذج الخطة وتحقق الخادم من خطواتها.", deterministic: "استُخدمت خطة محددة حسب حالة الطلب دون نموذج.", deterministic_fallback: "تعذّر استخدام اقتراح النموذج أو لم يجتز التحقق؛ استُخدمت خطة بديلة محددة." };
-      output.append(element("p", "subtle-note", `${planSources[review.state.plan_source] || "مصدر الخطة غير معروف."} المراحل للقراءة فقط وتحتاج مراجعة بشرية.`));
+      const planNotice = review.state.adaptive_goal === "schedule_interview" ? "يمكن إضافة موعد عام فقط بعد الموافقة البشرية على تفاصيله." : "المراحل للقراءة فقط وتحتاج مراجعة بشرية.";
+      output.append(element("p", "subtle-note", `${planSources[review.state.plan_source] || "مصدر الخطة غير معروف."} ${planNotice}`));
       if (review.state.plan_stale) output.append(element("p", "form-error", "تغير الطلب أو الوظيفة منذ إعداد الخطة؛ ابدأ مراجعة جديدة."));
     }
     const parsed = review.state.parsed;
@@ -884,6 +885,7 @@ function setupGraphReview(target, application) {
       }
       const approve = element("button", "small-button", "أوافق على إضافة هذا الموعد"); approve.type = "button";
       const decline = element("button", "outline-button", "أرفض المقترح"); decline.type = "button";
+      if (review.state.plan_stale) { approve.disabled = true; decline.disabled = true; }
       async function decide(reviewed) {
         let uncertain = false;
         approve.disabled = true; decline.disabled = true; start.disabled = true; open.disabled = true; report("جارٍ تسجيل القرار...");
@@ -894,7 +896,7 @@ function setupGraphReview(target, application) {
         } catch (error) {
           uncertain = error instanceof TypeError;
           if (!isStale(error) && target.isConnected) report(uncertain ? "تعذّر الاتصال بالخادم. أعد تحميل المراجعة للتحقق من حالة القرار قبل المحاولة مجددًا." : error.message, true);
-        } finally { approve.disabled = uncertain; decline.disabled = uncertain; start.disabled = false; open.disabled = false; }
+        } finally { approve.disabled = uncertain || Boolean(review.state.plan_stale); decline.disabled = uncertain || Boolean(review.state.plan_stale); start.disabled = false; open.disabled = false; }
       }
       approve.addEventListener("click", () => decide(true)); decline.addEventListener("click", () => decide(false));
       output.append(approve, decline);
@@ -920,10 +922,10 @@ function setupGraphReview(target, application) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); start.disabled = true; open.disabled = true; output.replaceChildren(); report("جارٍ تنفيذ المراحل حتى نقطة المراجعة البشرية...");
     try {
-      const body = { application_id: application.id, intent: intent.value };
-      if (intent.value === "adaptive") body.adaptive_goal = "review_application";
+      const body = { application_id: application.id, intent: intent.value === "adaptive_schedule" ? "adaptive" : intent.value };
+      if (intent.value === "adaptive" || intent.value === "adaptive_schedule") body.adaptive_goal = intent.value === "adaptive" ? "review_application" : "schedule_interview";
       else body.policy_question = question.value.trim();
-      if (intent.value === "create_slot") {
+      if (intent.value === "create_slot" || intent.value === "adaptive_schedule") {
         const startTime = new Date(slotStart.value), endTime = new Date(slotEnd.value);
         if (!interviewer.value.trim() || Number.isNaN(startTime.valueOf()) || Number.isNaN(endTime.valueOf()) || endTime <= startTime) throw new Error("تحقق من اسم المحاور وأن نهاية الموعد بعد بدايته.");
         body.slot = { start_at: startTime.toISOString(), end_at: endTime.toISOString(), interviewer: interviewer.value.trim() };

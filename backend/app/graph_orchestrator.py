@@ -55,13 +55,13 @@ class ReviewRequest(BaseModel):
     policy_question: str = Field(default="", max_length=2000)
     intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'adaptive'] = 'full'
     slot: SlotCreate | None = None
-    adaptive_goal: Literal['review_application'] | None = None
+    adaptive_goal: Literal['review_application', 'schedule_interview'] | None = None
 
     @model_validator(mode='before')
     @classmethod
     def restrict_adaptive_input(cls, data):
         if (isinstance(data, dict) and data.get('intent') == 'adaptive' and
-                set(data) - {'application_id', 'intent', 'adaptive_goal'}):
+                set(data) - {'application_id', 'intent', 'adaptive_goal', 'slot'}):
             raise ValueError('Adaptive review accepts no tools, identity overrides, or extra fields')
         return data
 
@@ -71,8 +71,9 @@ class ReviewRequest(BaseModel):
             raise ValueError('Policy review requires a question')
         if self.intent in ('scheduling', 'status') and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
-        if (self.intent == 'create_slot') != (self.slot is not None):
-            raise ValueError('Slot details are required only for create_slot')
+        needs_slot = self.intent == 'create_slot' or (self.intent == 'adaptive' and self.adaptive_goal == 'schedule_interview')
+        if needs_slot != (self.slot is not None):
+            raise ValueError('Slot details are required only for scheduling')
         if self.intent == 'create_slot' and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
         if (self.intent == 'adaptive') != (self.adaptive_goal is not None):
@@ -187,12 +188,17 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             authorize()
             with connect(path) as db:
                 facts, digest = context_for(db, state['application_id'])
+            if state.get('adaptive_goal') == 'schedule_interview' and facts['status'] != 'advanced':
+                raise HTTPException(status_code=409, detail='Application is not eligible for candidate booking')
             steps, source = make_plan(facts, enabled=enable_agent)
+            if state.get('adaptive_goal') == 'schedule_interview' and 'scheduler' not in steps:
+                steps = [*steps, 'scheduler']
             authorize()
             with connect(path) as db:
                 if context_for(db, state['application_id'])[1] != digest:
                     raise HTTPException(status_code=409, detail='Application changed; start a new review')
-            return {'plan': [*steps, 'human_review'], 'plan_source': source,
+            action_steps = ['prepare_slot', 'human_review', 'execute_slot'] if state.get('adaptive_goal') == 'schedule_interview' else ['human_review']
+            return {'plan': [*steps, *action_steps], 'plan_source': source,
                     'plan_context': facts, 'context_digest': digest}
         plans = {
             'full': ['parser', 'matching', 'policy', 'scheduler', 'status', 'agent_review', 'human_review'],
@@ -305,7 +311,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
     def human_review(state: ReviewState):
         notice = ('Approve creation of a shared slot available to all eligible candidates. '
                   'It is not reserved for this application; a candidate must book it separately.'
-                  if state.get('intent') == 'create_slot' else
+                  if state.get('intent') == 'create_slot' or state.get('adaptive_goal') == 'schedule_interview' else
                   'Acknowledge review; no hiring or booking action will be taken.')
         reviewed = interrupt({"type": "human_review", "application_id": state["application_id"],
                               "notice": notice, "action_proposal": state.get('action_proposal')})
@@ -334,7 +340,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         return execute
 
     for name, node in nodes.items():
-        builder.add_node(name, guarded(node) if name in {'parser', 'matching', 'status', 'scheduler'} else node)
+        builder.add_node(name, guarded(node) if name in {'parser', 'matching', 'status', 'scheduler', 'prepare_slot'} else node)
     builder.add_edge(START, 'plan')
     def next_after(name):
         def route(state: ReviewState):
@@ -344,7 +350,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
     choices = ['parser', 'matching', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'human_review', 'execute_slot']
     for name in ['plan', *choices[:-2]]:
         builder.add_conditional_edges(name, next_after(name), choices)
-    builder.add_conditional_edges('human_review', lambda state: 'execute_slot' if state.get('intent') == 'create_slot' else END,
+    builder.add_conditional_edges('human_review', lambda state: 'execute_slot' if state.get('intent') == 'create_slot' or state.get('adaptive_goal') == 'schedule_interview' else END,
                                   {'execute_slot': 'execute_slot', END: END})
     builder.add_edge('execute_slot', END)
     return builder.compile(checkpointer=checkpointer)
@@ -574,7 +580,7 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             if (snapshot.values.get('intent') == 'adaptive' and
                     context_for(db, snapshot.values['application_id'])[1] != snapshot.values.get('context_digest')):
                 raise HTTPException(status_code=409, detail='Application changed; start a new review')
-            if snapshot.values.get('intent') == 'create_slot' and payload.reviewed:
+            if (snapshot.values.get('intent') == 'create_slot' or snapshot.values.get('adaptive_goal') == 'schedule_interview') and payload.reviewed:
                 expected = snapshot.values.get('action_proposal', {}).get('approval_fingerprint', '')
                 if (not expected or not payload.approval_fingerprint or
                         not secrets.compare_digest(expected.encode('utf-8'), payload.approval_fingerprint.encode('utf-8'))):
