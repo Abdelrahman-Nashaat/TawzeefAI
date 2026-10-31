@@ -76,26 +76,31 @@ def candidate_progress(application_id: int, request: Request, user: Candidate):
     """Expose only the owner's current stage, never HR notes or assessment."""
     with connect(request.app.state.database_path) as db:
         db.execute("BEGIN")
-        application = db.execute("SELECT id,status,score_json FROM applications WHERE id=? AND candidate_id=?",
-                                 (application_id, user.id)).fetchone()
-        if application is None:
-            raise HTTPException(status_code=404, detail="Application not found")
-        status = application['status']
-        if status in ('hired', 'rejected', 'offered'):
-            stage = status
+        return candidate_stage(db, application_id, user.id)
+
+
+def candidate_stage(db, application_id: int, candidate_id: int) -> dict:
+    """Return the current owner-visible stage inside the caller's snapshot."""
+    application = db.execute("SELECT id,status,score_json FROM applications WHERE id=? AND candidate_id=?",
+                             (application_id, candidate_id)).fetchone()
+    if application is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    status = application['status']
+    if status in ('hired', 'rejected', 'offered'):
+        stage = status
+    else:
+        interview = db.execute("""SELECT i.id, EXISTS(SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) AS completed
+            FROM interviews i WHERE i.application_id=? AND i.status='scheduled' ORDER BY i.id DESC LIMIT 1""",
+            (application_id,)).fetchone()
+        if interview:
+            stage = 'interviewed' if interview['completed'] else 'interview_scheduled'
+        elif status == 'advanced':
+            stage = 'shortlisted'
+        elif application['score_json'] is not None:
+            stage = 'screened'
         else:
-            interview = db.execute("""SELECT i.id, EXISTS(SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) AS completed
-                FROM interviews i WHERE i.application_id=? AND i.status='scheduled' ORDER BY i.id DESC LIMIT 1""",
-                (application_id,)).fetchone()
-            if interview:
-                stage = 'interviewed' if interview['completed'] else 'interview_scheduled'
-            elif status == 'advanced':
-                stage = 'shortlisted'
-            elif application['score_json'] is not None:
-                stage = 'screened'
-            else:
-                stage = 'applied'
-        return {'application_id': application_id, 'stage': stage}
+            stage = 'applied'
+    return {'application_id': application_id, 'stage': stage}
 
 
 @router.post("/{application_id}/run")

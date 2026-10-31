@@ -12,6 +12,9 @@ from pydantic import ValidationError
 
 from app.blind import redact_resume
 from app.recruitment import get_application
+from app.resume_field_review import _latest as latest_field_review
+from app.resume_field_review import _view as field_review_view
+from app.resume_fields import MAX_SOURCE_CHARS
 from app.rubric import (
     WEIGHTS,
     Assessment,
@@ -37,14 +40,24 @@ def matching_snapshot(db, application_id: int) -> tuple[str, dict]:
     assessment_data = dict(assessment_row) if assessment_row else None
     evidence = [dict(row) for row in db.execute('''SELECT id,start_offset,end_offset,excerpt
         FROM rubric_evidence WHERE application_id=? ORDER BY id''', (application_id,))]
+    review_row = latest_field_review(db, application_id)
+    field_review = dict(review_row) if review_row else None
     raw = json.dumps({'application_id': application_id, 'job': dict(job),
                       'source': source, 'criteria': criteria, 'assessment': assessment_data,
-                      'evidence': evidence}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+                      'evidence': evidence, 'field_review': field_review}, ensure_ascii=False,
+                     sort_keys=True, separators=(',', ':'))
     digest = hashlib.sha256(raw.encode('utf-8')).hexdigest()
+    if len(source) > MAX_SOURCE_CHARS:
+        reviewed_fields = {'status': 'limit_exceeded', 'fields': []}
+    else:
+        current = field_review_view(review_row, source, hashlib.sha256(source.encode('utf-8')).hexdigest())
+        # Do not return the full source. Values are returned only after the
+        # caller has independently authorized access to the current snapshot.
+        reviewed_fields = {key: current[key] for key in ('status', 'version', 'fields', 'notice')}
     notice = ('Human-reviewed evidence summary only, not a hiring decision or verified ability. '
               'Redaction is incomplete; review the original source and each criterion.')
     if not assessment_data:
-        return digest, {'status': 'not_assessed', 'notice': notice}
+        return digest, {'status': 'not_assessed', 'notice': notice, 'reviewed_fields': reviewed_fields}
     known = {f"c-{item['id']}": item for item in criteria}
     try:
         if result_requires_absence_review(assessment_data['result_json']):
@@ -65,7 +78,8 @@ def matching_snapshot(db, application_id: int) -> tuple[str, dict]:
         if not evidence_is_current(assessment, source, evidence):
             raise ValueError('Evidence no longer matches its source')
     except (TypeError, ValueError, KeyError, ValidationError):
-        return digest, {'status': 'outdated', 'notice': notice + ' A fresh HR assessment is needed.'}
+        return digest, {'status': 'outdated', 'notice': notice + ' A fresh HR assessment is needed.',
+                        'reviewed_fields': reviewed_fields}
 
     result = calculate_rubric(assessment)
     items = []
@@ -85,4 +99,4 @@ def matching_snapshot(db, application_id: int) -> tuple[str, dict]:
                     'assessed_at': assessment_data['created_at'],
                     'bounds': {'minimum': result['minimum_score'], 'maximum': result['maximum_score'],
                                'coverage_percent': result['coverage_percent']},
-                    'criteria': items, 'notice': notice}
+                    'criteria': items, 'notice': notice, 'reviewed_fields': reviewed_fields}

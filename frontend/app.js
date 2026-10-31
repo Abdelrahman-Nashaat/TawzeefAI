@@ -73,7 +73,7 @@ function showWorkspace(user) {
   document.getElementById("hero-description").textContent = view.hero;
   if (user.role === "candidate" || user.role === "hr") loadRecruitment(user.role);
   setupKnowledge(user.role);
-  setupConversations();
+  setupConversations(user.role);
   if (user.role === "hr") setupKnowledgeDocuments();
   if (user.role === "candidate" || user.role === "hr") loadOperations(user.role);
   const grid = document.getElementById("feature-grid");
@@ -812,6 +812,14 @@ function setupGraphReview(target, application) {
     const specialist = review.state.matching_specialist;
     if (specialist) {
       output.append(element("h4", "", "ملخص التقييم البشري الموزون"));
+      const reviewedFields = specialist.reviewed_fields;
+      if (reviewedFields?.status === "current") {
+        output.append(element("p", "subtle-note", "حقول اختارها HR من السيرة المحجوبة جزئيًا؛ تُعرض للمراجعة ولا تغيّر النطاق أو تثبت المؤهلات."));
+        const fieldList = element("ul", "evidence-list");
+        for (const item of reviewedFields.fields || []) fieldList.append(element("li", "", `${item.section} · ${item.record_ref} · ${item.field}: ${item.value}`));
+        if (fieldList.childNodes.length) output.append(fieldList); else output.append(element("p", "subtle-note", "مراجعة الحقول المحفوظة لا تتضمن مقاطع."));
+      } else if (reviewedFields?.status === "stale") output.append(element("p", "form-error", "مراجعة الحقول تحتاج إعادة اختيار بعد تغير السيرة."));
+      else if (reviewedFields?.status === "limit_exceeded") output.append(element("p", "form-error", "تعذّر عرض مراجعة الحقول لأن النص بعد الحجب تجاوز الحد."));
       const messages = { not_assessed: "لا يوجد تقييم محفوظ لهذا الطلب.", outdated: "التقييم السابق يحتاج تحديثًا بعد تغيير المعايير أو الأدلة.", stale: "تغير الطلب أو تقييمه منذ بدء المراجعة؛ ابدأ مراجعة جديدة." };
       if (specialist.status !== "current") output.append(element("p", "subtle-note", messages[specialist.status] || "ملخص التقييم غير متاح."));
       else {
@@ -1104,12 +1112,13 @@ async function loadResumeFieldReview(target, applicationId) {
     const save = element("button", "small-button", "حفظ مراجعة الحقول"); save.type = "button";
     const reload = element("button", "outline-button", "إعادة تحميل المراجعة"); reload.type = "button";
     let draft = (review.fields || []).map(({ record_ref, section: group, field: name, start, end }) => ({ record_ref, section: group, field: name, start, end }));
+    let draftLocked = false;
     function renderDraft() {
       list.replaceChildren();
       const points = Array.from(review.source);
       draft.forEach((item, index) => {
         const li = element("li"); li.append(element("p", "", `${item.section} · ${item.record_ref} · ${item.field}: ${points.slice(item.start, item.end).join("")}`));
-        const remove = element("button", "outline-button", "إزالة"); remove.type = "button"; remove.addEventListener("click", () => { draft.splice(index, 1); renderDraft(); }); li.append(remove); list.append(li);
+        const remove = element("button", "outline-button", "إزالة"); remove.type = "button"; remove.disabled = draftLocked; remove.addEventListener("click", () => { if (!draftLocked) { draft.splice(index, 1); renderDraft(); } }); li.append(remove); list.append(li);
       });
     }
     function splitsPair(index) { return index > 0 && index < source.value.length && /[\uD800-\uDBFF]/.test(source.value[index - 1]) && /[\uDC00-\uDFFF]/.test(source.value[index]); }
@@ -1122,13 +1131,13 @@ async function loadResumeFieldReview(target, applicationId) {
       draft.push({ record_ref, section: section.value, field: field.value, start, end }); renderDraft(); message.textContent = "أضيف المقطع للمراجعة غير المحفوظة."; message.className = "subtle-note";
     });
     save.addEventListener("click", async () => {
-      save.disabled = true; add.disabled = true; reload.disabled = true;
+      draftLocked = true; renderDraft(); save.disabled = true; add.disabled = true; reload.disabled = true;
       let uncertain = false;
       try {
         await api(`/api/applications/${encodeURIComponent(applicationId)}/resume/field-review`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_sha256: review.source_sha256, expected_version: review.version, fields: draft }) });
         if (target.isConnected) await loadResumeFieldReview(target, applicationId);
       } catch (error) { uncertain = error instanceof TypeError; if (!isStale(error) && target.isConnected) { message.className = "form-error"; message.textContent = uncertain ? "تعذّر الاتصال؛ أعد التحميل للتحقق قبل المحاولة." : error.message; } }
-      finally { save.disabled = uncertain; add.disabled = uncertain; reload.disabled = false; }
+      finally { draftLocked = uncertain; renderDraft(); save.disabled = uncertain; add.disabled = uncertain; reload.disabled = false; }
     });
     reload.addEventListener("click", () => loadResumeFieldReview(target, applicationId));
     target.replaceChildren(title, notice, message, sourceLabel, sectionLabel, fieldLabel, recordLabel, add, list, save, reload);
@@ -1644,7 +1653,7 @@ function setupKnowledge(role) {
   });
 }
 
-function setupConversations() {
+function setupConversations(role) {
   const sectionNode = element("section", "knowledge-section");
   sectionNode.setAttribute("aria-label", "محادثاتي المحفوظة");
   const heading = element("div", "section-heading"); heading.append(element("h2", "", "محادثاتي المحفوظة"));
@@ -1658,14 +1667,30 @@ function setupConversations() {
   const form = element("form");
   const modeLabel = element("label", "", "نوع السؤال");
   const questionMode = element("select");
-  for (const [value, label] of [["general", "بحث عام في المعرفة والوظائف"], ["policy", "وكيل سياسات الموظفين"]]) {
+  const modes = [["general", "بحث عام في المعرفة والوظائف"], ["policy", "وكيل سياسات الموظفين"]];
+  if (role === "candidate") modes.push(["application_status", "حالة طلب التوظيف"]);
+  for (const [value, label] of modes) {
     const option = element("option", "", label); option.value = value; questionMode.append(option);
   }
   modeLabel.append(questionMode);
+  const applicationLabel = element("label", "", "اختر طلبك"); applicationLabel.hidden = true;
+  const applicationSelect = element("select"); applicationSelect.disabled = true; applicationLabel.append(applicationSelect);
+  questionMode.addEventListener("change", async () => {
+    const statusMode = questionMode.value === "application_status"; applicationLabel.hidden = !statusMode; applicationSelect.disabled = !statusMode;
+    if (!statusMode) return;
+    applicationSelect.replaceChildren(); applicationSelect.disabled = true;
+    try {
+      const applications = await api("/api/applications");
+      if (!sectionNode.isConnected || questionMode.value !== "application_status") return;
+      for (const application of applications) { const option = element("option", "", `طلب #${application.id} · ${application.job_id}`); option.value = String(application.id); applicationSelect.append(option); }
+      if (!applications.length) report("لا توجد طلبات متاحة لحسابك.", true); else report("");
+    } catch (error) { if (!isStale(error) && sectionNode.isConnected) report(error instanceof TypeError ? "تعذّر تحميل طلباتك." : error.message, true); }
+    finally { if (sectionNode.isConnected && questionMode.value === "application_status") applicationSelect.disabled = false; }
+  });
   const questionLabel = element("label", "", "سؤالك في المحادثة");
   const question = element("textarea"); question.required = true; question.maxLength = 2000; questionLabel.append(question);
   const send = element("button", "small-button", "إرسال السؤال"); send.type = "submit";
-  form.append(modeLabel, element("p", "subtle-note", "وكيل السياسات يبحث في مصادر السياسات المصرح بها فقط؛ راجع المراجع قبل الاعتماد على الإجابة. لا يستخدم سؤالًا سابقًا كسياق."), questionLabel, send);
+  form.append(modeLabel, applicationLabel, element("p", "subtle-note", "وكيل السياسات يبحث في مصادر السياسات المصرح بها فقط؛ راجع المراجع قبل الاعتماد على الإجابة. لا يستخدم سؤالًا سابقًا كسياق."), questionLabel, send);
   panel.append(note, message, selectorLabel, create, history, form); sectionNode.append(heading, panel);
   document.getElementById("knowledge-form").closest("section").after(sectionNode);
   let selected = null, loadGeneration = 0, sendPending = false, creationPending = false;
@@ -1676,10 +1701,10 @@ function setupConversations() {
     for (const entry of conversation.messages) {
       const item = element("article", "conversation-entry");
       item.append(element("h4", "", "السؤال"), element("p", "", entry.question), element("h4", "", "الإجابة"));
-      if (entry.mode === "unavailable") item.append(element("p", "form-error", "هذه الإجابة لم تعد متاحة لأن مصادرها لم تعد متاحة لحسابك أو تغيرت."));
+      if (entry.mode === "unavailable") item.append(element("p", "form-error", "هذه الإجابة لم تعد متاحة لحسابك أو تغيرت البيانات التي تعتمد عليها."));
       else {
         item.append(element("p", "", entry.answer));
-        const mode = entry.mode === "groq" ? "إجابة مولدة بالذكاء الاصطناعي؛ تحقق من المصادر." : entry.mode === "abstain" ? "لم يُعثر على دليل مناسب." : "مقتطفات مسترجعة من المصادر.";
+        const mode = entry.mode === "application_status" ? "مرحلة الطلب الحالية؛ تُحدّث عند تحميل المحادثة." : entry.mode === "groq" ? "إجابة مولدة بالذكاء الاصطناعي؛ تحقق من المصادر." : entry.mode === "abstain" ? "لم يُعثر على دليل مناسب." : "مقتطفات مسترجعة من المصادر.";
         item.append(element("p", "subtle-note", mode));
         if (entry.notice) item.append(element("p", "subtle-note", entry.notice));
         if (entry.sources?.length) {
@@ -1723,15 +1748,21 @@ function setupConversations() {
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); const id = selected; const text = question.value.trim();
     if (!id || !text || sendPending || creationPending) return;
-    sendPending = true; send.disabled = true; selector.disabled = true; create.disabled = true; question.disabled = true; questionMode.disabled = true; report("جارٍ البحث عن إجابة...");
+    const body = { question: text, mode: questionMode.value };
+    if (questionMode.value === "application_status") {
+      const applicationId = Number(applicationSelect.value);
+      if (!Number.isSafeInteger(applicationId) || applicationId <= 0 || applicationSelect.disabled) { report("اختر طلبًا من طلباتك أولًا.", true); return; }
+      body.application_id = applicationId;
+    }
+    sendPending = true; send.disabled = true; selector.disabled = true; create.disabled = true; question.disabled = true; questionMode.disabled = true; applicationSelect.disabled = true; report("جارٍ البحث عن إجابة...");
     try {
-      await api(`/api/conversations/${encodeURIComponent(id)}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: text, mode: questionMode.value }) });
+      await api(`/api/conversations/${encodeURIComponent(id)}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!sectionNode.isConnected) return;
       if (selected === id) { question.value = ""; await openConversation(id); }
     } catch (error) { if (!isStale(error) && sectionNode.isConnected && selected === id) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
     finally {
       sendPending = false;
-      if (sectionNode.isConnected) { send.disabled = !selected; selector.disabled = false; create.disabled = false; question.disabled = false; questionMode.disabled = false; }
+      if (sectionNode.isConnected) { send.disabled = !selected; selector.disabled = false; create.disabled = false; question.disabled = false; questionMode.disabled = false; applicationSelect.disabled = questionMode.value !== "application_status"; }
     }
   });
   send.disabled = true; selector.disabled = true; create.disabled = true; question.disabled = true;

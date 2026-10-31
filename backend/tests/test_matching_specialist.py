@@ -143,3 +143,65 @@ def test_legacy_matching_checkpoint_without_snapshot_is_not_exposed():
     result = _view(legacy)['state']
     assert 'matching' not in result
     assert result['matching_specialist']['status'] == 'stale'
+
+
+def test_matching_includes_only_current_hr_reviewed_fields_without_checkpoint_content(tmp_path):
+    path = tmp_path / 'matching-reviewed-fields.sqlite3'
+    source = 'Experience\n😀 Role: Data Engineer\nCompany: Synthetic Co\nOther text'
+    with TestClient(create_app(path, seed_demo=True)) as client:
+        login(client, 'hr')
+        with connect(path) as db:
+            candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
+            app_id = db.execute('''INSERT INTO applications(candidate_id,job_id,filename,resume_text)
+                VALUES (?, 'job-backend-python', 'synthetic.docx', ?)''', (candidate, source)).lastrowid
+        endpoint = f'/api/applications/{app_id}/resume/field-review'
+        initial = client.get(endpoint).json()
+        selected = initial['source']
+        start = selected.index('Data Engineer')
+        saved = client.put(endpoint, json={'source_sha256': initial['source_sha256'], 'expected_version': 0,
+            'fields': [{'record_ref': 'r-1', 'section': 'experience', 'field': 'role',
+                        'start': start, 'end': start + len('Data Engineer')}]})
+        assert saved.status_code == 200, saved.text
+        response = client.post('/api/graph-reviews', json={'application_id': app_id})
+        assert response.status_code == 201, response.text
+        review = response.json()
+        report = review['state']['matching_specialist']
+        assert report['status'] == 'not_assessed'
+        assert report['reviewed_fields']['status'] == 'current'
+        assert report['reviewed_fields']['fields'][0]['value'] == 'Data Engineer'
+        assert 'source' not in report['reviewed_fields']
+        with SqliteSaver.from_conn_string(str(path)) as saver:
+            snapshot = build_review_graph(path, saver).get_state(_config(review['id']))
+            assert 'Data Engineer' not in str(snapshot.values)
+        # A different reviewer snapshot changes the evidence context. An older
+        # graph review must not silently incorporate the new selection.
+        newer = client.put(endpoint, json={'source_sha256': initial['source_sha256'], 'expected_version': 1,
+            'fields': []})
+        assert newer.status_code == 200, newer.text
+        stale = client.get(f"/api/graph-reviews/{review['id']}").json()['state']
+        assert stale['matching_specialist']['status'] == 'stale'
+        assert 'Data Engineer' not in str(stale['matching_specialist'])
+        new_review = client.post('/api/graph-reviews', json={'application_id': app_id}).json()
+        assert new_review['state']['matching_specialist']['reviewed_fields']['fields'] == []
+        login(client, 'candidate')
+        assert client.get(f"/api/graph-reviews/{new_review['id']}").status_code == 403
+
+
+def test_matching_does_not_expose_reviewed_fields_when_source_has_changed(tmp_path):
+    path = tmp_path / 'matching-stale-fields.sqlite3'
+    with TestClient(create_app(path, seed_demo=True)) as client:
+        login(client, 'hr')
+        with connect(path) as db:
+            candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
+            app_id = db.execute('''INSERT INTO applications(candidate_id,job_id,filename,resume_text)
+                VALUES (?, 'job-backend-python', 'synthetic.docx', 'Role: Synthetic Engineer')''', (candidate,)).lastrowid
+        endpoint = f'/api/applications/{app_id}/resume/field-review'
+        initial = client.get(endpoint).json()
+        assert client.put(endpoint, json={'source_sha256': initial['source_sha256'], 'expected_version': 0,
+            'fields': [{'record_ref': 'r-1', 'section': 'experience', 'field': 'role',
+                        'start': 6, 'end': 24}]}).status_code == 200
+        with connect(path) as db:
+            db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('Role: New Engineer', app_id))
+        state = client.post('/api/graph-reviews', json={'application_id': app_id}).json()['state']
+        assert state['matching_specialist']['reviewed_fields']['status'] == 'stale'
+        assert state['matching_specialist']['reviewed_fields']['fields'] == []

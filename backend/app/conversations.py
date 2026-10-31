@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.auth import COOKIE_NAME, User, get_current_user, token_digest
 from app.db import connect
@@ -27,6 +27,7 @@ from app.knowledge import (
     is_context_followup,
 )
 from app.knowledge_documents import authorized_documents_in_db
+from app.workflow import candidate_stage
 
 router = APIRouter(prefix='/api/conversations')
 Authenticated = Annotated[User, Depends(get_current_user)]
@@ -62,6 +63,8 @@ def initialize_conversations(path: str | Path) -> None:
         if 'source_scope' not in columns:
             # Earlier messages used the general knowledge collection.
             db.execute("ALTER TABLE conversation_messages ADD COLUMN source_scope TEXT NOT NULL DEFAULT 'general'")
+        if 'status_application_id' not in columns:
+            db.execute('ALTER TABLE conversation_messages ADD COLUMN status_application_id INTEGER')
 
 
 class ConversationCreate(BaseModel):
@@ -77,7 +80,14 @@ class ConversationCreate(BaseModel):
 
 class MessageCreate(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
-    mode: Literal['general', 'policy'] = 'general'
+    mode: Literal['general', 'policy', 'application_status'] = 'general'
+    application_id: int | None = Field(default=None, gt=0, strict=True)
+
+    @model_validator(mode='after')
+    def validate_status_target(self):
+        if (self.mode == 'application_status') != (self.application_id is not None):
+            raise ValueError('An application is required only for status questions')
+        return self
 
     @field_validator('question')
     @classmethod
@@ -159,6 +169,26 @@ def _visible_message(row, available: dict, policy_available: dict | None = None)
     return result
 
 
+_STAGE_LABELS = {'applied': 'تم التقديم', 'screened': 'تم فحص الطلب',
+                 'shortlisted': 'تمت الموافقة على الانتقال للمرحلة التالية',
+                 'interview_scheduled': 'تم تسجيل موعد مقابلة', 'interviewed': 'تم تسجيل إجراء المقابلة',
+                 'offered': 'عرض توظيف', 'hired': 'تم التوظيف', 'rejected': 'انتهى الطلب بالرفض'}
+
+
+def _visible_status_message(db, row, user: User) -> dict:
+    result = {'id': row['id'], 'question': row['question'], 'created_at': row['created_at']}
+    try:
+        if user.role != 'candidate' or row['context_role'] != 'candidate' or not isinstance(row['status_application_id'], int):
+            raise ValueError('Status is unavailable')
+        current = candidate_stage(db, row['status_application_id'], user.id)
+        label = _STAGE_LABELS[current['stage']]
+        result.update({'mode': 'application_status', **current, 'answer': f'مرحلة الطلب الحالية: {label}.',
+                       'sources': [], 'notice': 'تُعرض المرحلة الحالية عند فتح المحادثة وقد تتغير.'})
+    except (HTTPException, ValueError, KeyError):
+        result.update({'mode': 'unavailable', 'answer': 'حالة هذا الطلب لم تعد متاحة.', 'sources': [], 'notice': None})
+    return result
+
+
 def _digest(source: Source) -> str:
     data = asdict(source)
     if data['page'] is None:
@@ -214,12 +244,28 @@ def get_conversation(conversation_id: int, request: Request, user: Authenticated
         messages = db.execute('SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY id',
                               (conversation_id,)).fetchall()
         policy_available = _policy_sources(db, user.role) if any(row['source_scope'] == 'policy' for row in messages) else None
-        return {**dict(conversation), 'messages': [_visible_message(row, available, policy_available) for row in messages]}
+        result = [_visible_status_message(db, row, user) if row['source_scope'] == 'application_status'
+                  else _visible_message(row, available, policy_available) for row in messages]
+        _owned(db, conversation_id, user, request)
+        return {**dict(conversation), 'messages': result}
 
 
 @router.post('/{conversation_id}/messages', status_code=201)
 def add_message(conversation_id: int, payload: MessageCreate, request: Request, user: Authenticated):
     path = request.app.state.database_path
+    if payload.mode == 'application_status':
+        if user.role != 'candidate':
+            raise HTTPException(status_code=403, detail='Candidate access required')
+        with connect(path) as db:
+            db.execute('BEGIN IMMEDIATE')
+            _owned(db, conversation_id, user, request)
+            candidate_stage(db, payload.application_id, user.id)
+            row = db.execute('''INSERT INTO conversation_messages
+                (conversation_id,question,answer,sources_json,mode,context_role,source_scope,status_application_id)
+                VALUES (?,?,?,'[]','application_status','candidate','application_status',?) RETURNING *''',
+                (conversation_id, payload.question, '', payload.application_id)).fetchone()
+            _owned(db, conversation_id, user, request)
+            return _visible_status_message(db, row, user)
     # The policy specialist receives one explicit question, without prior context.
     wants_context = payload.mode == 'general' and is_context_followup(payload.question)
     with connect(path) as db:
