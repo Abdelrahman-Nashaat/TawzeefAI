@@ -81,11 +81,12 @@ ALIASES = {
 # or instruction-like phrase, since interpreting scope reliably needs a model
 # and human review. These patterns cannot detect every phrasing or language.
 UNSAFE_CONTEXT = re.compile(
-    r"\b(?:no|not|never|without|lack(?:s|ing|ed)?|none|neither|cannot|can't|unable)\b"
+    r"\b(?:no|not|never|without|lack(?:s|ing|ed)?|none|neither|cannot|unable)\b"
+    r"|\b(?:ca|do|does|did|is|are|was|were|have|has|had|wo|would|should|could|must|need)n['’]t\b"
     r"|\b(?:zero\s+(?:prior\s+)?experience|unfamiliar|yet\s+to\s+learn|seeking\s+to\s+learn)\b"
     r"|\b(?:ignore|disregard|override|reveal|bypass)\b"
     r"|\b(?:system prompt|previous instructions|assign (?:a )?(?:perfect|highest) score)\b"
-    r"|(?:لا|لم|ليس|بدون|تنقصني|تجاهل|اكشف)(?=\s|$)"
+    r"|(?:لا|لم|ليس|لست|غير|بدون|تنقصني|تجاهل|اكشف)(?=\s|$)"
     r"|(?:عديم(?:ة)?\s+الخبرة|أتمنى\s+تعلم|اتمنى\s+تعلم)",
     re.IGNORECASE,
 )

@@ -149,6 +149,31 @@ def test_distinct_positive_sentences_remain_visible_after_negated_or_aspirationa
     assert arabic['score'] == 50
 
 
+@pytest.mark.parametrize('text', [
+    "I don't know Python.",
+    "I don’t know Python.",
+    "I haven't used Python.",
+    "I haven’t used Python.",
+    "I couldn't use Python.",
+    "I couldn’t use Python.",
+    "لست ملمًا بـ Python.",
+    "غير متمكن من Python.",
+])
+def test_contracted_or_arabic_negation_is_not_positive_evidence(text):
+    job = {"required_skills": ["Python"], "preferred_skills": []}
+    result = score_resume(job, text)
+    assert result['score'] == 0
+    assert not result['required'][0]['mentioned']
+    assert not result['required'][0]['evidence']
+
+
+def test_contracted_negation_does_not_hide_separate_positive_sentence():
+    job = {"required_skills": ["Python", "SQL"], "preferred_skills": []}
+    result = score_resume(job, "I don’t know Python. I built SQL reports.")
+    assert result['score'] == 50
+    assert [item['mentioned'] for item in result['required']] == [False, True]
+
+
 def test_semicolon_does_not_separate_negation_from_later_skills():
     job = {"required_skills": ["Python", "SQL", "HTTP APIs"], "preferred_skills": []}
     for text in ("No experience with Python; SQL; REST API.",
