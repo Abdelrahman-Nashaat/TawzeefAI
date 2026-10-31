@@ -9,6 +9,7 @@ import http.client
 import json
 import os
 import re
+import unicodedata
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,31 @@ from app.knowledge_documents import authorized_documents_in_db
 class PolicyAgentResult:
     answer: KnowledgeAnswer
     tool_trace: list[str]
+
+
+# Preserve intent-bearing words which the general search treats as stopwords.
+# This conservative gate may abstain when equivalent language differs.
+POLICY_QUALIFIERS = (
+    frozenset(('eligible', 'eligibility')),
+    frozenset(('required', 'requirement', 'requirements')),
+    frozenset(('qualify', 'qualifies', 'qualification', 'qualifications')),
+    frozenset(('اهليه', 'مؤهل', 'مؤهله', 'استحقاق', 'مستحق')),
+    frozenset(('متطلب', 'متطلبات', 'مطلوب', 'مطلوبه')),
+)
+
+
+def _qualifier_words(text: str) -> set[str]:
+    normalized = unicodedata.normalize('NFKD', text.casefold())
+    normalized = ''.join(c for c in normalized if not unicodedata.combining(c))
+    normalized = normalized.replace('ة', 'ه').replace('ى', 'ي')
+    return set(re.findall(r'[^\W_]+', normalized, flags=re.UNICODE))
+
+
+def _qualifiers_match(question: str, source: Source) -> bool:
+    requested = _qualifier_words(question)
+    evidence = _qualifier_words(source.title + ' ' + source.text)
+    return all(not requested.intersection(group) or bool(evidence.intersection(group))
+               for group in POLICY_QUALIFIERS)
 
 
 def authorized_policy_sources(db, role: str) -> list[Source]:
@@ -124,6 +150,28 @@ def _search_query(message: dict, question: str) -> str | None:
     return query.strip()
 
 
+def _policy_hybrid(path: str | Path, role: str, question: str) -> dict:
+    """Use the shared experimental index with a server-owned handbook filter."""
+    from app.hybrid_api import _busy, _load_model
+
+    directory = os.environ.get('TAWZEEF_EMBEDDING_MODEL_DIR', '')
+    if os.environ.get('TAWZEEF_ENABLE_HYBRID') != '1' or not directory:
+        raise RuntimeError('Hybrid search is not configured')
+    if not _busy.acquire(blocking=False):
+        raise RuntimeError('Hybrid search is busy')
+    try:
+        import psycopg
+
+        from app.postgres_retrieval import search_postgres
+
+        model = _load_model(directory)
+        with psycopg.connect(autocommit=True, connect_timeout=3) as connection:
+            return search_postgres(path, role, question, model, connection,
+                                   collection='handbook', limit=10)
+    finally:
+        _busy.release()
+
+
 def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bool = False,
                      authorize=None) -> PolicyAgentResult:
     """Search policy-only sources; no persistent writes or hiring actions."""
@@ -152,11 +200,40 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
     # a passage actually answers the question.
     terms = _tokens(question)
     ranked = [(score, source) for score, source in _rank_lexical(terms, initial)
-              if terms <= _tokens(source.title + ' ' + source.text)]
+              if terms <= _tokens(source.title + ' ' + source.text) and _qualifiers_match(question, source)]
     allowed = {source.id for _, source in ranked}
     chosen = [source for _, source in _rank_lexical(_tokens(query), initial) if source.id in allowed]
     chosen_ids = {source.id for source in chosen}
-    sources = (chosen + [source for _, source in ranked if source.id not in chosen_ids])[:3]
+    candidates = chosen + [source for _, source in ranked if source.id not in chosen_ids]
+    if os.environ.get('TAWZEEF_USE_POLICY_HYBRID') == '1':
+        try:
+            result = _policy_hybrid(path, user.role, question)
+            if not isinstance(result, dict) or not isinstance(result.get('sources'), list):
+                raise TypeError('Invalid hybrid result')
+            rows = result['sources'][:10]
+        except Exception:  # noqa: BLE001 - local search failures must not expose provider details.
+            rows = []
+            notice = ' '.join(filter(None, (notice, 'Policy hybrid unavailable; using lexical ranking.')))
+        else:
+            # Recheck after potentially slow vector work. Hybrid rows are only
+            # ordering hints, never a source of authorization or new content.
+            current = {source.id: source for source in _current(path, user, authorize)}
+            eligible = {source.id: source for source in candidates}
+            reranked = []
+            seen = set()
+            for row in rows:
+                if not isinstance(row, dict) or row.get('collection') != 'handbook':
+                    continue
+                source = eligible.get(row.get('id'))
+                if (source is None or source.id in seen or current.get(source.id) != source or
+                        any(row.get(field) != getattr(source, field) for field in ('title', 'text', 'page', 'section'))):
+                    continue
+                reranked.append(source)
+                seen.add(source.id)
+            candidates = reranked + [source for source in candidates if source.id not in seen]
+            notice = ' '.join(filter(None, (notice,
+                'Experimental hybrid reorders eligible lexical matches only; it does not ensure synonym support.')))
+    sources = candidates[:3]
     if not sources:
         _current(path, user, authorize)
         return PolicyAgentResult(KnowledgeAnswer('No supported policy answer was found.', [], 'abstain', notice or None), ['search_policy'])
@@ -172,9 +249,9 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
             revalidate()
             if _has_valid_citations(answer, sources):
                 return PolicyAgentResult(KnowledgeAnswer(answer, sources, 'groq',
-                    'AI-generated; citation identifiers do not prove factual support. Verify the sources.'), ['search_policy'])
-            notice = 'AI citations could not be verified; showing source excerpts.'
+                    ' '.join(filter(None, (notice, 'AI-generated; citation identifiers do not prove factual support. Verify the sources.')))), ['search_policy'])
+            notice = ' '.join(filter(None, (notice, 'AI citations could not be verified; showing source excerpts.')))
         except ProviderUnavailable:
-            notice = 'AI service unavailable; showing source excerpts.'
+            notice = ' '.join(filter(None, (notice, 'AI service unavailable; showing source excerpts.')))
     revalidate()
     return PolicyAgentResult(KnowledgeAnswer(extractive, sources, 'extractive', notice or None), ['search_policy'])

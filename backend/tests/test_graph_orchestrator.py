@@ -147,7 +147,7 @@ def test_failed_start_removes_owner_and_partial_checkpoints(tmp_path, monkeypatc
                 VALUES (?, 'job-backend-python', 'resume.docx', 'Python')""", (candidate,)).lastrowid
         def fail(*args, **kwargs):
             raise RuntimeError('injected policy failure')
-        monkeypatch.setattr(orchestrator, 'answer_question', fail)
+        monkeypatch.setattr(orchestrator, 'run_policy_agent', fail)
         assert client.post('/api/graph-reviews', json={
             'application_id': application, 'policy_question': 'trigger failure',
         }).status_code == 500
@@ -160,7 +160,7 @@ def test_failed_start_removes_owner_and_partial_checkpoints(tmp_path, monkeypatc
 def test_graph_policy_rechecks_source_before_first_response(tmp_path, monkeypatch):
     path = tmp_path / 'policy-race.sqlite3'
     monkeypatch.delenv('TAWZEEF_ENABLE_GROQ', raising=False)
-    original = orchestrator.answer_question
+    original = orchestrator.run_policy_agent
     with TestClient(app_with_graph(path)) as client:
         login(client, 'hr')
         with connect(path) as db:
@@ -168,17 +168,17 @@ def test_graph_policy_rechecks_source_before_first_response(tmp_path, monkeypatc
             application = db.execute("""INSERT INTO applications(candidate_id,job_id,filename,resume_text)
                 VALUES (?, 'job-backend-python', 'resume.docx', 'synthetic')""", (candidate,)).lastrowid
         doc = client.post('/api/knowledge/documents/text', json={
-            'title': 'Quasar leave', 'audience': 'hr', 'text': 'Quasar leave is eleven days. private-marker',
+            'title': 'Quasar leave', 'audience': 'hr', 'collection': 'handbook', 'text': 'Quasar leave is eleven days. private-marker',
         }).json()
 
         def revoke(*args, **kwargs):
             answer = original(*args, **kwargs)
-            assert answer.sources
+            assert answer.answer.sources
             with connect(path) as db:
                 db.execute('UPDATE knowledge_documents SET active=0 WHERE id=?', (doc['id'],))
             return answer
 
-        monkeypatch.setattr(orchestrator, 'answer_question', revoke)
+        monkeypatch.setattr(orchestrator, 'run_policy_agent', revoke)
         response = client.post('/api/graph-reviews', json={
             'application_id': application, 'policy_question': 'quasar leave',
         })
@@ -197,7 +197,7 @@ def test_graph_policy_remains_available_after_restart_and_is_hidden_on_change(tm
             application = db.execute("""INSERT INTO applications(candidate_id,job_id,filename,resume_text)
                 VALUES (?, 'job-backend-python', 'resume.docx', 'synthetic')""", (candidate,)).lastrowid
         doc = client.post('/api/knowledge/documents/text', json={
-            'title': 'Quasar leave', 'audience': 'hr', 'text': 'Quasar leave is eleven days. private-marker',
+            'title': 'Quasar leave', 'audience': 'hr', 'collection': 'handbook', 'text': 'Quasar leave is eleven days. private-marker',
         }).json()
         created = client.post('/api/graph-reviews', json={
             'application_id': application, 'policy_question': 'quasar leave',
@@ -339,12 +339,12 @@ def test_graph_review_persists_and_requires_owner_hr(tmp_path):
         application = client.post('/api/applications', params={
             'job_id': 'job-backend-python', 'filename': 'resume.docx',
         }, content=file.getvalue()).json()
-        request = {'application_id': application['id'], 'policy_question': 'quasar sabbatical personal-marker'}
+        request = {'application_id': application['id'], 'policy_question': 'what is quasar sabbatical?'}
         assert client.post('/api/graph-reviews', json=request).status_code == 403
 
         login(client, 'hr')
         document = client.post('/api/knowledge/documents/text', json={
-            'title': 'Quasar policy', 'audience': 'hr',
+            'title': 'Quasar policy', 'audience': 'hr', 'collection': 'handbook',
             'text': 'Quasar sabbatical is eleven days. confidential-policy-marker',
         })
         assert document.status_code == 201
@@ -363,13 +363,13 @@ def test_graph_review_persists_and_requires_owner_hr(tmp_path):
         assert body['state']['policy']['status'] == 'answer'
         assert 'confidential-policy-marker' in body['state']['policy']['answer']
         assert body['state']['policy']['sources'][0]['title'] == 'Quasar policy'
-        assert 'personal-marker' not in str(body)
+        assert request['policy_question'] not in str(body)
         assert body['state']['status']['application_status'] == 'submitted'
         with SqliteSaver.from_conn_string(str(path)) as saver:
             graph = build_review_graph(path, saver)
             history = list(graph.get_state_history(_config(thread_id)))
             assert len(history) > 1
-            assert 'personal-marker' not in str(history)
+            assert request['policy_question'] not in str(history)
             assert 'confidential-policy-marker' not in str(history)
             assert 'private-cv-marker' not in str(history)
 

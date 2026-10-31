@@ -37,7 +37,7 @@ from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_d
 from app.blind import redact_resume
 from app.conversations import _authorized_sources, _digest
 from app.db import connect
-from app.knowledge import answer_question
+from app.policy_agent import authorized_policy_sources, run_policy_agent
 from app.recruitment import get_application, job_data, score_resume
 from app.resume_structure import structure_resume
 from app.scheduling import utc_text
@@ -224,10 +224,15 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         question = policy_question.strip()
         if not question:
             return {"policy": {"status": "not_requested"}}
-        answer = answer_question(question, "hr", database_path=path, enable_groq=False)
+        if user is None or authorize is None:
+            raise HTTPException(status_code=403, detail='HR access required')
+        try:
+            answer = run_policy_agent(path, user, question, enabled=enable_agent, authorize=authorize).answer
+        except PermissionError as exc:
+            raise HTTPException(status_code=409, detail='Policy access changed; please retry') from exc
         if answer.mode == 'abstain' and not answer.sources:
             return {"policy": {"status": "abstain"}}
-        return {"policy": {"status": "source_refs_v1", "refs": [
+        return {"policy": {"status": "source_refs_v2", "refs": [
             {"id": source.id, "digest": _digest(source)} for source in answer.sources
         ]}}
 
@@ -433,9 +438,12 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     raise HTTPException(status_code=401, detail='Authentication required')
                 if actor['role'] != 'hr':
                     raise HTTPException(status_code=403, detail='HR access required')
-                if policy.get('status') == 'source_refs_v1':
+                if policy.get('status') in {'source_refs_v1', 'source_refs_v2'}:
                     refs = policy.get('refs')
-                    available = _authorized_sources(db, 'hr')
+                    if policy['status'] == 'source_refs_v2':
+                        available = {source.id: source for source in authorized_policy_sources(db, 'hr')}
+                    else:
+                        available = _authorized_sources(db, 'hr')
                     if (isinstance(refs, list) and 1 <= len(refs) <= 3 and
                             all(isinstance(ref, dict) and set(ref) == {'id', 'digest'} and
                                 isinstance(ref['id'], str) and ref['id'] in available and
