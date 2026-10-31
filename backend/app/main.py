@@ -51,6 +51,8 @@ from app.resume_fields_api import router as resume_fields_router
 from app.rubric_admin import initialize_rubric_admin
 from app.rubric_admin import router as rubric_admin_router
 from app.rubric_comparison import router as rubric_comparison_router
+from app.rubric_triage import initialize_rubric_triage
+from app.rubric_triage import router as rubric_triage_router
 from app.scheduling import initialize_scheduling
 from app.scheduling import router as scheduling_router
 from app.slots import initialize_slots
@@ -90,6 +92,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         initialize_knowledge_documents(path, include_samples=seed_demo)
         initialize_jobs_admin(path)
         initialize_rubric_admin(path)
+        initialize_rubric_triage(path)
         initialize_resume_field_reviews(path)
         initialize_conversations(path)
         if not seed_demo:
@@ -133,6 +136,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
     application.include_router(jobs_admin_router)
     application.include_router(rubric_admin_router)
     application.include_router(rubric_comparison_router)
+    application.include_router(rubric_triage_router)
     application.include_router(conversations_router)
     application.include_router(graph_reviews_router)
     application.include_router(evaluation_router)

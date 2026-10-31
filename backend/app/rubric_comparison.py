@@ -33,21 +33,26 @@ def compare_job_rubrics(job_id: str, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         # A read transaction gives criteria and assessment rows one snapshot.
         db.execute('BEGIN')
-        require_job(db, job_id)
-        criteria = {f"c-{row['id']}": dict(row) for row in db.execute(
-            'SELECT id, category, label FROM rubric_criteria WHERE job_id = ? ORDER BY id', (job_id,))}
-        criteria_digest = criteria_fingerprint([{'id': int(ref[2:]), **criterion} for ref, criterion in criteria.items()])
-        rows = db.execute('''SELECT a.id AS application_id, a.resume_text, r.id AS assessment_id, r.assessment_json, r.result_json,
-                r.criteria_fingerprint, r.source_fingerprint
-            FROM applications a LEFT JOIN rubric_assessments r ON r.id = (
-                SELECT MAX(x.id) FROM rubric_assessments x WHERE x.application_id = a.id
-            ) WHERE a.job_id = ? ORDER BY a.id LIMIT ?''', (job_id, MAX_APPLICATIONS + 1)).fetchall()
-        if len(rows) > MAX_APPLICATIONS:
-            raise HTTPException(status_code=409, detail='Too many applications for a single comparison')
-        evidence_by_application = {}
-        for evidence in db.execute('''SELECT e.* FROM rubric_evidence e JOIN applications a
-                ON a.id=e.application_id WHERE a.job_id=?''', (job_id,)):
-            evidence_by_application.setdefault(evidence['application_id'], []).append(dict(evidence))
+        return compare_in_snapshot(db, job_id)
+
+
+def compare_in_snapshot(db, job_id: str) -> dict:
+    """Build the comparison from the caller's existing database snapshot."""
+    require_job(db, job_id)
+    criteria = {f"c-{row['id']}": dict(row) for row in db.execute(
+        'SELECT id, category, label FROM rubric_criteria WHERE job_id = ? ORDER BY id', (job_id,))}
+    criteria_digest = criteria_fingerprint([{'id': int(ref[2:]), **criterion} for ref, criterion in criteria.items()])
+    rows = db.execute('''SELECT a.id AS application_id, a.resume_text, r.id AS assessment_id, r.assessment_json, r.result_json,
+            r.criteria_fingerprint, r.source_fingerprint
+        FROM applications a LEFT JOIN rubric_assessments r ON r.id = (
+            SELECT MAX(x.id) FROM rubric_assessments x WHERE x.application_id = a.id
+        ) WHERE a.job_id = ? ORDER BY a.id LIMIT ?''', (job_id, MAX_APPLICATIONS + 1)).fetchall()
+    if len(rows) > MAX_APPLICATIONS:
+        raise HTTPException(status_code=409, detail='Too many applications for a single comparison')
+    evidence_by_application = {}
+    for evidence in db.execute('''SELECT e.* FROM rubric_evidence e JOIN applications a
+            ON a.id=e.application_id WHERE a.job_id=?''', (job_id,)):
+        evidence_by_application.setdefault(evidence['application_id'], []).append(dict(evidence))
 
     applications = []
     for row in rows:

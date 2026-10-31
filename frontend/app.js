@@ -371,12 +371,80 @@ function renderJobs(jobs, role) {
         } finally { compare.disabled = false; }
       });
       card.append(compare, comparison);
+      const triage = element("button", "outline-button", "أولوية مراجعة الطلبات"); triage.type = "button";
+      const triagePanel = element("div", "application-detail"); triagePanel.hidden = true;
+      triage.addEventListener("click", async () => {
+        triage.disabled = true; triagePanel.hidden = false;
+        try { await loadRubricTriage(triagePanel, job.id); }
+        finally { triage.disabled = false; }
+      });
+      card.append(triage, triagePanel);
     }
     list.append(card);
   }
   box.append(list);
   if (role === "hr") box.append(createJobForm(role));
   target.replaceChildren(box);
+}
+
+async function loadRubricTriage(target, jobId) {
+  const base = `/api/jobs/${encodeURIComponent(jobId)}/rubric`;
+  target.replaceChildren(element("p", "subtle-note", "جارٍ تحميل توصيات المراجعة..."));
+  try {
+    const data = await api(`${base}/triage`);
+    if (!target.isConnected) return;
+    if (!data || !Array.isArray(data.items) || !Number.isSafeInteger(data.version)) throw new Error("تعذّر قراءة توصيات المراجعة.");
+    const heading = element("h4", "", "أولوية مراجعة الطلبات");
+    const notice = element("p", "subtle-note", "توصيات مبنية على نطاق تقييم HR الحالي وعتبة هذه الوظيفة. لا تتخذ قرار توظيف أو رفض، والطلبات غير المؤكدة تبقى للمراجعة.");
+    const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
+    const form = element("form", "decision-form");
+    const label = element("label", "", "عتبة أولوية المراجعة من 0 إلى 100");
+    const threshold = element("input"); threshold.type = "number"; threshold.min = "0"; threshold.max = "100"; threshold.step = "1"; threshold.required = true;
+    if (data.threshold !== null && data.threshold !== undefined) threshold.value = String(data.threshold);
+    label.append(threshold);
+    const save = element("button", "small-button", "حفظ العتبة"); save.type = "submit";
+    const reload = element("button", "outline-button", "تحديث التوصيات"); reload.type = "button";
+    reload.addEventListener("click", () => loadRubricTriage(target, jobId));
+    form.append(label, save);
+    const listing = element("div", "data-list");
+    const recommendationLabels = {
+      threshold_not_configured: "لم تُحدد عتبة للوظيفة",
+      unknown: "التقييم غير موجود أو قديم؛ يحتاج مراجعة",
+      priority_review: "أولوية للمراجعة البشرية",
+      needs_review: "يحتاج مراجعة بشرية",
+      inconclusive: "النطاق يتداخل مع العتبة؛ النتيجة غير محسومة"
+    };
+    const priorityOrder = { priority_review: 0, inconclusive: 1, unknown: 2, threshold_not_configured: 3, needs_review: 4 };
+    const items = [...data.items].sort((left, right) => (priorityOrder[left.recommendation] ?? 5) - (priorityOrder[right.recommendation] ?? 5));
+    for (const item of items) {
+      const card = element("article", "rubric-comparison-item");
+      card.append(element("h5", "", `طلب #${item.application_id}`),
+        element("p", "subtle-note", `حالة الطلب: ${statusLabels[item.application_status] || "غير متاحة"}`),
+        element("p", "", recommendationLabels[item.recommendation] || "التوصية غير متاحة؛ راجع الطلب."));
+      if (item.assessment_status === "outdated") card.append(element("p", "form-error", "التقييم قديم ويحتاج مراجعة جديدة."));
+      else if (item.assessment_status === "not_assessed") card.append(element("p", "subtle-note", "لم يُحفظ تقييم لهذا الطلب."));
+      if (item.bounds) card.append(element("p", "subtle-note", `نطاق التقييم: ${item.bounds.minimum}–${item.bounds.maximum} من 100 · التغطية: ${item.bounds.coverage_percent}%`));
+      listing.append(card);
+    }
+    if (!data.items.length) listing.append(element("p", "subtle-note", "لا توجد طلبات لهذه الوظيفة."));
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const value = Number(threshold.value);
+      if (threshold.value === "" || !Number.isInteger(value) || value < 0 || value > 100) { message.textContent = "أدخل عددًا صحيحًا من 0 إلى 100."; message.className = "form-error"; return; }
+      save.disabled = true; threshold.disabled = true; reload.disabled = true;
+      let uncertain = false;
+      try {
+        await api(`${base}/triage-threshold`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threshold: value, expected_version: data.version }) });
+        if (target.isConnected) await loadRubricTriage(target, jobId);
+      } catch (error) {
+        uncertain = error instanceof TypeError;
+        if (!isStale(error) && target.isConnected) { message.className = "form-error"; message.textContent = uncertain ? "تعذّر الاتصال. حدّث التوصيات للتحقق قبل المحاولة." : error.message; }
+      } finally { save.disabled = uncertain; threshold.disabled = uncertain; reload.disabled = false; }
+    });
+    target.replaceChildren(heading, notice, message, form, reload, listing);
+  } catch (error) {
+    if (!isStale(error) && target.isConnected) target.replaceChildren(element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message));
+  }
 }
 
 function renderComparison(target, data) {
