@@ -1,6 +1,8 @@
 """Human-managed, local-only interview slots with atomic candidate booking."""
 
+import hashlib
 import json
+import secrets
 import time
 import unicodedata
 from datetime import UTC, datetime
@@ -8,7 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_digest
 from app.db import connect
@@ -47,6 +49,15 @@ def initialize_slots(path: str | Path) -> None:
         columns = {row['name'] for row in db.execute('PRAGMA table_info(interview_slots)')}
         if 'withdrawn' not in columns:
             db.execute('ALTER TABLE interview_slots ADD COLUMN withdrawn INTEGER NOT NULL DEFAULT 0 CHECK (withdrawn IN (0, 1))')
+        if 'target_application_id' not in columns:
+            db.execute('ALTER TABLE interview_slots ADD COLUMN target_application_id INTEGER REFERENCES applications(id)')
+        if 'target_candidate_id' not in columns:
+            db.execute('ALTER TABLE interview_slots ADD COLUMN target_candidate_id INTEGER REFERENCES users(id)')
+        db.execute('''CREATE TABLE IF NOT EXISTS slot_batches (
+            id TEXT PRIMARY KEY, created_by INTEGER NOT NULL REFERENCES users(id),
+            payload TEXT NOT NULL, fingerprint TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','committed'))
+        )''')
 
 
 class SlotCreate(BaseModel):
@@ -96,6 +107,27 @@ def slot_view(row) -> dict:
     return {key: row[key] for key in ('id', 'start_at', 'end_at', 'interviewer')}
 
 
+class BatchSlot(SlotCreate):
+    model_config = ConfigDict(extra='forbid')
+    application_id: int = Field(gt=0, strict=True)
+
+
+class BatchPreview(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    items: list[BatchSlot] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode='after')
+    def unique_applications(self):
+        if len({item.application_id for item in self.items}) != len(self.items):
+            raise ValueError('Each application must be distinct')
+        return self
+
+
+class BatchCommit(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    fingerprint: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
 def _require_current_role(db, request: Request, user: User, role: str) -> None:
     """Recheck the requesting session inside the serialized write transaction."""
     session = db.execute('''SELECT u.username, u.role FROM sessions s JOIN users u ON u.id=s.user_id
@@ -105,6 +137,86 @@ def _require_current_role(db, request: Request, user: User, role: str) -> None:
         raise HTTPException(status_code=401, detail='Authentication required')
     if session['role'] != role:
         raise HTTPException(status_code=403, detail=f'{role.capitalize()} access required')
+
+
+def _validate_batch(db, items: list[BatchSlot]) -> dict[int, int]:
+    now = datetime.now(UTC)
+    candidates = {}
+    for index, item in enumerate(items):
+        application = db.execute('SELECT id,candidate_id,status FROM applications WHERE id=?', (item.application_id,)).fetchone()
+        if application is None or application['status'] != 'advanced':
+            raise HTTPException(status_code=409, detail='An application is not eligible')
+        candidates[item.application_id] = application['candidate_id']
+        if item.start_at <= now:
+            raise HTTPException(status_code=409, detail='Batch slots must be in the future')
+        if db.execute("""SELECT 1 FROM interviews i WHERE i.application_id=? AND i.status='scheduled'
+                          AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id)""", (item.application_id,)).fetchone():
+            raise HTTPException(status_code=409, detail='An application already has an interview')
+        start, end, interviewer = utc_text(item.start_at), utc_text(item.end_at), item.interviewer.casefold()
+        if db.execute("""SELECT 1 FROM interviews WHERE status='scheduled' AND start_at < ? AND end_at > ?
+                          AND (candidate_id=? OR interviewer_key=?)""", (end, start, application['candidate_id'], interviewer)).fetchone():
+            raise HTTPException(status_code=409, detail='Interview conflict')
+        if db.execute('''SELECT 1 FROM interview_slots s LEFT JOIN applications a ON a.id=s.target_application_id
+                          WHERE s.withdrawn=0 AND s.start_at < ? AND s.end_at > ?
+                          AND (s.interviewer_key=? OR a.candidate_id=?)''', (end, start, interviewer, application['candidate_id'])).fetchone():
+            raise HTTPException(status_code=409, detail='Slot conflict')
+        for other in items[:index]:
+            if (item.start_at < other.end_at and item.end_at > other.start_at and
+                    (item.interviewer.casefold() == other.interviewer.casefold() or
+                     application['candidate_id'] == candidates[other.application_id])):
+                raise HTTPException(status_code=409, detail='Batch candidate or interviewer conflict')
+    return candidates
+
+
+@router.post('/slots/batches/preview', status_code=201)
+def preview_batch(payload: BatchPreview, request: Request, user: HR):
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _require_current_role(db, request, user, 'hr')
+        candidates = _validate_batch(db, payload.items)
+        proposal_id = secrets.token_hex(16)
+        items = [item.model_dump(mode='json') for item in payload.items]
+        identities = [{'application_id': item.application_id, 'candidate_id': candidates[item.application_id]}
+                      for item in payload.items]
+        encoded = json.dumps({'id': proposal_id, 'actor': user.id, 'items': items, 'identities': identities}, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+        fingerprint = hashlib.sha256(encoded.encode()).hexdigest()
+        db.execute("INSERT INTO slot_batches(id,created_by,payload,fingerprint,status) VALUES (?,?,?,?,'pending')",
+                   (proposal_id, user.id, encoded, fingerprint))
+        _require_current_role(db, request, user, 'hr')
+        return {'proposal_id': proposal_id, 'fingerprint': fingerprint,
+                'items': [{**item, 'candidate_id': identity['candidate_id']} for item, identity in zip(items, identities, strict=True)]}
+
+
+@router.post('/slots/batches/{proposal_id}/commit')
+def commit_batch(proposal_id: str, payload: BatchCommit, request: Request, user: HR):
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _require_current_role(db, request, user, 'hr')
+        row = db.execute('SELECT * FROM slot_batches WHERE id=? AND created_by=?', (proposal_id, user.id)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail='Batch not found')
+        if row['status'] != 'pending' or not secrets.compare_digest(row['fingerprint'], payload.fingerprint):
+            raise HTTPException(status_code=409, detail='Batch changed or already committed')
+        if hashlib.sha256(row['payload'].encode()).hexdigest() != row['fingerprint']:
+            raise HTTPException(status_code=409, detail='Batch integrity error')
+        data = json.loads(row['payload'])
+        if data.get('id') != proposal_id or data.get('actor') != user.id:
+            raise HTTPException(status_code=409, detail='Batch integrity error')
+        items = BatchPreview.model_validate({'items': data['items']}).items
+        candidates = _validate_batch(db, items)
+        identities = [{'application_id': item.application_id, 'candidate_id': candidates[item.application_id]}
+                      for item in items]
+        if data.get('identities') != identities:
+            raise HTTPException(status_code=409, detail='Candidate ownership changed; review a new batch')
+        slots = []
+        for item in items:
+            created = create_slot_record(db, item, user.id)
+            db.execute('UPDATE interview_slots SET target_application_id=?, target_candidate_id=? WHERE id=?',
+                       (item.application_id, candidates[item.application_id], created['id']))
+            slots.append({**created, 'application_id': item.application_id})
+        db.execute("UPDATE slot_batches SET status='committed' WHERE id=?", (proposal_id,))
+        _require_current_role(db, request, user, 'hr')
+        return {'slots': slots}
 
 
 @router.post('/slots', status_code=201)
@@ -136,7 +248,7 @@ def list_slots(request: Request, user: Authenticated, application_id: int | None
             rows = db.execute('''SELECT s.*, i.status AS interview_status
                 FROM interview_slots s LEFT JOIN interviews i ON i.id = s.interview_id
                 ORDER BY s.start_at, s.id''').fetchall()
-            return [{**slot_view(row), 'booked': row['interview_status'] == 'scheduled',
+            return [{**slot_view(row), 'target_application_id': row['target_application_id'], 'booked': row['interview_status'] == 'scheduled',
                      'withdrawn': bool(row['withdrawn'])} for row in rows]
         if user.role != 'candidate':
             raise HTTPException(status_code=403, detail='Access denied')
@@ -150,10 +262,11 @@ def list_slots(request: Request, user: Authenticated, application_id: int | None
         rows = db.execute('''SELECT s.* FROM interview_slots s
             LEFT JOIN interviews linked ON linked.id = s.interview_id
             WHERE s.withdrawn = 0 AND s.start_at > ? AND (s.interview_id IS NULL OR linked.status = 'cancelled')
+            AND (s.target_application_id IS NULL OR (s.target_application_id=? AND s.target_candidate_id=?))
             AND NOT EXISTS (SELECT 1 FROM interviews i WHERE i.status = 'scheduled'
                 AND i.start_at < s.end_at AND i.end_at > s.start_at
                 AND (i.candidate_id = ? OR i.interviewer_key = s.interviewer_key))
-            ORDER BY s.start_at, s.id''', (now, application['candidate_id'])).fetchall()
+            ORDER BY s.start_at, s.id''', (now, application_id, user.id, application['candidate_id'])).fetchall()
         return [slot_view(row) for row in rows]
 
 
@@ -166,6 +279,9 @@ def book_slot(slot_id: int, payload: BookSlot, request: Request, user: Candidate
         slot = db.execute('''SELECT s.*, i.status AS interview_status FROM interview_slots s
             LEFT JOIN interviews i ON i.id = s.interview_id WHERE s.id = ?''', (slot_id,)).fetchone()
         if slot is None:
+            raise HTTPException(status_code=404, detail='Slot not found')
+        if slot['target_application_id'] is not None and (slot['target_application_id'] != application['id']
+                                                           or slot['target_candidate_id'] != user.id):
             raise HTTPException(status_code=404, detail='Slot not found')
         now = utc_text(datetime.now(UTC))
         if slot['withdrawn'] or slot['start_at'] <= now or slot['interview_status'] == 'scheduled':

@@ -166,12 +166,13 @@ def _current_scheduling(path: str | Path, application_id: int) -> dict:
         rows = db.execute("""SELECT s.id, s.start_at, s.end_at FROM interview_slots s
             LEFT JOIN interviews linked ON linked.id = s.interview_id
             WHERE s.withdrawn = 0 AND s.start_at > ? AND (s.interview_id IS NULL OR linked.status = 'cancelled')
+            AND (s.target_application_id IS NULL OR (s.target_application_id=? AND s.target_candidate_id=?))
             AND NOT EXISTS (SELECT 1 FROM interviews i WHERE i.status = 'scheduled'
                 AND i.start_at < s.end_at AND i.end_at > s.start_at
                 AND (i.candidate_id = ? OR i.interviewer_key = s.interviewer_key)
                 AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id))
             ORDER BY s.start_at, s.id LIMIT 10""",
-            (utc_text(datetime.now(UTC)), application["candidate_id"])).fetchall()
+            (utc_text(datetime.now(UTC)), application_id, application["candidate_id"], application["candidate_id"])).fetchall()
     return {"available_slots": [dict(r) for r in rows], "eligible": True, "interview_completed": completed,
             "notice": ("A previous interview was completed. Availability is a snapshot; booking remains a separate action."
                        if completed else "Availability is a snapshot; booking remains a separate action.")}

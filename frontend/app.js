@@ -412,9 +412,10 @@ async function loadRubricTriage(target, jobId) {
       unknown: "التقييم غير موجود أو قديم؛ يحتاج مراجعة",
       priority_review: "أولوية للمراجعة البشرية",
       needs_review: "يحتاج مراجعة بشرية",
-      inconclusive: "النطاق يتداخل مع العتبة؛ النتيجة غير محسومة"
+      inconclusive: "النطاق يتداخل مع العتبة؛ النتيجة غير محسومة",
+      finalized: "طلب منتهٍ؛ خارج قائمة الأولوية"
     };
-    const priorityOrder = { priority_review: 0, inconclusive: 1, unknown: 2, threshold_not_configured: 3, needs_review: 4 };
+    const priorityOrder = { priority_review: 0, inconclusive: 1, unknown: 2, threshold_not_configured: 3, needs_review: 4, finalized: 5 };
     const items = [...data.items].sort((left, right) => (priorityOrder[left.recommendation] ?? 5) - (priorityOrder[right.recommendation] ?? 5));
     for (const item of items) {
       const card = element("article", "rubric-comparison-item");
@@ -2229,6 +2230,7 @@ function renderInterviews(interviews, role, applications, slots) {
   }
   box.append(list);
   if (role === "hr") renderSlotsManagement(box, slots, role);
+  if (role === "hr") renderBulkSlots(box, applications, role);
   if (role === "hr" && applications.length) {
     const form = element("form", "interview-form");
     const jobLabel = element("label", "", "الطلب");
@@ -2258,6 +2260,96 @@ function renderInterviews(interviews, role, applications, slots) {
   target.replaceChildren(box);
 }
 
+function renderBulkSlots(target, applications, role) {
+  const eligible = applications.filter((item) => item.status === "advanced");
+  const area = element("section", "application-detail");
+  area.setAttribute("aria-label", "جدولة مواعيد جماعية");
+  area.append(element("h4", "", "اقتراح مواعيد لعدة طلبات"), element("p", "subtle-note", "كل موعد مخصص للطلب المحدد، ولا يُحجز إلا عندما يختاره المرشح. تجهيز المواعيد محلي ولا يرسل بريدًا أو ينشئ حدث Google."));
+  if (!eligible.length) { area.append(element("p", "empty-note", "لا توجد طلبات مؤهلة حاليًا.")); target.append(area); return; }
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "توقيت الجهاز";
+  area.append(element("p", "subtle-note", `الأوقات المدخلة حسب المنطقة الزمنية للجهاز: ${timezone}.`));
+  const rows = element("div"); const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
+  const preview = element("div"); preview.setAttribute("aria-live", "polite");
+  const add = element("button", "outline-button", "إضافة طلب آخر"); add.type = "button";
+  const inspect = element("button", "small-button", "مراجعة المقترح"); inspect.type = "button";
+  let busy = false, commitUncertain = false;
+  function clearPreview() { preview.replaceChildren(); }
+  function addRow() {
+    if (busy || rows.childNodes.length >= 20) return;
+    clearPreview();
+    const row = element("div", "decision-form");
+    const applicationLabel = element("label", "", "الطلب المؤهل"); const application = element("select");
+    for (const item of eligible) { const option = element("option", "", `طلب #${item.id} · ${item.job_id}`); option.value = String(item.id); application.append(option); }
+    applicationLabel.append(application);
+    const startLabel = element("label", "", "البداية"); const start = element("input"); start.type = "datetime-local"; startLabel.append(start);
+    const endLabel = element("label", "", "النهاية"); const end = element("input"); end.type = "datetime-local"; endLabel.append(end);
+    const interviewerLabel = element("label", "", "المحاور"); const interviewer = element("input"); interviewer.maxLength = 120; interviewerLabel.append(interviewer);
+    const remove = element("button", "outline-button", "حذف هذا الطلب من المقترح"); remove.type = "button";
+    remove.addEventListener("click", () => { if (!busy) { row.remove(); clearPreview(); add.disabled = false; } });
+    for (const input of [application, start, end, interviewer]) input.addEventListener("input", clearPreview);
+    row.append(applicationLabel, startLabel, endLabel, interviewerLabel, remove);
+    row._bulkFields = { application, start, end, interviewer, remove };
+    rows.append(row); add.disabled = rows.childNodes.length >= 20;
+  }
+  function setBusy(value) {
+    busy = value; inspect.disabled = value || commitUncertain; add.disabled = value || commitUncertain || rows.childNodes.length >= 20;
+    for (const row of rows.children) for (const control of Object.values(row._bulkFields)) control.disabled = value || commitUncertain;
+  }
+  add.addEventListener("click", addRow);
+  inspect.addEventListener("click", async () => {
+    if (busy) return; clearPreview(); message.className = "subtle-note";
+    const items = []; const selected = new Set();
+    for (const row of rows.children) {
+      const { application, start, end, interviewer } = row._bulkFields;
+      const applicationId = Number(application.value), from = new Date(start.value), until = new Date(end.value), name = interviewer.value.trim();
+      if (!Number.isSafeInteger(applicationId) || applicationId <= 0 || selected.has(applicationId) || !name || Number.isNaN(from.valueOf()) || Number.isNaN(until.valueOf()) || from <= new Date() || until <= from) {
+        message.className = "form-error"; message.textContent = "اختر طلبات مختلفة وتحقق من المحاور وأوقات مستقبلية صحيحة لكل طلب."; return;
+      }
+      selected.add(applicationId); items.push({ application_id: applicationId, start_at: from.toISOString(), end_at: until.toISOString(), interviewer: name });
+    }
+    if (!items.length) { message.className = "form-error"; message.textContent = "أضف طلبًا واحدًا على الأقل."; return; }
+    setBusy(true); message.textContent = "جارٍ مراجعة المقترح والتحقق من التعارض...";
+    try {
+      const proposal = await api("/api/slots/batches/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }) });
+      if (!preview.isConnected) return;
+      if (!proposal.proposal_id || !/^[a-f0-9]{64}$/.test(proposal.fingerprint || "") || !Array.isArray(proposal.items) || proposal.items.length !== items.length || proposal.items.some((item, index) => item.application_id !== items[index].application_id || !Number.isSafeInteger(item.candidate_id) || item.candidate_id <= 0 || !item.start_at || !item.end_at || !item.interviewer)) throw new Error("تعذّرت قراءة المقترح بأمان؛ أعد المحاولة.");
+      const list = element("ol", "evidence-list");
+      for (const item of proposal.items) list.append(element("li", "", `طلب #${item.application_id} · مرشح #${item.candidate_id} · ${displayDate(item.start_at)} – ${displayDate(item.end_at)} · ${item.interviewer}`));
+      const confirmLabel = element("label", "", "راجعت جميع الطلبات والمواعيد والمحاورين وأوافق على إتاحة هذه المواعيد الخاصة");
+      const confirm = element("input"); confirm.type = "checkbox"; confirmLabel.prepend(confirm);
+      const commit = element("button", "small-button", "إتاحة المواعيد بعد المراجعة"); commit.type = "button";
+      commit.addEventListener("click", async () => {
+        if (!confirm.checked || busy) { message.className = "form-error"; message.textContent = "أكد مراجعة جميع التفاصيل أولًا."; return; }
+        setBusy(true); commit.disabled = true; confirm.disabled = true; message.className = "subtle-note"; message.textContent = "جارٍ تسجيل المواعيد...";
+        try {
+          await api(`/api/slots/batches/${encodeURIComponent(proposal.proposal_id)}/commit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fingerprint: proposal.fingerprint }) });
+          if (await loadOperations(role)) operationsMessage("أُتيحت المواعيد للطلبات المحددة؛ يختارها المرشحون بأنفسهم.");
+        } catch (error) {
+          if (!isStale(error) && preview.isConnected) {
+            message.className = "form-error";
+            commitUncertain = error instanceof TypeError;
+            message.textContent = commitUncertain ? "تعذّر الاتصال؛ حدّث قائمة المواعيد للتحقق قبل إعادة المحاولة." : error.message;
+            clearPreview();
+            if (commitUncertain) {
+              const refresh = element("button", "outline-button", "تحديث قائمة المواعيد للتحقق"); refresh.type = "button";
+              refresh.addEventListener("click", async () => {
+                refresh.disabled = true;
+                try { if (!await loadOperations(role) && area.isConnected) { message.textContent = "تعذّر تحديث المواعيد؛ حاول التحديث مجددًا."; refresh.disabled = false; } }
+                catch (refreshError) { if (!isStale(refreshError) && area.isConnected) { message.textContent = "تعذّر تحديث المواعيد؛ حاول التحديث مجددًا."; refresh.disabled = false; } }
+              });
+              preview.append(refresh);
+            }
+          }
+        } finally { setBusy(false); }
+      });
+      preview.replaceChildren(element("h5", "", "راجع المواعيد الخاصة قبل الإتاحة"), list, element("p", "subtle-note", "هذه ليست حجوزات مؤكدة؛ سيختار كل مرشح موعد طلبه بنفسه."), confirmLabel, commit);
+      message.textContent = "راجع المقترح ثم أكد الإتاحة.";
+    } catch (error) { if (!isStale(error) && area.isConnected) { message.className = "form-error"; message.textContent = error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message; } }
+    finally { setBusy(false); }
+  });
+  area.append(rows, add, inspect, message, preview); addRow(); target.append(area);
+}
+
 function renderSlotsManagement(target, slots, role) {
   const area = element("section", "application-detail");
   area.append(element("h4", "", "المواعيد التي يمكن للمرشحين اختيارها"));
@@ -2271,7 +2363,8 @@ function renderSlotsManagement(target, slots, role) {
       const label = slot.withdrawn === true ? "مسحوب" : slot.booked === true ? "محجوز" :
         slot.withdrawn !== false || slot.booked !== false || Number.isNaN(startTime.valueOf()) ? "الحالة غير متاحة" :
           future ? "متاح" : "انتهى الموعد";
-      const item = element("li", "", `${displayDate(slot.start_at)} – ${displayDate(slot.end_at)} · ${slot.interviewer} · ${label}`);
+      const visibility = slot.target_application_id ? ` · مخصص للطلب #${slot.target_application_id}` : " · متاح للمؤهلين";
+      const item = element("li", "", `${displayDate(slot.start_at)} – ${displayDate(slot.end_at)} · ${slot.interviewer} · ${label}${visibility}`);
       if (slot.withdrawn === false && slot.booked === false && future) {
         const withdraw = element("button", "small-button", "سحب الموعد المتاح"); withdraw.type = "button";
         withdraw.setAttribute("aria-label", `سحب موعد ${displayDate(slot.start_at)} مع ${slot.interviewer}`);
