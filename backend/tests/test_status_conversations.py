@@ -89,3 +89,29 @@ def test_session_expiry_before_commit_rolls_back(setup, monkeypatch):
     assert ask(client, chat_id, app_id).status_code == 401
     with connect(path) as db:
         assert db.execute('SELECT COUNT(*) FROM conversation_messages').fetchone()[0] == 0
+
+
+def test_status_only_history_does_not_load_unrelated_knowledge(setup, monkeypatch):
+    client, _, chat_id, app_id = setup
+    assert ask(client, chat_id, app_id).status_code == 201
+    def fail_knowledge(*args):
+        raise RuntimeError('knowledge unavailable')
+    monkeypatch.setattr(conversations, '_authorized_sources', fail_knowledge)
+    monkeypatch.setattr(conversations, '_policy_sources', fail_knowledge)
+    response = client.get(f'/api/conversations/{chat_id}')
+    assert response.status_code == 200
+    assert response.json()['messages'][0]['stage'] == 'applied'
+
+
+def test_mixed_history_still_requires_authorized_general_sources(setup, monkeypatch):
+    client, path, chat_id, app_id = setup
+    assert ask(client, chat_id, app_id).status_code == 201
+    with connect(path) as db:
+        db.execute('''INSERT INTO conversation_messages
+            (conversation_id, question, answer, sources_json, mode, context_role, source_scope)
+            VALUES (?, 'question', 'answer', '[]', 'abstain', 'candidate', 'general')''', (chat_id,))
+    def fail_knowledge(*args):
+        raise RuntimeError('knowledge unavailable')
+    monkeypatch.setattr(conversations, '_authorized_sources', fail_knowledge)
+    with pytest.raises(RuntimeError, match='knowledge unavailable'):
+        client.get(f'/api/conversations/{chat_id}')

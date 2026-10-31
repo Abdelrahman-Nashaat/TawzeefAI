@@ -240,9 +240,9 @@ def get_conversation(conversation_id: int, request: Request, user: Authenticated
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN IMMEDIATE')
         conversation = _owned(db, conversation_id, user, request)
-        available = _authorized_sources(db, user.role)
         messages = db.execute('SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY id',
                               (conversation_id,)).fetchall()
+        available = _authorized_sources(db, user.role) if any(row['source_scope'] == 'general' for row in messages) else {}
         policy_available = _policy_sources(db, user.role) if any(row['source_scope'] == 'policy' for row in messages) else None
         result = [_visible_status_message(db, row, user) if row['source_scope'] == 'application_status'
                   else _visible_message(row, available, policy_available) for row in messages]
