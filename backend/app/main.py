@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from app.admin_users import initialize_admin_users
 from app.admin_users import router as admin_users_router
 from app.agent import AgentError, run_agent
+from app.audit_timeline import router as audit_timeline_router
 from app.auth import (
     COOKIE_NAME,
     SESSION_SECONDS,
@@ -54,6 +55,7 @@ from app.resume_fields_api import router as resume_fields_router
 from app.rubric_admin import initialize_rubric_admin
 from app.rubric_admin import router as rubric_admin_router
 from app.rubric_comparison import router as rubric_comparison_router
+from app.rubric_evidence_bundle import router as rubric_evidence_bundle_router
 from app.rubric_triage import initialize_rubric_triage
 from app.rubric_triage import router as rubric_triage_router
 from app.scheduling import initialize_scheduling
@@ -140,6 +142,8 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
     application.include_router(knowledge_documents_router)
     application.include_router(jobs_admin_router)
     application.include_router(rubric_admin_router)
+    application.include_router(rubric_evidence_bundle_router)
+    application.include_router(audit_timeline_router)
     application.include_router(rubric_comparison_router)
     application.include_router(rubric_triage_router)
     application.include_router(conversations_router)

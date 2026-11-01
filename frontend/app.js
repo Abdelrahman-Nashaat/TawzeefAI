@@ -691,17 +691,19 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
     suggestEvidence.disabled = true;
     suggestions.replaceChildren(element("p", "subtle-note", "جارٍ البحث عن مقتطفات للمراجعة..."));
     try {
+      const bundleContext = await api(`${base}/evidence-bundle/context`);
       const response = await api(`${base}/suggestions`, { method: "POST" });
       if (!target.isConnected) return;
       if (revision !== criteriaRevision) {
         suggestions.replaceChildren(element("p", "form-error", "تغيرت المعايير أثناء البحث؛ اطلب الاقتراحات مجددًا."));
         return;
       }
-      if (response.offset_unit !== "unicode_code_points" || !Array.isArray(response.criteria) || !/^[a-f0-9]{64}$/.test(response.source_sha256 || "")) {
+      if (response.offset_unit !== "unicode_code_points" || !Array.isArray(response.criteria) || !/^[a-f0-9]{64}$/.test(response.source_sha256 || "") || bundleContext.source_sha256 !== response.source_sha256 || !/^[a-f0-9]{64}$/.test(bundleContext.snapshot || "")) {
         throw new Error("تعذّر قراءة الاقتراحات؛ حاول مرة أخرى.");
       }
       const sourcePoints = Array.from(source.text);
       const allowed = new Map(criteria.map((criterion) => [criterion.criterion_ref, criterion]));
+      const selected = [];
       suggestions.replaceChildren(element("p", "subtle-note", "المقتطفات مقترحة بالتشابه فقط، وقد تكون غير مناسبة أو منفية. راجع السياق بنفسك؛ لا تُثبت الاقتراحات المعيار ولا تغيّر التقييم أو قرار التوظيف."));
       suggestions.append(element("p", "subtle-note", "Search includes recognized sections and unclassified text. Missing results do not prove missing experience; review the entire résumé."));
       if (response.status === "no_recognized_sections") suggestions.append(element("p", "subtle-note", "No section headings were recognized. Suggestions, if any, come from unclassified text."));
@@ -727,6 +729,11 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
           item.append(element("p", "subtle-note", candidate.section === "unclassified" ? "Source: unclassified résumé text" : `Source section: ${candidate.section || "unknown"}`));
           if (candidate.retrieval_method === "exact_phrase") item.append(element("p", "subtle-note", "Exact phrase match; review the surrounding context. This does not verify a qualification."));
           if (Number.isFinite(similarity)) item.append(element("p", "subtle-note", `Similarity: ${similarity.toFixed(2)} for the matched passage; surrounding text is context. This is not a qualification assessment.`));
+          const reviewChoice = element("label", "rubric-evidence-choice");
+          const reviewCheckbox = element("input"); reviewCheckbox.type = "checkbox";
+          reviewChoice.append(reviewCheckbox, document.createTextNode(" I reviewed this excerpt and want to include it in the evidence bundle."));
+          selected.push({checkbox: reviewCheckbox, criterion_ref: criterion.criterion_ref, start, end, excerpt});
+          item.append(reviewChoice);
           const accept = element("button", "outline-button", "حفظ المقتطف بعد مراجعته"); accept.type = "button";
           accept.addEventListener("click", async () => {
             if (revision !== criteriaRevision || !target.isConnected || !accept.isConnected) {
@@ -740,7 +747,7 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
               if (!target.isConnected) return;
               rememberDrafts(); evidence.push(saved); renderEvidence(); renderJudgments();
               setMessage("تم حفظ المقتطف كدليل؛ اربطه بالمعيار وحدد حكمك بعد المراجعة.");
-              accept.textContent = "تم حفظ المقتطف";
+              suggestions.replaceChildren(element("p", "subtle-note", "Excerpt saved. Request fresh suggestions before selecting a bundle."));
             } catch (error) {
               if (!isStale(error) && target.isConnected) setMessage(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true);
               accept.disabled = false;
@@ -749,6 +756,25 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
           item.append(accept); group.append(item);
         }
         suggestions.append(group);
+      }
+      if (selected.length) {
+        const saveBundle = element("button", "small-button", "Save selected reviewed excerpts"); saveBundle.type = "button";
+        saveBundle.addEventListener("click", async () => {
+          const items = selected.filter((item) => item.checkbox.checked).map(({criterion_ref, start, end, excerpt}) => ({criterion_ref, start, end, excerpt, reviewed: true}));
+          if (!items.length || items.length > 30) { setMessage("Select between 1 and 30 reviewed excerpts.", true); return; }
+          saveBundle.disabled = true;
+          try {
+            const saved = await api(`${base}/evidence-bundle`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({snapshot: bundleContext.snapshot, items})});
+            if (!target.isConnected) return;
+            rememberDrafts();
+            for (const entry of saved.items) if (!evidence.some((item) => item.evidence_ref === entry.evidence.evidence_ref)) evidence.push(entry.evidence);
+            renderEvidence(); renderJudgments(); suggestions.replaceChildren(element("p", "subtle-note", "Reviewed excerpts saved. Assign judgments separately after examining the full context."));
+            setMessage("Evidence bundle saved; no assessment or decision was made.");
+          } catch (error) {
+            if (!isStale(error) && target.isConnected) { suggestions.replaceChildren(element("p", "form-error", "Could not confirm the bundle was saved. Reload the application and evidence before trying again.")); }
+          }
+        });
+        suggestions.append(saveBundle);
       }
     } catch (error) {
       if (!isStale(error) && target.isConnected) suggestions.replaceChildren(element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message));
@@ -825,6 +851,9 @@ function setupGraphReview(target, application) {
   intentLabel.append(intent);
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
   const question = element("textarea"); question.maxLength = 2000; question.placeholder = "يمكن تركه فارغًا"; questionLabel.append(question);
+  const adaptiveSemanticLabel = element("label", "", "Allow the adaptive planner to use local semantic evidence when available; it may omit this step.");
+  const adaptiveSemantic = element("input"); adaptiveSemantic.type = "checkbox"; adaptiveSemantic.disabled = true;
+  adaptiveSemanticLabel.prepend(adaptiveSemantic); adaptiveSemanticLabel.hidden = true;
   const slotFields = element("div"); slotFields.hidden = true;
   const slotStartLabel = element("label", "", "بداية الموعد"); const slotStart = element("input"); slotStart.type = "datetime-local"; slotStart.disabled = true; slotStartLabel.append(slotStart);
   const slotEndLabel = element("label", "", "نهاية الموعد"); const slotEnd = element("input"); slotEnd.type = "datetime-local"; slotEnd.disabled = true; slotEndLabel.append(slotEnd);
@@ -832,6 +861,9 @@ function setupGraphReview(target, application) {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "التوقيت المحلي";
   slotFields.append(element("p", "subtle-note", `الوقت المدخل حسب المنطقة الزمنية لجهازك: ${timezone}.`), slotStartLabel, slotEndLabel, interviewerLabel);
   intent.addEventListener("change", () => {
+    const adaptiveMode = ["adaptive", "adaptive_schedule"].includes(intent.value);
+    adaptiveSemanticLabel.hidden = !adaptiveMode; adaptiveSemantic.disabled = !adaptiveMode;
+    if (!adaptiveMode) adaptiveSemantic.checked = false;
     const supportsPolicy = intent.value === "full" || intent.value === "policy";
     questionLabel.hidden = !supportsPolicy; question.disabled = !supportsPolicy;
     question.required = intent.value === "policy";
@@ -843,7 +875,7 @@ function setupGraphReview(target, application) {
     for (const field of [slotStart, slotEnd, interviewer]) { field.disabled = !createSlot; field.required = createSlot; }
   });
   const start = element("button", "small-button", "بدء مراجعة المراحل"); start.type = "submit";
-  form.append(intentLabel, questionLabel, slotFields, element("p", "subtle-note", "يُعرض مقتطف من المصادر المصرح بها عند إدخال سؤال، ويُعاد فحصها عند تحميل المراجعة. لا يُحفظ نص السؤال في المراجعة."), start);
+  form.append(intentLabel, adaptiveSemanticLabel, questionLabel, slotFields, element("p", "subtle-note", "يُعرض مقتطف من المصادر المصرح بها عند إدخال سؤال، ويُعاد فحصها عند تحميل المراجعة. لا يُحفظ نص السؤال في المراجعة."), start);
   const restore = element("form", "decision-form");
   const idLabel = element("label", "", "معرّف مراجعة سابقة لهذا الطلب");
   const idInput = element("input"); idInput.maxLength = 100; idLabel.append(idInput);
@@ -1010,7 +1042,7 @@ function setupGraphReview(target, application) {
       }
       const approve = element("button", "small-button", validCombined ? "Approve advancement and private slot" : validAdvance ? "Approve advancement" : "Approve this slot"); approve.type = "button";
       const decline = element("button", "outline-button", "أرفض المقترح"); decline.type = "button";
-      const staleSemantic = review.state.intent === "semantic_advance_and_reserve_slot" && semantic?.status !== "current";
+      const staleSemantic = (review.state.intent === "semantic_advance_and_reserve_slot" || (review.state.intent === "adaptive" && review.state.plan?.includes("semantic"))) && semantic?.status !== "current";
       if (review.state.plan_stale || staleSemantic) { approve.disabled = true; decline.disabled = true; }
       async function decide(reviewed) {
         let uncertain = false;
@@ -1031,13 +1063,14 @@ function setupGraphReview(target, application) {
       const resume = element("button", "small-button", "أؤكد أنني راجعت النتائج واستكمل المراجعة"); resume.type = "button";
       if (review.state.intent === "adaptive" && review.state.plan_stale) resume.disabled = true;
       if (review.state.intent === "semantic_review" && semantic?.status !== "current") resume.disabled = true;
+      if (review.state.intent === "adaptive" && review.state.plan?.includes("semantic") && semantic?.status !== "current") resume.disabled = true;
       resume.addEventListener("click", async () => {
         resume.disabled = true; start.disabled = true; open.disabled = true; report("جارٍ استكمال المراجعة...");
         try {
           const updated = await api(`/api/graph-reviews/${encodeURIComponent(review.id)}/resume`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewed: true }) });
           if (target.isConnected) { display(updated); report("اكتملت مراجعة المراحل دون تغيير قرار الطلب أو حجز موعد."); }
         } catch (error) { if (!isStale(error) && target.isConnected) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
-        finally { resume.disabled = review.state.intent === "semantic_review" && semantic?.status !== "current"; start.disabled = false; open.disabled = false; }
+        finally { resume.disabled = (review.state.intent === "semantic_review" || (review.state.intent === "adaptive" && review.state.plan?.includes("semantic"))) && semantic?.status !== "current"; start.disabled = false; open.disabled = false; }
       });
       output.append(resume);
     } else if (!result) output.append(element("p", "result-badge", review.state.reviewed === true ? "اكتملت المراجعة بتأكيد بشري." : "انتهت المراجعة دون تأكيد بأن النتائج روجعت."));
@@ -1050,7 +1083,7 @@ function setupGraphReview(target, application) {
     event.preventDefault(); start.disabled = true; open.disabled = true; output.replaceChildren(); report("جارٍ تنفيذ المراحل حتى نقطة المراجعة البشرية...");
     try {
       const body = { application_id: application.id, intent: intent.value === "adaptive_schedule" ? "adaptive" : intent.value };
-      if (intent.value === "adaptive" || intent.value === "adaptive_schedule") body.adaptive_goal = intent.value === "adaptive" ? "review_application" : "schedule_interview";
+      if (intent.value === "adaptive" || intent.value === "adaptive_schedule") { body.adaptive_goal = intent.value === "adaptive" ? "review_application" : "schedule_interview"; body.allow_semantic = adaptiveSemantic.checked; }
       else body.policy_question = question.value.trim();
       if (["create_slot", "create_private_slot", "advance_and_reserve_slot", "semantic_advance_and_reserve_slot", "adaptive_schedule"].includes(intent.value)) {
         const startTime = new Date(slotStart.value), endTime = new Date(slotEnd.value);
@@ -2161,6 +2194,48 @@ function setupCancellationNotice(card, interview) {
   panel.append(refresh, content); details.append(panel); card.append(details);
 }
 
+function setupRecruitmentAudit(target) {
+  const details = element("details", "application-detail");
+  details.append(element("summary", "", "Recruitment audit timeline"));
+  const panel = element("div");
+  panel.append(element("p", "subtle-note", "Recruitment events only; other audit categories are separate. Notes and résumé excerpts are excluded."));
+  const form = element("form", "decision-form");
+  const applicationLabel = element("label", "", "Application ID (optional)");
+  const application = element("input"); application.type = "number"; application.min = "1"; applicationLabel.append(application);
+  const jobLabel = element("label", "", "Job ID (optional)"); const job = element("input"); job.maxLength = 128; jobLabel.append(job);
+  const actionLabel = element("label", "", "Action (optional)"); const action = element("input"); action.maxLength = 100; actionLabel.append(action);
+  const search = element("button", "outline-button", "Search audit events"); search.type = "submit";
+  const more = element("button", "outline-button", "Load older events"); more.type = "button"; more.hidden = true;
+  const output = element("div"); output.setAttribute("aria-live", "polite");
+  form.append(applicationLabel, jobLabel, actionLabel, search); panel.append(form, output, more); details.append(panel); target.append(details);
+  let cursor = null, filters = new URLSearchParams();
+  async function load(reset) {
+    search.disabled = true; more.disabled = true;
+    try {
+      const query = new URLSearchParams(filters); if (!reset && cursor !== null) query.set("before", String(cursor));
+      const page = await api(`/api/audit/timeline?${query}`);
+      if (!output.isConnected) return;
+      if (reset) output.replaceChildren(element("p", "subtle-note", page.notice));
+      for (const event of page.events || []) {
+        const summary = Object.entries(event.summary || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
+        output.append(element("p", "", `#${event.id} · ${displayDate(event.created_at)} · application #${event.application_id} · ${event.job_id} · actor #${event.actor_id} · ${event.action}${summary ? ` · ${summary}` : ""}`));
+      }
+      if (reset && !page.events?.length) output.append(element("p", "subtle-note", "No events match these filters."));
+      cursor = page.next_before; more.hidden = cursor === null;
+    } catch (error) {
+      if (!isStale(error) && output.isConnected) output.append(element("p", "form-error", "Unable to load recruitment audit events."));
+    } finally { search.disabled = false; more.disabled = false; }
+  }
+  form.addEventListener("submit", (event) => {
+    event.preventDefault(); filters = new URLSearchParams(); cursor = null;
+    if (application.value) filters.set("application_id", application.value);
+    if (job.value.trim()) filters.set("job_id", job.value.trim());
+    if (action.value.trim()) filters.set("action", action.value.trim());
+    more.hidden = true; load(true);
+  });
+  more.addEventListener("click", () => load(false));
+}
+
 function renderDashboard(data) {
   const target = document.getElementById("dashboard-area");
   const box = section("مؤشرات التوظيف");
@@ -2173,6 +2248,7 @@ function renderDashboard(data) {
   const pipeline = element("ul", "evidence-list");
   for (const item of data.pipeline || []) pipeline.append(element("li", "", `${statusLabels[item.status] || item.status}: ${item.count}`));
   if (pipeline.childNodes.length) box.append(element("h3", "", "الطلبات حسب المرحلة"), pipeline);
+  setupRecruitmentAudit(box);
   const perJob = element("section", "application-detail");
   perJob.append(element("h4", "", "Recruitment metrics by job"), element("p", "subtle-note", "Loading..."));
   box.append(perJob);

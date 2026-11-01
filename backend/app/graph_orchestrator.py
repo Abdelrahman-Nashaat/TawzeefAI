@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StrictBool, model_validator
 
 from app.adaptive_planner import context_for, make_plan
 from app.agent import AgentError, run_agent
@@ -59,12 +59,13 @@ class ReviewRequest(BaseModel):
     intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive'] = 'full'
     slot: SlotCreate | None = None
     adaptive_goal: Literal['review_application', 'schedule_interview'] | None = None
+    allow_semantic: StrictBool = False
 
     @model_validator(mode='before')
     @classmethod
     def restrict_adaptive_input(cls, data):
         if (isinstance(data, dict) and data.get('intent') == 'adaptive' and
-                set(data) - {'application_id', 'intent', 'adaptive_goal', 'slot'}):
+                set(data) - {'application_id', 'intent', 'adaptive_goal', 'slot', 'allow_semantic'}):
             raise ValueError('Adaptive review accepts no tools, identity overrides, or extra fields')
         return data
 
@@ -81,6 +82,8 @@ class ReviewRequest(BaseModel):
             raise ValueError('Policy question is not used by this review')
         if (self.intent == 'adaptive') != (self.adaptive_goal is not None):
             raise ValueError('Adaptive goal is required only for adaptive review')
+        if self.allow_semantic and self.intent != 'adaptive':
+            raise ValueError('Semantic planning is available only for adaptive review')
         return self
 
 
@@ -92,6 +95,7 @@ class ReviewReply(BaseModel):
 class ReviewState(TypedDict, total=False):
     application_id: int
     intent: str
+    allow_semantic: bool
     plan: list[str]
     parsed: dict
     parser_source_ref: str
@@ -198,6 +202,9 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             authorize()
             with connect(path) as db:
                 facts, digest = context_for(db, state['application_id'])
+            if state.get('allow_semantic'):
+                facts['semantic_available'] = (os.environ.get('TAWZEEF_ENABLE_SEMANTIC_SCREENING') == '1'
+                                               and bool(os.environ.get('TAWZEEF_EMBEDDING_MODEL_DIR', '').strip()))
             if state.get('adaptive_goal') == 'schedule_interview' and facts['status'] != 'advanced':
                 raise HTTPException(status_code=409, detail='Application is not eligible for candidate booking')
             steps, source = make_plan(facts, enabled=enable_agent)
@@ -463,7 +470,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         return execute
 
     for name, node in nodes.items():
-        builder.add_node(name, guarded(node) if name in {'parser', 'matching', 'status', 'scheduler', 'prepare_slot'} else node)
+        builder.add_node(name, guarded(node) if name in {'parser', 'matching', 'semantic', 'status', 'scheduler', 'prepare_slot'} else node)
     builder.add_edge(START, 'plan')
     def next_after(name):
         def route(state: ReviewState):
@@ -585,7 +592,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     raise HTTPException(status_code=401, detail='Authentication required')
                 if actor['role'] != 'hr':
                     raise HTTPException(status_code=403, detail='HR access required')
-                if selected in ('semantic_review', 'semantic_advance_and_reserve_slot'):
+                if selected in ('semantic_review', 'semantic_advance_and_reserve_slot') or (selected == 'adaptive' and 'semantic' in state.get('plan', [])):
                     state['semantic_suggestions'] = restore_references(db, state['application_id'], semantic_refs)
                 if 'parsed' in state:
                     application = get_application(db, state['application_id'])
@@ -656,6 +663,8 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
                                        enable_agent=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1', request=request)
             config = _config(thread_id)
             initial = {"application_id": payload.application_id, "intent": payload.intent}
+            if payload.allow_semantic:
+                initial['allow_semantic'] = True
             if payload.adaptive_goal is not None:
                 initial['adaptive_goal'] = payload.adaptive_goal
             if payload.slot is not None:
@@ -707,7 +716,8 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             snapshot = graph.get_state(config)
             if not snapshot.next:
                 raise HTTPException(status_code=409, detail="Review is not awaiting input")
-            if (snapshot.values.get('intent') in ('semantic_review', 'semantic_advance_and_reserve_slot') and payload.reviewed and
+            if ((snapshot.values.get('intent') in ('semantic_review', 'semantic_advance_and_reserve_slot') or
+                    (snapshot.values.get('intent') == 'adaptive' and 'semantic' in snapshot.values.get('plan', []))) and payload.reviewed and
                     restore_references(db, snapshot.values['application_id'], snapshot.values.get('semantic_refs'))['status'] != 'current'):
                 raise HTTPException(status_code=409, detail='Resume or criteria changed; start a new semantic review')
             if (snapshot.values.get('intent') == 'adaptive' and

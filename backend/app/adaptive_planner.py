@@ -10,8 +10,8 @@ from app.agent import _NoRedirect
 from app.ai_provider import GROQ_MODEL, GROQ_URL
 from app.recruitment import get_application
 
-ALLOWED = frozenset({'parser', 'matching', 'status', 'scheduler'})
-MAX_STEPS = 4
+ALLOWED = frozenset({'parser', 'matching', 'semantic', 'status', 'scheduler'})
+MAX_STEPS = 5
 
 
 def context_for(db, application_id: int) -> tuple[dict, str]:
@@ -30,7 +30,7 @@ def default_steps(facts: dict) -> list[str]:
     if facts['status'] in ('hired', 'rejected'):
         return ['status']
     if not facts['has_screening']:
-        return ['parser', 'matching', 'status']
+        return ['parser', 'matching', 'semantic', 'status'] if facts.get('semantic_available') else ['parser', 'matching', 'status']
     if facts['status'] == 'advanced':
         return ['status', 'scheduler']
     return ['status']
@@ -53,6 +53,9 @@ def validate_steps(proposal: object, facts: dict) -> list[str]:
         raise ValueError('Scheduling requires an advanced application and status first')
     if 'parser' in steps and 'matching' in steps and steps.index('parser') > steps.index('matching'):
         raise ValueError('Parsing must precede matching')
+    if 'semantic' in steps and (not facts.get('semantic_available') or 'parser' not in steps or
+                                'matching' not in steps or not steps.index('parser') < steps.index('matching') < steps.index('semantic')):
+        raise ValueError('Semantic review requires enabled screening and prior parsing and matching')
     if (facts['status'] not in ('hired', 'rejected') and not facts['has_screening'] and
             ('parser' not in steps or 'matching' not in steps)):
         raise ValueError('Unscreened applications require parsing and matching')
@@ -67,11 +70,12 @@ def _request_model(facts: dict, key: str) -> object:
             'name': 'recruitment_review_plan', 'strict': True,
             'schema': {'type': 'object', 'properties': {
                 'steps': {'type': 'array', 'items': {'type': 'string',
-                    'enum': ['parser', 'matching', 'status', 'scheduler']}}},
+                    'enum': ['parser', 'matching', 'semantic', 'status', 'scheduler']}}},
                 'required': ['steps'], 'additionalProperties': False}}},
         'messages': [
-            {'role': 'system', 'content': 'Return JSON only: {"steps":[...]} using only parser, matching, status, scheduler. '
+            {'role': 'system', 'content': 'Return JSON only: {"steps":[...]} using only parser, matching, semantic, status, scheduler. '
              'Use status always; never use scheduler unless advanced and after status. '
+             'Use semantic only when semantic_available is true and after parser then matching. '
              'For unscreened nonterminal applications use parser then matching. '
              'For hired or rejected use only status. No additional keys or arguments.'},
             {'role': 'user', 'content': json.dumps(facts)},
