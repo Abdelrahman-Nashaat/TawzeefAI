@@ -47,11 +47,48 @@ def test_explicit_preview_has_no_writes_and_sends_only_selected_material(case, m
     response = client.post(f'/api/applications/{app_id}/rubric/model-evidence-proposal', json=payload)
     assert response.status_code == 200, response.text
     assert response.json()['proposals'][0]['relation'] == 'contradicting'
+    proposal = response.json()['proposals'][0]
+    assert proposal['cue_offset_unit'] == 'excerpt_unicode_code_points'
+    assert proposal['text_cues'] == [{'kind': 'negation', 'text': 'No', 'start': 0, 'end': 2}]
+    assert proposal['model_label_conflict'] is False
     assert called == [[{'criterion_ref': payload['selections'][0]['criterion_ref'], 'criterion': 'Python',
                         'evidence_ref': payload['selections'][0]['evidence_refs'][0], 'excerpt': 'No Python experience'}]]
     with connect(path) as db:
         assert [db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0] for table in ('rubric_assessments', 'audit_events', 'rubric_audit_events')] == counts
     assert before == 0
+
+
+def test_inconsistent_model_label_is_flagged_without_rewriting_it(case, monkeypatch):
+    from app import model_evidence_proposal as module
+
+    client, _, app_id, payload = case
+    monkeypatch.setattr(module, '_request_proposal', lambda _: selection(payload, 'supporting', 'negated'))
+    response = client.post(f'/api/applications/{app_id}/rubric/model-evidence-proposal', json=payload)
+    assert response.status_code == 200
+    proposal = response.json()['proposals'][0]
+    assert proposal['relation'] == 'supporting'
+    assert proposal['model_label_conflict'] is True
+    assert proposal['text_cues'][0]['text'] == 'No'
+    assert 'do not determine their scope' in response.json()['notice']
+
+
+def test_cue_in_unrelated_clause_does_not_override_model_proposal(case, monkeypatch):
+    from app import model_evidence_proposal as module
+
+    client, path, app_id, payload = case
+    source = 'I used Python, but never used Java.'
+    with connect(path) as db:
+        db.execute('UPDATE applications SET resume_text=? WHERE id=?', (source, app_id))
+        db.execute('UPDATE rubric_evidence SET excerpt=?,end_offset=? WHERE application_id=?',
+                   (source, len(source), app_id))
+    payload['snapshot'] = client.get(f'/api/applications/{app_id}/rubric/evidence-bundle/context').json()['snapshot']
+    monkeypatch.setattr(module, '_request_proposal', lambda _: selection(payload, 'supporting', 'explicit_claim'))
+    response = client.post(f'/api/applications/{app_id}/rubric/model-evidence-proposal', json=payload)
+    assert response.status_code == 200
+    proposal = response.json()['proposals'][0]
+    assert proposal['relation'] == 'supporting' and proposal['model_label_conflict'] is False
+    cue = proposal['text_cues'][0]
+    assert source[cue['start']:cue['end']] == 'never'
 
 
 @pytest.mark.parametrize('bad', ['foreign', 'duplicate', 'extra', 'invalid_relation', 'missing'])

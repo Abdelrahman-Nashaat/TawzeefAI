@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 from app.ai_provider import GROQ_MODEL, GROQ_URL, MAX_RESPONSE_BYTES, ProviderUnavailable, _open
 from app.auth import User, require_roles
 from app.db import connect
+from app.evidence_cautions import evidence_cautions
 from app.recruitment import _require_current_role
 from app.rubric_evidence_bundle import _snapshot
 
@@ -153,6 +154,15 @@ def model_evidence_proposal(application_id: int, payload: RequestProposal, reque
             raise ValueError('Provider returned unexpected references')
     except ValueError:
         raise HTTPException(status_code=502, detail='Model proposal could not be validated') from None
-    return {'snapshot': payload.snapshot, 'proposals': [item.model_dump() for item in result.proposals],
+    sources = {(item['criterion_ref'], item['evidence_ref']): item['excerpt'] for item in items}
+    proposals = []
+    for item in result.proposals:
+        cues = evidence_cautions(sources[(item.criterion_ref, item.evidence_ref)], 0)
+        proposals.append({**item.model_dump(), 'text_cues': cues,
+                          'cue_offset_unit': 'excerpt_unicode_code_points',
+                          'model_label_conflict': item.relation == 'supporting' and
+                          item.reason_code in ('negated', 'aspiration', 'other_person')})
+    return {'snapshot': payload.snapshot, 'proposals': proposals,
             'notice': 'Unverified model suggestions only; review every excerpt and context. '
+                      'Text cues are incomplete and do not determine their scope or prove a contradiction. '
                       'No score, assessment, or decision was saved. Redaction can be incomplete.'}

@@ -81,3 +81,6 @@ def initialize(path: str | Path) -> None:
                 ON audit_events(application_id, action, id DESC);
             """
         )
+        columns = {row['name'] for row in db.execute('PRAGMA table_info(applications)')}
+        if 'extraction_json' not in columns:
+            db.execute('ALTER TABLE applications ADD COLUMN extraction_json TEXT')

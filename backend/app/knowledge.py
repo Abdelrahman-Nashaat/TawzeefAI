@@ -17,6 +17,7 @@ from pathlib import Path
 
 from app.ai_provider import ProviderUnavailable, generate_with_groq
 from app.db import connect
+from app.document_text import OCR_NOTICE
 from app.knowledge_documents import fetch_authorized_documents
 from app.knowledge_documents import include_sample_policies as are_samples_enabled
 
@@ -49,6 +50,8 @@ class Source:
     text: str
     page: int | None = None
     section: str | None = None
+    extraction: str | None = None
+    extraction_notice: str | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +166,15 @@ def _document_passages(document: dict) -> list[Source]:
     """
     stored_pages = document.get('pages_json')
     stored_sections = document.get('sections_json')
+    ocr_pages = None
+    if document.get('ocr_pages_json') is not None:
+        try:
+            ocr_pages = json.loads(document['ocr_pages_json'])
+            if (not isinstance(ocr_pages, list) or any(type(p) is not int or p < 1 for p in ocr_pages)
+                    or len(set(ocr_pages)) != len(ocr_pages)):
+                return []
+        except (TypeError, ValueError):
+            return []
     if stored_pages is not None and stored_sections is not None:
         return []
     if stored_pages is not None:
@@ -173,6 +185,8 @@ def _document_passages(document: dict) -> list[Source]:
                     p['page'] != index or not isinstance(p.get('text'), str)
                     for index, p in enumerate(pages, 1)) or
                 '\n'.join(p['text'] for p in pages if p['text']) != document['text']):
+                return []
+            if ocr_pages is not None and any(p > len(pages) for p in ocr_pages):
                 return []
         except (TypeError, ValueError):
             return []
@@ -208,6 +222,8 @@ def _document_passages(document: dict) -> list[Source]:
                 passages.append(Source(
                     id=f"db-doc-{document['id']}-p{len(passages) + 1}",
                     title=document['title'], text=body, page=page['page'], section=page.get('section'),
+                    extraction=('ocr' if page['page'] in ocr_pages else 'native') if ocr_pages is not None else None,
+                    extraction_notice=OCR_NOTICE if ocr_pages and page['page'] in ocr_pages else None,
                 ))
             if end == len(text):
                 break

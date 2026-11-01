@@ -10,6 +10,7 @@ from pathlib import Path, PurePath
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from app.auth import (
@@ -22,7 +23,14 @@ from app.auth import (
 )
 from app.blind import redact_resume
 from app.db import connect
-from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_document_text
+from app.document_text import (
+    MAX_FILE_BYTES,
+    OCR_NOTICE,
+    DocumentTextError,
+    extract_document_text,
+    extract_pdf_pages_with_ocr,
+    require_ocr_enabled,
+)
 from app.google_outbox import cancellation_block_reason
 from app.resume_structure import structure_resume
 from app.scheduling import utc_text
@@ -162,6 +170,7 @@ def store_screening(db, application_id: int, actor_id: int, score: dict) -> None
 
 def application_view(row, user: User) -> dict:
     result = {key: row[key] for key in ("id", "candidate_id", "job_id", "status", "created_at", "updated_at")}
+    result['extraction'] = json.loads(row['extraction_json']) if row['extraction_json'] else None
     if user.role == "hr":
         result.update({"filename": row["filename"], "resume_text": row["resume_text"],
                        "score": json.loads(row["score_json"]) if row["score_json"] else None})
@@ -193,7 +202,8 @@ def list_jobs(request: Request, user: Authenticated):
 
 
 @router.post("/applications", status_code=201)
-async def apply(request: Request, user: Candidate, job_id: str, filename: str):
+async def apply(request: Request, user: Candidate, job_id: str, filename: str,
+                ocr: bool = False, ocr_language: Literal['eng', 'eng+ara'] = 'eng'):
     if len(filename) > 255 or not filename or "\x00" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
     # Drop path information even when a Windows path is supplied.
@@ -207,7 +217,14 @@ async def apply(request: Request, user: Candidate, job_id: str, filename: str):
             raise HTTPException(status_code=413, detail="File exceeds 5 MiB limit")
         chunks.extend(chunk)
     try:
-        text = extract_document_text(filename, bytes(chunks))
+        extraction = None
+        if ocr:
+            require_ocr_enabled()
+            pages, ocr_pages = await run_in_threadpool(extract_pdf_pages_with_ocr, filename, bytes(chunks), ocr_language)
+            text = '\n'.join(page['text'] for page in pages if page['text'])
+            extraction = {'ocr_pages': ocr_pages, 'notice': OCR_NOTICE}
+        else:
+            text = await run_in_threadpool(extract_document_text, filename, bytes(chunks))
     except DocumentTextError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
     with connect(request.app.state.database_path) as db:
@@ -216,8 +233,8 @@ async def apply(request: Request, user: Candidate, job_id: str, filename: str):
         if db.execute('SELECT 1 FROM jobs WHERE id = ?', (job_id,)).fetchone() is None:
             raise HTTPException(status_code=404, detail='Job not found')
         cursor = db.execute(
-            "INSERT INTO applications (candidate_id, job_id, filename, resume_text) VALUES (?, ?, ?, ?)",
-            (user.id, job_id, filename, text),
+            "INSERT INTO applications (candidate_id, job_id, filename, resume_text, extraction_json) VALUES (?, ?, ?, ?, ?)",
+            (user.id, job_id, filename, text, json.dumps(extraction) if extraction is not None else None),
         )
         application_id = cursor.lastrowid
         db.execute("INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",

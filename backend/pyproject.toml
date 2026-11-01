@@ -28,6 +28,10 @@ google = [
     "google-auth-oauthlib>=1.2,<2",
     "keyring>=25,<26",
 ]
+ocr = [
+    "pillow==11.3.0",
+    "pypdfium2==4.30.0",
+]
 
 [dependency-groups]
 dev = ["httpx>=0.28,<1", "pytest>=8,<10", "ruff>=0.11,<1"]

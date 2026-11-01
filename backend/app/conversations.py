@@ -212,6 +212,10 @@ def _digest(source: Source) -> str:
         del data['page']
     if data['section'] is None:
         del data['section']
+    if data['extraction'] is None:
+        del data['extraction']
+    if data['extraction_notice'] is None:
+        del data['extraction_notice']
     raw = json.dumps(data, ensure_ascii=False, sort_keys=True).encode('utf-8')
     return hashlib.sha256(raw).hexdigest()
 

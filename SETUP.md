@@ -17,6 +17,8 @@ Open <http://127.0.0.1:8000/> and press `Ctrl+C` to stop the server. The script 
 
 For optional local semantic résumé screening, prepare the pinned model as described in [local semantic experiment](docs/local-semantic-experiment.md) and run `& .\start-demo.ps1 -SemanticScreening`. For the separately configured Windows Google integration, run `& .\start-demo.ps1 -Google`. The switches can be combined. Semantic suggestions are unverified and require HR review.
 
+For optional local OCR on Windows, install Tesseract OCR with its English (`eng`) language data and run `& .\start-demo.ps1 -Ocr`. The startup script installs the locked optional Python dependencies through `uv`; Tesseract itself is a separate executable. It is found on `PATH`, at the standard Windows installation location, or via `TAWZEEF_TESSERACT_PATH`. Choose OCR on each scanned PDF upload. The interface currently selects English. OCR processes up to five pages without extracted text per upload, can misread content, and cannot detect image text on a page that already has extracted text. Review original documents and OCR-derived citations; the application stores extracted text, not the original PDF, so retain the original separately. OCR is disabled by default and unavailable through the Docker startup script.
+
 ## Run the local Docker demo
 
 Start Docker Desktop and wait for its engine, then run:

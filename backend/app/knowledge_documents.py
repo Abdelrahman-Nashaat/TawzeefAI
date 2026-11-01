@@ -13,9 +13,12 @@ from app.db import connect
 from app.document_text import (
     MAX_FILE_BYTES,
     MAX_TEXT_CHARS,
+    OCR_NOTICE,
     DocumentTextError,
     extract_docx_sections,
     extract_pdf_pages,
+    extract_pdf_pages_with_ocr,
+    require_ocr_enabled,
 )
 
 router = APIRouter(prefix="/api/knowledge")
@@ -71,6 +74,8 @@ def initialize_knowledge_documents(path: str | Path, *, include_samples: bool = 
             db.execute('ALTER TABLE knowledge_documents ADD COLUMN job_id TEXT REFERENCES jobs(id)')
         if 'sections_json' not in columns:
             db.execute('ALTER TABLE knowledge_documents ADD COLUMN sections_json TEXT')
+        if 'ocr_pages_json' not in columns:
+            db.execute('ALTER TABLE knowledge_documents ADD COLUMN ocr_pages_json TEXT')
         db.execute('INSERT OR IGNORE INTO knowledge_settings (id, include_sample_policies) VALUES (1, ?)', (int(include_samples),))
 
 
@@ -111,7 +116,8 @@ class TextDocument(BaseModel):
 
 def store_document(path: str | Path, user: User, title: str, audience: str, text: str, filename: str | None,
                    pages: list[dict] | None = None, collection: Collection = 'legacy_unclassified',
-                   job_id: str | None = None, sections: list[dict] | None = None) -> dict:
+                   job_id: str | None = None, sections: list[dict] | None = None,
+                   ocr_pages: list[int] | None = None) -> dict:
     if collection not in ('legacy_unclassified', 'handbook', 'job_description', 'past_hire_patterns'):
         raise ValueError('Unsupported knowledge collection')
     # Historical hire patterns must never become public through their audience.
@@ -122,8 +128,8 @@ def store_document(path: str | Path, user: User, title: str, audience: str, text
         if job_id is not None and not db.execute('SELECT 1 FROM jobs WHERE id = ?', (job_id,)).fetchone():
             raise HTTPException(status_code=422, detail='Unknown job identifier')
         cursor = db.execute(
-            "INSERT INTO knowledge_documents (title,audience,filename,text,created_by,pages_json,collection,job_id,sections_json) VALUES (?,?,?,?,?,?,?,?,?)",
-            (title, audience, filename, text, user.id, json.dumps(pages, ensure_ascii=False) if pages is not None else None, collection, job_id, json.dumps(sections, ensure_ascii=False) if sections is not None else None),
+            "INSERT INTO knowledge_documents (title,audience,filename,text,created_by,pages_json,collection,job_id,sections_json,ocr_pages_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (title, audience, filename, text, user.id, json.dumps(pages, ensure_ascii=False) if pages is not None else None, collection, job_id, json.dumps(sections, ensure_ascii=False) if sections is not None else None, json.dumps(ocr_pages) if ocr_pages is not None else None),
         )
         db.execute(
             "INSERT INTO knowledge_document_audit (document_id,actor_id,action) VALUES (?,?,'created')",
@@ -135,7 +141,8 @@ def store_document(path: str | Path, user: User, title: str, audience: str, text
         result = dict(row)
         if pages is not None:
             result.update(page_count=len(pages), pages_with_text=sum(bool(page['text']) for page in pages),
-                          notice='Only extractable text is indexed; blank or scanned pages are not processed with OCR.')
+                          notice=OCR_NOTICE if ocr_pages is not None else 'Only extractable text is indexed; blank or scanned pages are not processed with OCR.')
+        result['ocr_pages'] = ocr_pages
         return result
 
 
@@ -146,7 +153,7 @@ def authorized_documents_in_db(db, role: str) -> list[dict]:
         return []
     placeholders = ",".join("?" for _ in allowed)
     rows = db.execute(
-        f"""SELECT id,title,audience,text,pages_json,collection,job_id,sections_json FROM knowledge_documents
+        f"""SELECT id,title,audience,text,pages_json,collection,job_id,sections_json,ocr_pages_json FROM knowledge_documents
             WHERE active = 1 AND audience IN ({placeholders}) AND
             (collection IN ('legacy_unclassified','handbook','job_description') OR
              (collection = 'past_hire_patterns' AND ? = 'hr')) ORDER BY id""",
@@ -165,9 +172,10 @@ def fetch_authorized_documents(path: str | Path, role: str) -> list[dict]:
 def list_documents(request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         rows = db.execute(
-            "SELECT id,title,audience,collection,job_id,filename,created_at,active FROM knowledge_documents ORDER BY id DESC"
+            "SELECT id,title,audience,collection,job_id,filename,created_at,active,ocr_pages_json FROM knowledge_documents ORDER BY id DESC"
         )
-        return [{**dict(row), 'active': bool(row['active'])} for row in rows]
+        return [{**{k: row[k] for k in row.keys() if k != 'ocr_pages_json'}, 'active': bool(row['active']),  # noqa: SIM118
+                 'ocr_pages': json.loads(row['ocr_pages_json']) if row['ocr_pages_json'] is not None else None} for row in rows]
 
 
 @router.post('/documents/{document_id}/deactivate')
@@ -223,7 +231,8 @@ def add_text_document(payload: TextDocument, request: Request, user: HR):
 @router.post("/documents", status_code=201)
 async def add_document(request: Request, user: HR, title: str, audience: Audience, filename: str,
                        collection: Collection = 'legacy_unclassified',
-                       job_id: Annotated[str | None, Query(min_length=1, max_length=64, pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$')] = None):
+                       job_id: Annotated[str | None, Query(min_length=1, max_length=64, pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$')] = None,
+                       ocr: bool = False, ocr_language: Literal['eng', 'eng+ara'] = 'eng'):
     try:
         title = clean_title(title)
         filename = clean_filename(filename)
@@ -235,7 +244,13 @@ async def add_document(request: Request, user: HR, title: str, audience: Audienc
             raise HTTPException(status_code=413, detail="File exceeds 5 MiB limit")
         chunks.extend(chunk)
     try:
-        if filename.lower().endswith('.pdf'):
+        ocr_pages = None
+        if ocr:
+            require_ocr_enabled()
+            pages, ocr_pages = await run_in_threadpool(extract_pdf_pages_with_ocr, filename, bytes(chunks), ocr_language)
+            text = '\n'.join(page['text'] for page in pages if page['text'])
+            sections = None
+        elif filename.lower().endswith('.pdf'):
             pages = await run_in_threadpool(extract_pdf_pages, filename, bytes(chunks))
             text = '\n'.join(page['text'] for page in pages if page['text'])
             sections = None
@@ -245,4 +260,4 @@ async def add_document(request: Request, user: HR, title: str, audience: Audienc
     except DocumentTextError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
     return store_document(request.app.state.database_path, user, title, audience, text, filename, pages,
-                          collection=collection, job_id=job_id, sections=sections)
+                          collection=collection, job_id=job_id, sections=sections, ocr_pages=ocr_pages)

@@ -340,8 +340,10 @@ function renderJobs(jobs, role) {
       const label = element("label", "", "سيرة ذاتية بصيغة PDF نصي أو DOCX (حتى 5 ميجابايت)");
       const input = element("input"); input.type = "file"; input.accept = ".pdf,.docx"; input.required = true;
       label.append(input);
+      const ocr = element("input"); ocr.type = "checkbox";
+      const ocrLabel = element("label", "", "Use optional local English OCR for scanned PDF pages. OCR may miss or alter text; review it with HR."); ocrLabel.prepend(ocr);
       const button = element("button", "small-button", "التقديم لهذه الوظيفة"); button.type = "submit";
-      form.append(label, button);
+      form.append(label, ocrLabel, button);
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         const file = input.files?.[0];
@@ -350,8 +352,10 @@ function renderJobs(jobs, role) {
         button.disabled = true;
         try {
           const params = new URLSearchParams({ job_id: job.id, filename: file.name });
-          await api(`/api/applications?${params}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
+          if (ocr.checked) { params.set("ocr", "true"); params.set("ocr_language", "eng"); }
+          const uploaded = await api(`/api/applications?${params}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
           if (await loadRecruitment(role)) announce("تم إرسال الطلب بنجاح.");
+          if (uploaded.extraction?.ocr_pages?.length) announce(`Application submitted. OCR was used on pages ${uploaded.extraction.ocr_pages.join(", ")}; review the extracted text because OCR can make mistakes.`);
         } catch (error) { if (!isStale(error)) announce(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
         finally { button.disabled = false; }
       });
@@ -648,7 +652,12 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
         if (!output.isConnected) return;
         output.replaceChildren(element("p", "subtle-note", response.notice));
         const list = element("ul", "evidence-list");
-        for (const proposal of response.proposals || []) list.append(element("li", "", `${proposal.evidence_ref}: ${proposal.relation} · ${proposal.reason_code}`));
+        for (const proposal of response.proposals || []) {
+          const item = element("li", "", `${proposal.evidence_ref}: ${proposal.relation} · ${proposal.reason_code}`);
+          if (proposal.model_label_conflict) item.append(element("p", "form-error", "The model's relation and reason appear inconsistent; review the original excerpt."));
+          for (const cue of proposal.text_cues || []) item.append(element("p", "subtle-note", `Text cue: ${cue.kind} — ${cue.text}. Its scope is unverified; inspect the context.`));
+          list.append(item);
+        }
         output.append(list);
       } catch (error) { if (!isStale(error) && output.isConnected) output.replaceChildren(element("p", "form-error", "Preview unavailable or evidence changed. Reload and review the selection before trying again.")); }
       finally { run.disabled = false; consent.disabled = false; criterionSelect.disabled = false; for (const checkbox of choices.querySelectorAll("input")) checkbox.disabled = false; }
@@ -900,6 +909,8 @@ function setupGraphReview(target, application) {
   semanticAdvanceOption.value = "semantic_advance_and_reserve_slot"; intent.append(semanticAdvanceOption);
   const adaptiveAdvanceOption = element("option", "", "Adaptive review, advance, and reserve a private slot");
   adaptiveAdvanceOption.value = "adaptive_advance"; intent.append(adaptiveAdvanceOption);
+  const screenActionOption = element("option", "", "Review and record keyword screening");
+  screenActionOption.value = "screen_application"; intent.append(screenActionOption);
   intentLabel.append(intent);
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
   const question = element("textarea"); question.maxLength = 2000; question.placeholder = "يمكن تركه فارغًا"; questionLabel.append(question);
@@ -939,6 +950,8 @@ function setupGraphReview(target, application) {
   labels.prepare_advance = "Prepare advancement proposal";
   labels.execute_advance = "Advance after HR approval";
   labels.semantic = "Find résumé passages for human review";
+  labels.prepare_screen = "Prepare screening for HR review";
+  labels.execute_screen = "Record approved screening";
   function report(text, error = false) { message.textContent = text; message.className = error ? "form-error" : "subtle-note"; }
   function remember(id) { try { sessionStorage.setItem(storageKey, id); } catch { /* Manual restore remains available. */ } }
   function display(review) {
@@ -1061,6 +1074,13 @@ function setupGraphReview(target, application) {
     }
     const proposal = review.state.action_proposal;
     const result = review.state.action_result;
+    const screeningPreview = review.state.screening_preview;
+    if (screeningPreview) {
+      output.append(element("h4", "", "Screening preview"));
+      if (screeningPreview.status === "current" && screeningPreview.score) { const box = element("div"); renderScore(box, screeningPreview.score); output.append(box); }
+      else output.append(element("p", "form-error", "The screening inputs changed. Start a new review."));
+    }
+    if (proposal?.type === "screen_application") output.append(element("p", "subtle-note", `Approval records the reviewed keyword screening for application #${proposal.application_id}, candidate #${proposal.candidate_id}. It does not advance, reject, or hire the candidate.`));
     if (["create_slot", "create_private_slot"].includes(proposal?.type) && proposal.slot) {
       output.append(element("h4", "", "تفاصيل الموعد المقترح"),
         element("p", "", `طلب سياق المراجعة: #${proposal.application_id}`),
@@ -1082,6 +1102,7 @@ function setupGraphReview(target, application) {
     if (result?.status === "created") output.append(element("p", "result-badge", proposal?.type === "create_private_slot" ? "The candidate-specific slot was added after approval." : "The shared slot was added after approval."));
     else if (result?.status === "advanced") output.append(element("p", "result-badge", "The application was advanced after HR approval."));
     else if (result?.status === "advanced_and_reserved") output.append(element("p", "result-badge", "The application was advanced and its private slot reserved after HR approval."));
+    else if (result?.status === "screened") output.append(element("p", "result-badge", "The reviewed keyword screening was recorded."));
     else if (result?.status === "declined") output.append(element("p", "result-badge", "The proposal was declined; no action was taken."));
     if (review.awaiting_review && (proposal || ["create_slot", "create_private_slot", "advance_application", "advance_and_reserve_slot"].includes(review.state.intent))) {
       output.append(element("p", "result-badge", "المقترح بانتظار قرار الموارد البشرية."));
@@ -1089,11 +1110,12 @@ function setupGraphReview(target, application) {
       const validSlot = validScope && proposal.slot?.start_at && proposal.slot?.end_at && proposal.slot?.interviewer;
       const validAdvance = proposal?.type === "advance_application" && proposal.current_status === "submitted" && proposal.target_status === "advanced" && Number.isInteger(proposal.assessment_id) && proposal.assessment_id > 0;
       const validCombined = proposal?.type === "advance_and_reserve_slot" && proposal.availability_scope === "selected_application_only" && proposal.current_status === "submitted" && proposal.target_status === "advanced" && Number.isInteger(proposal.candidate_id) && proposal.candidate_id > 0 && Number.isInteger(proposal.assessment_id) && proposal.assessment_id > 0 && proposal.slot?.start_at && proposal.slot?.end_at && proposal.slot?.interviewer;
-      if ((!validSlot && !validAdvance && !validCombined) || proposal.application_id !== application.id || !proposal.approval_fingerprint) {
+      const validScreen = proposal?.type === "screen_application" && Number.isInteger(proposal.candidate_id) && proposal.candidate_id > 0 && screeningPreview?.status === "current";
+      if ((!validSlot && !validAdvance && !validCombined && !validScreen) || proposal.application_id !== application.id || !proposal.approval_fingerprint) {
         output.append(element("p", "form-error", "تعذّرت مراجعة تفاصيل المقترح بأمان. أعد تحميل المراجعة."));
         return;
       }
-      const approve = element("button", "small-button", validCombined ? "Approve advancement and private slot" : validAdvance ? "Approve advancement" : "Approve this slot"); approve.type = "button";
+      const approve = element("button", "small-button", validScreen ? "Approve and record screening" : validCombined ? "Approve advancement and private slot" : validAdvance ? "Approve advancement" : "Approve this slot"); approve.type = "button";
       const decline = element("button", "outline-button", "أرفض المقترح"); decline.type = "button";
       const staleSemantic = (review.state.intent === "semantic_advance_and_reserve_slot" || (review.state.intent === "adaptive" && review.state.plan?.includes("semantic"))) && semantic?.status !== "current";
       if (review.state.plan_stale || staleSemantic) { approve.disabled = true; decline.disabled = true; }
@@ -1221,6 +1243,7 @@ function renderApplicationDetail(target, application, role) {
     panel.append(publicationPanel);
     loadAssessmentPublication(publicationPanel, application.id);
     panel.append(element("p", "", `الملف: ${application.filename}`));
+    if (application.extraction?.ocr_pages?.length) panel.append(element("p", "form-error", `OCR was used on pages ${application.extraction.ocr_pages.join(", ")}. Extracted text may be inaccurate; review the original document.`));
     panel.append(element("h4", "", "النص المستخرج من السيرة"), element("pre", "resume-preview", application.resume_text));
     const duplicatesPanel = element("section", "application-detail");
     duplicatesPanel.append(element("h4", "", "السير ذات النص المتطابق"), element("p", "subtle-note", "مطابقة النص المستخرج لا تثبت التزوير ولا تتخذ قرارًا؛ راجع الطلبات يدويًا."));
@@ -1966,8 +1989,10 @@ function setupKnowledgeDocuments() {
   const fileInput = element("input");
   fileInput.id = "knowledge-document-file"; fileInput.type = "file"; fileInput.accept = ".pdf,.docx"; fileInput.required = true;
   fileLabel.htmlFor = fileInput.id; fileLabel.append(fileInput);
+  const fileOcr = element("input"); fileOcr.type = "checkbox";
+  const fileOcrLabel = element("label", "", "Use optional local English OCR for scanned PDF pages. OCR may miss or alter text; review the indexed result."); fileOcrLabel.prepend(fileOcr);
   const fileButton = element("button", "small-button", "رفع المستند"); fileButton.type = "submit";
-  fileForm.append(fileLabel, element("p", "subtle-note", "الملفات المصوّرة تحتاج OCR غير متاح حاليًا."), fileButton);
+  fileForm.append(fileLabel, fileOcrLabel, fileButton);
   fileForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const file = fileInput.files?.[0];
@@ -1978,12 +2003,13 @@ function setupKnowledgeDocuments() {
     try {
       const params = new URLSearchParams({ title: documentTitle, audience: fileFields.audience.value, collection: fileFields.collection.value, filename: file.name });
       if (fileFields.job.value) params.set("job_id", fileFields.job.value);
+      if (fileOcr.checked) { params.set("ocr", "true"); params.set("ocr_language", "eng"); }
       const uploaded = await api(`/api/knowledge/documents?${params}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
       fileForm.reset();
       fileFields.collection.dispatchEvent(new Event("change"));
       fileFields.audience.value = "";
       const pages = Number.isInteger(uploaded.page_count)
-        ? ` رُفع الملف: ${uploaded.pages_with_text} من ${uploaded.page_count} صفحة تحتوي نصًا قابلًا للاستخراج. الصفحات المصوّرة لا تُفهرس لأن OCR غير متاح.` : "";
+        ? ` Extracted text from ${uploaded.pages_with_text} of ${uploaded.page_count} pages.${uploaded.ocr_pages?.length ? ` OCR used on pages ${uploaded.ocr_pages.join(", ")}; review the text for errors.` : ""}` : "";
       report(`رُفع المستند وحُفظ نصه.${pages}`);
       try { await refresh(); }
       catch (error) { if (!isStale(error)) report("رُفع المستند، لكن تعذّر تحديث القائمة. أعد تحميل الصفحة.", true); }
@@ -2000,7 +2026,8 @@ function setupKnowledgeDocuments() {
 function knowledgeSourceLabel(source) {
   const page = Number.isInteger(source.page) && source.page > 0 ? ` · صفحة ${source.page}` : "";
   const section = typeof source.section === "string" && source.section.trim() ? ` · القسم: ${source.section.trim()}` : "";
-  return `${source.title} (${source.id})${page}${section}`;
+  const extraction = source.extraction === "ocr" ? " · OCR text: verify against original page" : "";
+  return `${source.title} (${source.id})${page}${section}${extraction}`;
 }
 
 function setupKnowledge(role) {

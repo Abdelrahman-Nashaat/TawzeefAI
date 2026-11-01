@@ -1,12 +1,17 @@
 """Bounded extraction of text from PDF and DOCX files.
 
-This module does not perform OCR. It treats file contents as untrusted data and
-does not run them as instructions. The caller must enforce authorization and
+It treats file contents as untrusted data and does not run them as instructions.
+Optional OCR executes locally only when explicitly requested. The caller must enforce authorization and
 limit request bodies before buffering uploads; this function receives bytes that
 are already in memory. The returned text may contain personal information.
 """
 
+import json
+import os
 import re
+import signal
+import subprocess
+import sys
 from io import BytesIO
 from pathlib import PurePath
 from zipfile import ZipFile
@@ -21,6 +26,41 @@ MAX_EXPANDED_BYTES = 40 * 1024 * 1024
 MAX_DOCX_MEMBERS = 1000
 MAX_PAGES = 100
 MAX_TEXT_CHARS = 200_000
+OCR_NOTICE = ('OCR is approximate. Review the document; text embedded in images on pages '
+              'with a text layer may be missed.')
+
+
+def require_ocr_enabled() -> None:
+    if os.environ.get('TAWZEEF_ENABLE_OCR') != '1':
+        raise DocumentTextError('ocr_disabled', 'Local OCR is disabled on this server.')
+
+
+def _run_ocr_worker(command: list[str], content: bytes, timeout: float = 125) -> tuple[int, bytes]:
+    """Run the local worker without application secrets and clean up its process tree."""
+    allowed = ('PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'TESSDATA_PREFIX', 'TAWZEEF_TESSERACT_PATH')
+    env = {key: value for key, value in os.environ.items() if key.casefold() in {item.casefold() for item in allowed}}
+    env['PYTHONIOENCODING'] = 'utf-8'
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        env=env, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), start_new_session=os.name != 'nt')
+    try:
+        output, _ = process.communicate(input=content, timeout=timeout)
+        return process.returncode, output
+    except subprocess.TimeoutExpired:
+        if os.name == 'nt':
+            process.kill()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.communicate()
+        raise
+    finally:
+        if os.name != 'nt':
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 class DocumentTextError(ValueError):
@@ -94,6 +134,66 @@ def extract_pdf_pages(filename: str, content: bytes) -> list[dict]:
     if not any(page['text'] for page in pages):
         raise DocumentTextError('no_text', 'No text could be extracted; OCR may be required.')
     return pages
+
+
+def extract_pdf_pages_with_ocr(filename: str, content: bytes, language: str = 'eng') -> tuple[list[dict], list[int]]:
+    """Extract PDF pages, using local OCR only on pages with no text layer.
+
+    Explicit caller opt-in is required. OCR is approximate, bounded to five
+    pages, and does not detect images on a page that already has extracted text.
+    """
+    if PurePath(filename).suffix.lower() != '.pdf':
+        raise DocumentTextError('unsupported_type', 'OCR is available only for PDF documents.')
+    if not content:
+        raise DocumentTextError('empty_file', 'The document is empty.')
+    if len(content) > MAX_FILE_BYTES:
+        raise DocumentTextError('file_too_large', 'The uploaded file exceeds the limit.')
+    if language not in ('eng', 'eng+ara'):
+        raise DocumentTextError('invalid_ocr_language', 'Unsupported OCR language selection.')
+    try:
+        reader = PdfReader(BytesIO(content), strict=True)
+        if reader.is_encrypted:
+            raise DocumentTextError('protected_document', 'Password-protected PDFs are unsupported.')
+        if len(reader.pages) > MAX_PAGES:
+            raise DocumentTextError('document_too_large', 'The PDF has too many pages.')
+        pages, indices = [], []
+        for index, page in enumerate(reader.pages):
+            text = (page.extract_text() or '').strip()
+            if '\x00' in text:
+                raise DocumentTextError('invalid_document', 'PDF text contains invalid characters.')
+            pages.append({'page': index + 1, 'text': text})
+            if not text and _page_has_unextracted_content(page):
+                indices.append(index)
+        if len(indices) > 5:
+            raise DocumentTextError('ocr_limit', 'OCR supports at most five pages per upload.')
+        if indices:
+            returncode, output = _run_ocr_worker(
+                [sys.executable, '-m', 'app.ocr_worker', language, ','.join(map(str, indices))], content)
+            if returncode == 2:
+                raise DocumentTextError('ocr_language_unavailable', 'The selected OCR language data is not installed.')
+            if returncode:
+                raise ValueError('OCR worker failed')
+            if len(output) > 2_000_000:
+                raise ValueError('OCR output too large')
+            result = json.loads(output)
+            if not isinstance(result, list) or len(result) != len(indices):
+                raise ValueError('Invalid OCR output')
+            for index, item in zip(indices, result, strict=True):
+                if (not isinstance(item, dict) or item.get('index') != index or not isinstance(item.get('text'), str)
+                        or not item['text'].strip() or '\x00' in item['text']):
+                    raise ValueError('Invalid OCR output')
+                pages[index]['text'] = item['text'].strip()
+        if sum(len(page['text']) + 1 for page in pages) > MAX_TEXT_CHARS:
+            raise DocumentTextError('document_too_large', 'Extracted text exceeds the limit.')
+        if not any(page['text'] for page in pages):
+            raise DocumentTextError('no_text', 'No text could be extracted.')
+        return pages, [index + 1 for index in indices]
+    except DocumentTextError:
+        raise
+    except (subprocess.SubprocessError, OSError, ValueError, TypeError, KeyError):
+        raise DocumentTextError('ocr_unavailable', 'Local OCR failed or the selected language is unavailable.') from None
+    except Exception:  # noqa: BLE001 - malformed PDF parsers must not leak document data.
+        raise DocumentTextError('invalid_document', 'The document is invalid or could not be read.') from None
 
 
 def _append_text(parts: list[str], text: str, length: int, max_chars: int) -> int:
