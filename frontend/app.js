@@ -960,6 +960,7 @@ function setupGraphReview(target, application) {
       }
     }
     const semantic = review.state.semantic_suggestions;
+    if (review.state.interview_guide) renderInterviewGuide(output, review.state.interview_guide);
     if (semantic) {
       output.append(element("h4", "", "Semantic evidence suggestions"));
       if (semantic.status !== "current") output.append(element("p", "form-error", "The résumé or criteria changed; start a new review."));
@@ -1206,6 +1207,10 @@ function renderApplicationDetail(target, application, role) {
     graphPanel.setAttribute("aria-label", "مراجعة LangGraph");
     panel.append(graphPanel);
     setupGraphReview(graphPanel, application);
+    const interviewGuidePanel = element("section", "application-detail");
+    interviewGuidePanel.setAttribute("aria-label", "Interview preparation guide");
+    panel.append(interviewGuidePanel);
+    loadInterviewGuide(interviewGuidePanel, application.id);
     const workflowPanel = element("section", "application-detail");
     workflowPanel.setAttribute("aria-label", "خطة التوظيف");
     panel.append(workflowPanel);
@@ -1655,6 +1660,40 @@ function renderWorkflow(target, state, applicationId, detailTarget, role) {
   } else if (state.next_step !== "complete") {
     target.append(element("p", "subtle-note", "هذه الخطوة تحتاج إجراءً من موظف الموارد البشرية."));
   }
+}
+
+function renderInterviewGuide(target, guide) {
+  target.append(element("h4", "", "Interview preparation guide"));
+  if (guide.notice) target.append(element("p", "subtle-note", guide.notice));
+  if (guide.status !== "current") {
+    target.append(element("p", "subtle-note", "A current reviewed assessment is required for a guide."));
+    return;
+  }
+  const list = element("ol", "evidence-list");
+  for (const question of guide.questions || []) {
+    const item = element("li");
+    item.append(element("strong", "", question.criterion), element("p", "", question.question));
+    if (question.follow_up) item.append(element("p", "subtle-note", question.follow_up));
+    if (question.evidence_refs?.length) item.append(element("p", "subtle-note", `Reviewed evidence references: ${question.evidence_refs.join(", ")}`));
+    if (question.caution_types?.length) item.append(element("p", "subtle-note", `Text cues for review: ${question.caution_types.join(", ")}`));
+    list.append(item);
+  }
+  if (list.childNodes.length) target.append(list); else target.append(element("p", "subtle-note", "No questions are available for the current assessment."));
+  if (guide.omitted_count) target.append(element("p", "subtle-note", `${guide.omitted_count} criteria were omitted; review the job criteria separately.`));
+}
+
+function loadInterviewGuide(target, applicationId) {
+  const button = element("button", "outline-button", "Load interview preparation guide"); button.type = "button";
+  const result = element("div"); result.setAttribute("aria-live", "polite");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      const guide = await api(`/api/applications/${encodeURIComponent(applicationId)}/interview-guide`);
+      if (result.isConnected) { result.replaceChildren(); renderInterviewGuide(result, guide); }
+    } catch (error) { if (!isStale(error) && result.isConnected) result.replaceChildren(element("p", "form-error", "Unable to load interview guide.")); }
+    finally { button.disabled = false; }
+  });
+  target.replaceChildren(button, result);
 }
 
 function setupScreeningHistory(target, applicationId) {
@@ -2194,16 +2233,16 @@ function setupCancellationNotice(card, interview) {
   panel.append(refresh, content); details.append(panel); card.append(details);
 }
 
-function setupRecruitmentAudit(target) {
+function setupRecruitmentAudit(target, kind = "timeline") {
   const details = element("details", "application-detail");
-  details.append(element("summary", "", "Recruitment audit timeline"));
+  details.append(element("summary", "", kind === "rubric" ? "Rubric audit timeline" : "Recruitment audit timeline"));
   const panel = element("div");
-  panel.append(element("p", "subtle-note", "Recruitment events only; other audit categories are separate. Notes and résumé excerpts are excluded."));
+  panel.append(element("p", "subtle-note", kind === "rubric" ? "Rubric events only; other audit categories are separate. Résumé excerpts and judgments are excluded." : "Recruitment events only; other audit categories are separate. Notes and résumé excerpts are excluded."));
   const form = element("form", "decision-form");
   const applicationLabel = element("label", "", "Application ID (optional)");
   const application = element("input"); application.type = "number"; application.min = "1"; applicationLabel.append(application);
   const jobLabel = element("label", "", "Job ID (optional)"); const job = element("input"); job.maxLength = 128; jobLabel.append(job);
-  const actionLabel = element("label", "", "Action (optional)"); const action = element("input"); action.maxLength = 100; actionLabel.append(action);
+  const actionLabel = element("label", "", "Action (optional)"); const action = element("input"); action.maxLength = 100; actionLabel.append(action); actionLabel.hidden = kind === "rubric";
   const search = element("button", "outline-button", "Search audit events"); search.type = "submit";
   const more = element("button", "outline-button", "Load older events"); more.type = "button"; more.hidden = true;
   const output = element("div"); output.setAttribute("aria-live", "polite");
@@ -2213,12 +2252,12 @@ function setupRecruitmentAudit(target) {
     search.disabled = true; more.disabled = true;
     try {
       const query = new URLSearchParams(filters); if (!reset && cursor !== null) query.set("before", String(cursor));
-      const page = await api(`/api/audit/timeline?${query}`);
+      const page = await api(`/api/audit/${kind}?${query}`);
       if (!output.isConnected) return;
       if (reset) output.replaceChildren(element("p", "subtle-note", page.notice));
       for (const event of page.events || []) {
         const summary = Object.entries(event.summary || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
-        output.append(element("p", "", `#${event.id} · ${displayDate(event.created_at)} · application #${event.application_id} · ${event.job_id} · actor #${event.actor_id} · ${event.action}${summary ? ` · ${summary}` : ""}`));
+        output.append(element("p", "", `#${event.id} · ${displayDate(event.created_at)} · application ${event.application_id == null ? "not linked" : `#${event.application_id}`} · ${event.job_id || "job not linked"} · actor #${event.actor_id} · ${event.action}${event.reference_id == null ? "" : ` · reference #${event.reference_id}`}${summary ? ` · ${summary}` : ""}`));
       }
       if (reset && !page.events?.length) output.append(element("p", "subtle-note", "No events match these filters."));
       cursor = page.next_before; more.hidden = cursor === null;
@@ -2230,7 +2269,7 @@ function setupRecruitmentAudit(target) {
     event.preventDefault(); filters = new URLSearchParams(); cursor = null;
     if (application.value) filters.set("application_id", application.value);
     if (job.value.trim()) filters.set("job_id", job.value.trim());
-    if (action.value.trim()) filters.set("action", action.value.trim());
+    if (kind === "timeline" && action.value.trim()) filters.set("action", action.value.trim());
     more.hidden = true; load(true);
   });
   more.addEventListener("click", () => load(false));
@@ -2249,6 +2288,7 @@ function renderDashboard(data) {
   for (const item of data.pipeline || []) pipeline.append(element("li", "", `${statusLabels[item.status] || item.status}: ${item.count}`));
   if (pipeline.childNodes.length) box.append(element("h3", "", "الطلبات حسب المرحلة"), pipeline);
   setupRecruitmentAudit(box);
+  setupRecruitmentAudit(box, "rubric");
   const perJob = element("section", "application-detail");
   perJob.append(element("h4", "", "Recruitment metrics by job"), element("p", "subtle-note", "Loading..."));
   box.append(perJob);

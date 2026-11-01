@@ -42,6 +42,7 @@ from app.google_outbox import router as google_outbox_router
 from app.graph_orchestrator import router as graph_reviews_router
 from app.hybrid_api import router as hybrid_router
 from app.interview_calendar import router as interview_calendar_router
+from app.interview_guide import router as interview_guide_router
 from app.jobs_admin import initialize_jobs_admin
 from app.jobs_admin import router as jobs_admin_router
 from app.knowledge import answer_question
@@ -54,6 +55,7 @@ from app.resume_field_review import router as resume_field_review_router
 from app.resume_fields_api import router as resume_fields_router
 from app.rubric_admin import initialize_rubric_admin
 from app.rubric_admin import router as rubric_admin_router
+from app.rubric_audit_timeline import router as rubric_audit_timeline_router
 from app.rubric_comparison import router as rubric_comparison_router
 from app.rubric_evidence_bundle import router as rubric_evidence_bundle_router
 from app.rubric_triage import initialize_rubric_triage
@@ -144,6 +146,8 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
     application.include_router(rubric_admin_router)
     application.include_router(rubric_evidence_bundle_router)
     application.include_router(audit_timeline_router)
+    application.include_router(interview_guide_router)
+    application.include_router(rubric_audit_timeline_router)
     application.include_router(rubric_comparison_router)
     application.include_router(rubric_triage_router)
     application.include_router(conversations_router)

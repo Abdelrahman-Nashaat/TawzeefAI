@@ -21,9 +21,15 @@ does not itself cancel the local interview or notify a recipient.
 HR can explicitly reprepare a definitely rejected delivery as a new local draft;
 the rejected attempt remains recorded, and sending or correcting the new draft
 requires its current generation. Repreparing does not contact Google. Interrupted
-or ambiguous delivery still needs external reconciliation, and a clear
-cancellation notification workflow remains unfinished. A sent email is not automatically retracted
-or followed by a cancellation notice. Never retry an ambiguous Gmail send
+or ambiguous delivery still needs external reconciliation. For an interview with
+a confirmed earlier email, HR can separately preview and explicitly approve a
+cancellation notice to the same recipient after local cancellation. The app
+cannot verify that the currently authorized Gmail account sent the earlier
+confirmation; HR must check. An interrupted or uncertain attempt requires HR
+to verify Gmail and attest the outcome before another attempt. This attestation
+is not provider proof; all processes using the local SQLite database must share
+its canonical cancellation-notice lock file. No cancellation notice is sent
+automatically, and the cancellation email has not been tested live. Never retry an ambiguous Gmail send
 automatically: the first attempt may have succeeded. Google may send some
 notifications even when an event write requests `sendUpdates=none`.
 

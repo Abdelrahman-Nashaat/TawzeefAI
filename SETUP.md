@@ -1,10 +1,10 @@
-# تجهيز TawzeefAI
+# TawzeefAI setup
 
-المشروع موجود في مستودع محلي مستقل باسم `TawzeefAI`. مصدر المتطلبات كتيب الفكرة والعرض التقديمي الذي أكده صاحب المشروع؛ تعرض [مصفوفة المتطلبات والفجوات](docs/pdf-requirements-gap.md) ما يتبقى من العمل. **النسخة الحالية تجريبية وغير مكتملة مقارنة بالعرض، وليست جاهزة لبيانات حقيقية أو للنشر العام.**
+TawzeefAI is a local recruitment-assistant demo based on the project booklet and presentation. It is not complete against those documents and is not ready for real applicant data or public deployment. See the [README](README.md) for current capabilities and the [requirements review](docs/pdf-requirements-gap.md) for historical gaps.
 
-## التشغيل المحلي على Windows
+## Run locally on Windows
 
-المتطلبات: Python 3.12 أو 3.13 و`uv`. من PowerShell داخل مجلد المشروع:
+Install Python 3.12 or 3.13 and `uv`. From PowerShell in the repository root:
 
 ```powershell
 cd backend
@@ -13,23 +13,31 @@ cd ..
 & .\start-demo.ps1
 ```
 
-افتح `http://127.0.0.1:8000/`، واضغط `Ctrl+C` لإيقاف الخادم. السكربت يفعّل حسابات عرض معروفة؛ تفاصيلها في [README](README.md). خزّن البيانات الصناعية فقط، ولا تفتح الخادم على الشبكة.
+Open <http://127.0.0.1:8000/> and press `Ctrl+C` to stop the server. The script enables publicly documented demo accounts and binds to localhost. Use synthetic data only. The local SQLite database persists between runs; demo credentials are listed in the [README](README.md).
 
-## تشغيل الحاويات محليًا
+For optional local semantic résumé screening, prepare the pinned model as described in [local semantic experiment](docs/local-semantic-experiment.md) and run `& .\start-demo.ps1 -SemanticScreening`. For the separately configured Windows Google integration, run `& .\start-demo.ps1 -Google`. The switches can be combined. Semantic suggestions are unverified and require HR review.
 
-شغّل Docker Desktop وانتظر جاهزية المحرك، ثم من جذر المشروع:
+## Run the local Docker demo
+
+Start Docker Desktop and wait for its engine, then run:
 
 ```powershell
 & .\start-docker-demo.ps1
 ```
 
-افتح `http://127.0.0.1:18000/`. ينشئ السكربت كلمة مرور عشوائية لقاعدة PostgreSQL في `.tooling/docker-postgres.env`، وهو ملف محلي مستبعد من Git. احتفظ به مع بيانات الحاوية: تغيير الملف لا يغيّر كلمة مرور قاعدة قائمة. الحاويتان متاحتان على واجهة الجهاز المحلية فقط، وحسابات العرض معروفة؛ هذا إعداد تجريبي لا يصلح للنشر العام أو للبيانات الحقيقية.
+Open <http://127.0.0.1:18000/>. The script creates a local random PostgreSQL password in `.tooling/docker-postgres.env`, which is excluded from Git. Keep this file with the Docker data: changing the file does not change the password of an existing database. Containers bind to localhost and use known demo credentials; this is not a production setup.
 
-لتفعيل البحث الهجين الاختياري داخل Docker، تأكد من وجود ملفات النموذج المذكورة في [دليل التجربة](docs/local-semantic-experiment.md)، ثم شغّل `& .\start-docker-demo.ps1 -Hybrid`. يستخدم المسار فهرس PostgreSQL/pgvector للمستندات المضافة ويعرض مقتطفات تحتاج مراجعة؛ لا يفعّل Groq داخل الحاوية. النسخة الافتراضية بلا `-Hybrid` لا توصل البحث بقاعدة PostgreSQL.
+To enable experimental hybrid retrieval in Docker, prepare the model described in [local semantic experiment](docs/local-semantic-experiment.md) and run `& .\start-docker-demo.ps1 -Hybrid`. The app stores primary data in SQLite; PostgreSQL/pgvector is used by the optional retrieval index. Docker data is separate from direct-run SQLite data. To stop containers while retaining volumes:
 
-يحفظ Docker بيانات التطبيق وPostgreSQL في وحدتي تخزين منفصلتين عن قاعدة التشغيل المباشر. تستخدم نسخة التطبيق داخل الحاوية SQLite لبياناتها الأساسية؛ فهرس البحث التجريبي فقط يستخدم PostgreSQL. لإيقاف الخدمات مع الاحتفاظ بالبيانات، استخدم أمر `docker compose --env-file .tooling/docker-postgres.env --project-name tawzeefai-local down` من جذر المشروع. لا تستخدم خيار حذف وحدات التخزين إلا عند الرغبة الصريحة في مسح بيانات العرض.
+```powershell
+docker compose --env-file .tooling/docker-postgres.env --project-name tawzeefai-local down
+```
 
-بيئة التطبيق المعزولة في `backend/.venv`، ويُنشئها `uv` بالاعتماد على `backend/uv.lock`. لا تحتاج إعادة تثبيت الأدوات في `.tooling/python-venv` لتشغيل التطبيق. فحص التطبيق من مجلد `backend`:
+Deleting volumes deletes their data. Windows Credential Manager credentials are not available in the Linux container.
+
+## Checks
+
+From `backend`, run the relevant checks after changes:
 
 ```powershell
 uv run --locked pytest -q
@@ -38,24 +46,26 @@ uv run --locked python evaluate.py
 uv run --locked python evaluate_capstone.py
 ```
 
-هذه أوامر لإجراء الفحص وليست ادعاءً بنتيجته؛ راجع المخرجات بعد آخر تغيير. بيانات التقييم اصطناعية وتسمياتها غير معتمدة بشريًا.
+These commands are instructions, not claims that checks passed. Evaluation examples are synthetic and their draft labels have not been independently approved.
 
-## إعداد النموذج والأسرار
+## Model, secrets, and Google integration
 
-إذا وُجد مفتاح Groq مشفر لحساب Windows الحالي في `.tooling/groq-key.dpapi`، يحمّله `start-demo.ps1` في بيئة العملية ويفعّل النموذج. عند غيابه يبدأ نمط الإجابات الاستخراجية. المجلد `.tooling/` وملفات `.env` وقواعد SQLite وبيئة `.venv` مستبعدة من Git؛ لا تُدرج المفاتيح أو بيانات المرشحين في الملفات المتتبعة. المفتاح المحمي بهذا الشكل لا يُنقل بين حسابات Windows تلقائيًا.
+If `.tooling/groq-key.dpapi` contains a key protected for the current Windows user, `start-demo.ps1` loads it into the server process and enables Groq; otherwise the demo uses extractive answers. The encrypted key is tied to the Windows user. `.tooling/`, `.env` files, local databases, and virtual environments are excluded from Git. Never commit credentials or real applicant data.
 
-عند تفعيل Groq تُرسل الأسئلة والمقاطع المسموح بها للمزود. استخدم بيانات اصطناعية في هذه النسخة، وراجع مصادر الإجابة؛ الاستشهاد الصحيح لا يثبت صحة كل ما يولّده النموذج. تفاصيل القدرات والقيود في [README](README.md).
+With Groq enabled, questions and authorized policy passages may be sent to the provider; use synthetic data and review the source. A citation or exact quotation does not establish that an answer is relevant or complete. See the [README](README.md) for experimental settings and limits.
 
-## إنشاء مشرف محلي
+See [Google integration](docs/google-integration.md) for OAuth setup and permissions. A synthetic private Calendar event was created and removed through the application. Actual Gmail delivery has not been tested end-to-end. External actions require separate HR review and confirmation; enabling the integration does not send anything by itself.
 
-لا ينشئ التطبيق حساب إدارة بكلمة مرور افتراضية. لإنشاء أول مشرف على قاعدة العرض، أوقف الخادم أولًا ثم نفّذ من مجلد `backend`:
+## Create a local administrator
+
+The demo does not create an administrator with a default password. Stop the server and run from `backend`:
 
 ```powershell
 uv run --locked python -m app.admin_users --database tawzeefai.sqlite3 --username localadmin --display-name "Local Admin"
 ```
 
-يطلب الأمر كلمة مرور جديدة تفاعليًا مرتين، ويعمل مرة واحدة فقط قبل وجود مشرف. المشرف المُنشأ دوره الوظيفي `employee` مع صلاحية إدارة منفصلة؛ لا تمنحه هذه الصلاحية وصول HR إلى السير والطلبات. تغييرات الحسابات تلغي الجلسات للطلبات اللاحقة، لكن عمليات بدأت قبل تعطيل الحساب قد تكتمل. لا تشارك كلمات المرور أو تضعها في ملفات المشروع.
+The command prompts interactively for a new password twice and works only before an administrator exists. The administrator has the employee role plus a separate account-management capability; this does not grant HR access to candidate records. Account changes revoke sessions for subsequent requests, although operations already in progress may finish.
 
-## التجهيزات المتبقية
+## Remaining work
 
-التطبيق الحالي يستخدم FastAPI وSQLite، والاسترجاع لفظي، والمواعيد المحلية لا ترسل دعوات تقويم. يوجد مسار LangGraph ثابت وتقييم موزون بأحكام HR، لكنهما لا يحققان بعد جميع تفاصيل الوكلاء والمطابقة الدلالية. تعمل PostgreSQL وpgvector في Docker، لكن دمجهما مع التطبيق والبحث الهجين لم يكتمل. ما زال تكامل التقويم والبريد وغير ذلك من فجوات العرض يحتاج تنفيذًا واختبارًا. لا يمكن اعتبار مؤشرات النجاح متحققة من إعداد الأدوات وحده.
+The local demo implements parts of the specified workflow, but the full specialized-agent architecture, reliable policy answers, independent human evaluation, manual time comparison, and production deployment remain incomplete or unverified. SQLite stores primary application data; the optional experimental policy retrieval index uses PostgreSQL/pgvector. Review the [README](README.md) and the tests for current evidence rather than treating setup or installed tools as proof of project completion.

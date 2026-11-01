@@ -39,6 +39,7 @@ from app.conversations import _authorized_sources, _digest
 from app.db import connect
 from app.graph_semantic import context as semantic_context
 from app.graph_semantic import restore_references, save_references
+from app.interview_guide import guide_from_matching
 from app.matching_specialist import matching_snapshot
 from app.policy_agent import authorized_policy_sources, run_policy_agent
 from app.recruitment import get_application, job_data, score_resume
@@ -609,6 +610,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     state['matching_specialist'] = report if secrets.compare_digest(
                         digest.encode('utf-8'), specialist_ref.encode('utf-8')) else {
                             'status': 'stale', 'notice': 'The matching inputs changed; start a new review.'}
+                    state['interview_guide'] = guide_from_matching(state['matching_specialist'])
                     if state['matching_specialist']['status'] == 'stale':
                         state.pop('matching', None)
                 if policy.get('status') in {'source_refs_v1', 'source_refs_v2'}:

@@ -111,6 +111,8 @@ When Groq returns HTTP 429, the process temporarily stops calls for that credent
 - Interviews are booked locally; optional Google actions are separate, and Calendar events created by the application do not add attendees. Metrics are computed from database records; measuring time savings requires an actual human study.
 - The HR dashboard also shows application pipeline counts, screening events, and valid time-to-hire averages by job, including jobs without applications. These are local database measurements, not a manual-baseline comparison.
 - A filterable HR audit timeline displays recruitment events without free-text notes or résumé excerpts. Administration, rubric, knowledge, and slot audit records are separate and are not included in this timeline.
+- A separate HR rubric audit timeline provides bounded, filterable assessment and evidence event metadata without displaying résumé excerpts or judgments. Other audit categories remain separate.
+- HR can generate an interview preparation guide from a current reviewed assessment. It links neutral prompts to evidence references without copying excerpts; the limited protected-attribute filter can miss proxies, so HR must review every question for relevance and fairness.
 - Reference data under `data/fixtures/` and `data/capstone_samples/` is synthetic, and the proposed rankings have not been approved by a human panel. Example tests do not prove absence of bias or leaks in general and do not measure answer accuracy or time savings on real data.
 
 See the [requirements](docs/requirements.md) and [evaluation plan](docs/evaluation-plan.md) for details and outstanding work.
