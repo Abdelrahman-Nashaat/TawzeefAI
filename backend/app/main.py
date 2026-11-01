@@ -28,6 +28,7 @@ from app.auth import (
     token_digest,
     verify_password,
 )
+from app.candidate_screening import router as candidate_screening_router
 from app.conversations import _authorized_sources, initialize_conversations
 from app.conversations import router as conversations_router
 from app.dashboard import router as dashboard_router
@@ -126,6 +127,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         application.state.google_preflight = prepare_dispatch
         application.state.google_calendar_removal_preflight = prepare_calendar_removal
     application.include_router(recruitment_router)
+    application.include_router(candidate_screening_router)
     application.include_router(resume_fields_router)
     application.include_router(resume_field_review_router)
     application.include_router(scheduling_router)

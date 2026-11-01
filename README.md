@@ -1,28 +1,28 @@
 # TawzeefAI
 
-نسخة محلية تجريبية من مشروع مساعد توظيف وموارد بشرية. تعرض وظائف وطلبات صناعية، وتساعد مسؤول الموارد البشرية في مراجعة أدلة المهارات وجدولة المقابلات، وتجيب عن أسئلة السياسات باستخدام مصادر مسموحة للدور. **القرار النهائي بشري، والنسخة ليست مهيأة للاستخدام ببيانات مرشحين حقيقيين أو للنشر العام.**
+A local demonstration of an HR and recruitment assistant. It uses synthetic jobs and applications, helps HR review evidence of skills and schedule interviews, and answers policy questions using sources permitted for each role. **Final decisions are human; this demo is not ready for real candidate data or public deployment.**
 
-## التشغيل على Windows
+## Run on Windows
 
-المتطلبات: Python 3.12 أو 3.13 و[uv](https://docs.astral.sh/uv/). من PowerShell داخل مجلد المشروع:
+Requirements: Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/). From PowerShell in the project directory:
 
 ```powershell
 & .\start-demo.ps1
 ```
 
-افتح <http://127.0.0.1:8000/>. ينشئ السكربت قاعدة بيانات محلية ويُفعّل حسابات تجريبية فقط؛ يتوقف الخادم بـ `Ctrl+C`. تبقى البيانات في `backend/tawzeefai.sqlite3` بين مرات التشغيل. لا تفتح الخادم للشبكة؛ الحسابات التالية معروفة للجميع:
+Open <http://127.0.0.1:8000/>. The script creates a local database and enables demo accounts only; stop the server with `Ctrl+C`. Data persists in `backend/tawzeefai.sqlite3` between runs. Do not expose this server to a network: the following credentials are public.
 
-يمكن أيضًا تشغيل عرض محلي بحاويات Docker Desktop عبر `& .\start-docker-demo.ps1`، ثم فتح <http://127.0.0.1:18000/>. لتفعيل البحث الهجين التجريبي في الحاوية بعد توفير النموذج المحلي، استخدم `& .\start-docker-demo.ps1 -Hybrid`. يستخدم التطبيق SQLite لبياناته وPostgreSQL/pgvector لفهرس البحث التجريبي؛ قاعدة SQLite داخل الحاوية مستقلة عن قاعدة التشغيل المباشر. تفاصيل التشغيل والبيانات في [SETUP](SETUP.md).
+You can also run a local demonstration with Docker Desktop using `& .\start-docker-demo.ps1` and open <http://127.0.0.1:18000/>. To enable experimental hybrid retrieval in the container after providing the local model, use `& .\start-docker-demo.ps1 -Hybrid`. Application data uses SQLite; the experimental retrieval index uses PostgreSQL/pgvector. The container's SQLite database is separate from the direct-run database. See [SETUP](SETUP.md) for setup and data details.
 
-لتجربة اقتراح مقتطفات السيرة لمعايير الوظيفة محليًا على Windows، جهّز نموذج التضمين المحلي كما في [تفاصيل التجربة](docs/local-semantic-experiment.md)، ثم شغّل `& .\start-demo.ps1 -SemanticScreening`. يمكن جمعه مع `-Google` عند الحاجة. المقترحات تجريبية ولا تثبت الخبرة أو تغني عن المراجعة البشرية؛ استخدم بيانات صناعية فقط.
+To try local résumé passage suggestions for job criteria on Windows, prepare the local embedding model as described in [experiment details](docs/local-semantic-experiment.md), then run `& .\start-demo.ps1 -SemanticScreening`. This can be combined with `-Google`. Suggestions are experimental, do not verify experience, and do not replace human review; use synthetic data only.
 
-| الدور | اسم المستخدم | كلمة المرور التجريبية |
+| Role | Username | Demo password |
 | --- | --- | --- |
-| المرشح | `candidate` | `candidate-demo-only` |
-| الموظف | `employee` | `employee-demo-only` |
-| الموارد البشرية | `hr` | `hr-demo-only` |
+| Candidate | `candidate` | `candidate-demo-only` |
+| Employee | `employee` | `employee-demo-only` |
+| HR | `hr` | `hr-demo-only` |
 
-يشغل `uv` الاعتمادات من `backend/uv.lock`. يمكن اختبار المشروع وفحصه من مجلد `backend`:
+`uv` uses the dependencies in `backend/uv.lock`. From the `backend` directory, run the tests and checks with:
 
 ```powershell
 uv run --locked pytest -q
@@ -31,59 +31,60 @@ uv run --locked python evaluate.py
 uv run --locked python evaluate_capstone.py
 ```
 
-أمر `evaluate.py` يشغّل تقييمًا أوليًا لمقارنات صناعية على وصف وظيفة منشور، وأسئلة استرجاع السياسات. النتائج المرجعية غير معتمدة من مراجع بشري، والأسئلة سهلة نسبيًا؛ لا تمثل قياسًا مستقلًا لدقة التوظيف أو الإنصاف أو اختصار الوقت.
+`evaluate.py` runs a preliminary evaluation of synthetic comparisons for a published job description and policy retrieval questions. The reference labels have not been approved by a human reviewer and the questions are relatively easy; this is not an independent measurement of hiring accuracy, fairness, or time savings.
 
-يمكن لـHR تشغيل تقرير العينات الصناعية من واجهة مؤشرات التوظيف. يعرض التقرير استرجاع المصادر والمقارنات والحالات السلبية، ولا يقيس صحة الإجابة أو زمن الفحص البشري أو الإنصاف.
+HR can run a synthetic-sample report from the recruitment metrics interface. It shows source retrieval, comparisons, and negative cases; it does not measure answer correctness, human screening time, or fairness.
 
-## تجربة حجز مقابلة محليًا
+## Try local interview booking
 
-1. سجّل دخول المرشح وقدّم سيرة تجريبية إلى إحدى الوظائف.
-2. سجّل دخول HR، وراجع الطلب ثم اختر **نقل للمرحلة التالية**. من قسم المقابلات أضف موعدًا متاحًا مع اسم المحاور؛ يُفسّر الوقت حسب المنطقة الزمنية للجهاز.
-3. عُد لحساب المرشح، وافتح تفاصيل الطلب ذي حالة **المرحلة التالية** واختر موعدًا متاحًا. يظهر الحجز بعد نجاحه في قسم **مقابلاتي**.
+1. Sign in as the candidate and submit a synthetic résumé to a job.
+2. Sign in as HR, review the application, and choose **Advance to the next stage**. In Interviews, add an available time and interviewer; entered times use the device's time zone.
+3. Return to the candidate account, open the advanced application, and choose an available slot. A successful booking appears under **My interviews**.
 
-يحفظ التطبيق الموعد محليًا ويفحص التعارض عند الحجز. يمكن لـHR إلغاء مقابلة مستقبلية. الحجز نفسه لا ينشئ حدثًا خارجيًا ولا يرسل بريدًا؛ توجد إجراءات Google منفصلة ومراجَعة يدويًا عند تفعيل الربط الاختياري على Windows.
+The application stores appointments locally and checks conflicts when booking. HR can cancel a future interview. Booking itself does not create an external event or send email; optional Google actions are separate and reviewed manually when the Windows integration is enabled.
 
-يمكن لـHR معاينة دفعة نوافذ مقابلات مخصصة لطلبات محددة وإتاحتها بعد مراجعتها. تُربط كل نافذة بالطلب والمرشح وقت إنشائها، ويختار المرشح موعده بنفسه؛ تُفحص الصلاحية والتعارضات مجددًا قبل إتاحة الدفعة، ولا تُرسل دعوات تلقائيًا.
+HR can review and release a batch of interview windows targeted to specific applications. Each window is bound to the application and candidate at creation; the candidate chooses their own time. Permissions and conflicts are rechecked before the batch is released, and invitations are not sent automatically.
 
-بعد انتهاء المقابلة يمكن لـHR تأكيد أنها أُجريت؛ يُسجل التأكيد وفاعله، وتظهر المرحلة للمرشح دون تفاصيل تقييم HR. لا يُفترض إجراء المقابلة بمجرد مرور الوقت، ويمكن جدولة مقابلة أخرى بعد تأكيد السابقة.
+After an interview ends, HR can record that it took place. The action and actor are recorded, and the candidate sees the stage without HR assessment details. The interview is not assumed to have occurred merely because time passed. Another interview can be scheduled after the previous one is confirmed complete.
 
-بعد تسجيل مقابلة أُجريت، ومع عدم وجود مقابلة جارية أو مستقبلية، يستطيع HR تسجيل تفاصيل عرض توظيف داخل التطبيق. يراجع المرشح العرض ويقبله أو يرفضه؛ بعد قبوله يمكن لـHR تسجيل قرار التوظيف. تُحفظ الإجراءات في سجل التدقيق دون نسخ تفاصيل العرض إليه، ولا يرسل التطبيق رسالة تلقائيًا بهذه الخطوات. الطلبات القديمة التي لم تصل للتوظيف تحتاج إكمال هذه المراحل قبل تسجيل قرار توظيف جديد.
+Once an interview is recorded as completed and no interview is in progress or upcoming, HR can record a job offer in the application. The candidate reviews and accepts or declines it; after acceptance, HR can record the hiring decision. Actions are audited without copying offer details into the audit log, and no message is sent automatically. Older applications not yet hired must complete these stages before a new hiring decision is recorded.
 
-يمكن للمرشح أو HR تنزيل ملف تقويم `.ics` للمقابلة المجدولة وإضافته يدويًا إلى تقويمه. الملف الذي حُفظ سابقًا لا يتغير تلقائيًا عند إلغاء الموعد.
+A candidate or HR can download an `.ics` calendar file for a scheduled interview and add it manually. A previously saved file does not update automatically when the appointment is cancelled.
 
-لتجربة إجراءات Google الاختيارية على Windows، جهّز تفويض Calendar وGmail كما في [تفاصيل الربط](docs/google-integration.md)، ثم شغّل `& .\start-demo.ps1 -Google`. يستطيع HR تجهيز حدث Calendar خاص دون مدعوين أو رسالة تأكيد لمستلم واحد، ثم مراجعة كل إجراء وتأكيده بصورة منفصلة. نجح إنشاء حدث صناعي خاص وإزالته عبر واجهة التطبيق وGoogle Calendar؛ لم يُختبر إرسال Gmail الفعلي. قد تحتاج الحالات المنقطعة أو غير المؤكدة مراجعة خارجية، وإزالة حدث Google لا تلغي الموعد المحلي أو ترسل إشعار إلغاء. بيانات التفويض في Windows Credential Manager ولا تتاح لحاوية Linux.
+To try optional Google actions on Windows, prepare Calendar and Gmail authorization as described in [integration details](docs/google-integration.md), then run `& .\start-demo.ps1 -Google`. HR can prepare a private Calendar event without attendees or a confirmation email to one recipient, then review and confirm each action separately. A synthetic private event was created and removed through the application and Google Calendar; actual Gmail delivery has not been tested. Interrupted or uncertain states may require external review. Removing a Google event does not cancel the local appointment or send a cancellation notice. Authorization is stored in Windows Credential Manager and is unavailable to the Linux container.
 
-يمكن لـHR أيضًا مراجعة مقترح يجمع حدث التقويم ورسالة التأكيد ثم تجهيز مسودتين محليتين معًا. عنوان البريد يدخله HR ولا يتحقق التطبيق من ملكيته؛ تجهيز المسودات لا يتصل بـGoogle ولا يرسل شيئًا، ولكل إجراء خارجي مراجعة وتأكيد منفصلان.
+HR can also review a combined Calendar and email proposal and prepare two local drafts together. HR supplies the email address; the application does not verify ownership. Preparing drafts does not contact Google or send anything; each external action requires separate review and confirmation.
 
-## اتصال الذكاء الاصطناعي
+## AI connection
 
-عند وجود مفتاح Groq مشفر لحساب Windows الحالي في `.tooling/groq-key.dpapi`، يحمّله سكربت التشغيل إلى البيئة المؤقتة ويفعّل الإجابة التوليدية. وإلا يعرض التطبيق مقتطفات من الوثائق فقط. يمكن تشغيل الخادم دون السكربت بإعداد `GROQ_API_KEY` و`TAWZEEF_ENABLE_GROQ=1` في البيئة؛ لا تضع المفتاح في كود أو في ملف متتبع. عند التفعيل يُرسل السؤال ومقاطع السياسات المصرح بها للمزوّد، وقد يُرسل حتى 500 حرف من السؤال السابق المؤهل كسياق للمتابعة؛ استخدم بيانات صناعية فقط في هذه النسخة. يُعاد فحص الصلاحية قبل الاتصال وقبل الحفظ، ولا يمكن جعل الشبكة جزءًا ذريًا من معاملة قاعدة البيانات. إجابة النموذج قد تخطئ حتى عندما يحتوي ردها على معرّف مصدر صحيح، لذلك راجع المصدر والقرار مع موظف HR.
+When a Groq key encrypted for the current Windows user is present at `.tooling/groq-key.dpapi`, the startup script loads it into the temporary process environment and enables generated answers. Otherwise the application shows document excerpts only. To run the server without the script, set `GROQ_API_KEY` and `TAWZEEF_ENABLE_GROQ=1` in the environment; do not put the key in code or a tracked file. When enabled, the question and authorized policy excerpts are sent to the provider; up to 500 characters of an eligible preceding question may also be sent as follow-up context. Use synthetic data only in this demo. Authorization is checked before the call and before saving, but the network call cannot be made atomic with a database transaction. A model answer can be wrong even when it cites a valid source ID, so review the source and decision with HR.
 
-## القدرات وحدودها
+## Capabilities and limits
 
-- المرشح يرفع PDF نصيًا أو DOCX ويشاهد طلباته ومواعيده. ملفات PDF المصورة تحتاج OCR؛ سيظهر خطأ بدل الادعاء باستخراج محتواها. للملفات حدود حجم وأخطاء واضحة.
-- HR يرى نص السيرة، ويشغل فحصًا قائمًا على ذكر المهارات مع أدلة نصية، ويسجّل قرارًا يدويًا. قواعد كشف النفي والتعليمات محدودة وقد تخطئ؛ النتيجة ليست تحققًا من الخبرة أو قرار توظيف.
-- يستطيع HR تعريف معايير وظيفة، وربط أحكامه بمقتطفات من سيرة محجوبة جزئيًا، وحساب نطاق تقييم موزون حسب تغطية المعايير. لا تُعتمد حالة غياب دليل إلا بعد إقرار المراجع بفحص المصدر؛ والحجب القائم على قواعد محدود ولا يضمن إخفاء الهوية. تحليل أقسام السيرة يعتمد على عناوين واضحة ويعرض مقتطفات غير متحقق منها، والأقسام غير المعروفة لا تُعد مفقودة.
-- تعرض مراجعة HR حقولًا يمكن اقتباسها من تسميات صريحة أو صيغ محدودة داخل أقسام معروفة، مع مواضعها في النص المحجوب جزئيًا عبر API. تجميع السجلات تقديري، والحقول غير المستخرجة غير معروفة؛ لا يثبت الاستخراج صحة الخبرة أو كفاية الحجب، ولا يدعم OCR للملفات المصورة.
-- يستطيع HR اختيار مقاطع من النص المحجوب جزئيًا وتصنيفها يدويًا ضمن سجلات الخبرة والتعليم والمشاريع. تُحفظ مواضع الاختيارات وإصدار المراجعة وبصمة المصدر، وتحتاج إعادة اختيار إذا تغيرت السيرة؛ الاختيارات ليست إثباتًا لصحة المؤهلات.
-- تعرض مراجعة LangGraph ملخصًا للتقييم البشري الحالي ونطاقه وأدلته وأسئلة متابعة للمعايير غير المعروفة، ولا تتخذ قرار توظيف. تُربط التقييمات الجديدة ببصمة المعايير والسيرة المحجوبة؛ التقييمات الأقدم دون بصمة باقية في السجل لكنها تُعد بحاجة لإعادة مراجعة قبل المقارنة، وكذلك عند تغير السيرة أو المعايير أو الأدلة.
-- عند تفعيل فحص السيرة الدلالي الاختياري، يرشّح نموذج محلي مقتطفات للمراجعة من الأقسام التي تعرّف عليها المحلل. قد يفوّت أدلة أو يعرض نصًا منفيًا أو غير مناسب؛ التشابه لا يغيّر الأحكام أو القرار، وإخفاء البيانات الشخصية جزئي. تفاصيل التقييم الصناعي في [خطة تقييم المقترحات](docs/semantic-resume-evaluation.md).
-- تُقارن نطاقات التقييم الحالية للوظيفة عند طلب HR؛ لا تُحسم المقارنة عند تداخل الحدود أو تلامسها، وتُستبعد التقييمات القديمة وغير الموجودة. تُقترح أسئلة توضيحية للمعايير غير المعروفة أو غير المثبتة، وتبقى مراجعة المرشحين والقرار بشرية.
-- يستطيع HR ضبط عتبة لكل وظيفة لعرض أولوية مراجعة مبنية على نطاقات تقييمه الحالية. التقييمات القديمة أو غير الموجودة غير محسومة، ولا يؤدي التصنيف إلى رفض أو تعيين تلقائي؛ يبقى كل طلب متاحًا للمراجعة.
-- إدارة الحسابات صلاحية منفصلة عن دور HR، وتدعم إيقاف الحساب وإعادة ضبط كلمة مروره وإبطال جلساته للطلبات اللاحقة. العمليات التي بدأت قبل إبطال صلاحية صاحبها قد تكتمل. طريقة إنشاء أول مشرف محلي في [SETUP](SETUP.md).
-- البحث في السياسات والوظائف لفظي، وليس بحثًا دلاليًا عامًا؛ دعم العربية محدود. الوثائق والسياسات والوظائف الحالية خيالية.
-- يوجد بحث هجين اختياري لمستندات السياسات المضافة عبر نموذج محلي وPostgreSQL/pgvector. يمكن تفعيله بشكل منفصل للإجابات والمحادثات، ويعرض مقتطفات تحتاج مراجعة؛ أظهرت عينة تطوير صغيرة حالات استرجاع غير داعمة وحالات امتناع غير صحيحة. راجع [تفاصيل التجربة وتشغيلها](docs/local-semantic-experiment.md).
-- يستطيع HR تصنيف مستندات المعرفة عند إضافتها إلى سياسات أو وصف وظيفة أو أنماط توظيف سابقة، وربطها اختياريًا بوظيفة محددة؛ المستندات الأقدم تبقى غير مصنّفة وغير مرتبطة. يتيح البحث الهجين التجريبي ترشيح المستندات المرفوعة حسب النوع والوظيفة، ويُحصر استرجاع الأنماط السابقة في HR. التصنيف لا يُخفي بيانات شخصية؛ استخدم بيانات صناعية في العرض المحلي.
-- مستندات السياسات من PDF النصي تُفهرس صفحة بصفحة وتُظهر أرقام صفحات الملف الفعلية، لا الأرقام المطبوعة بالضرورة؛ الصفحات المصورة لا تُقرأ دون OCR. المستندات المستوردة سابقًا بلا معلومات صفحات تحتاج إعادة استيراد لعرض رقم الصفحة.
-- ملفات DOCX الجديدة التي تستخدم أنماط عناوين Word تُقسّم حسب هذه العناوين ويُعرض اسم القسم مع المصدر. المستندات القديمة والملفات بلا عناوين معرّفة تستمر بتقسيم النص السابق؛ لا تتوفر أرقام صفحات موثوقة لملفات DOCX في هذا الاستخراج.
-- تتاح محادثات محفوظة ومعزولة لكل حساب، ويُعاد التحقق من صلاحية مصادر الإجابات القديمة عند عرضها. قد تستخدم أسئلة إحالة قصيرة ومحددة آخر سؤال مؤهل من المحادثة نفسها كسياق بعد فحص الدور والمصادر، ولا تُرسل الإجابة السابقة. التعرف على الإحالة محدود ولا يمثل ذاكرة محادثة كاملة؛ عند عدم فهم المتابعة اكتب الموضوع صراحة.
-- يستطيع المرشح اختيار أحد طلباته في المحادثة لعرض مرحلته الحالية؛ يُعاد احتساب المرحلة عند فتح السجل من بيانات الطلب المصرح بها، دون إظهار ملاحظات HR أو إرسال السؤال إلى مزود ذكاء اصطناعي.
-- يمكن اختيار وكيل السياسات في المحادثة للبحث في سياسات العينات ومصادر الدليل المصرح بها فقط؛ لا يشمل أوصاف الوظائف أو أنماط التوظيف أو المستندات القديمة غير المصنفة. يستخدم بحثًا لفظيًا محافظًا قد يفوّت المرادفات والأدلة الموزعة على أكثر من مقطع، وقد يختار النموذج أداة البحث عند تفعيله. يَمتنع عند عدم وجود تطابق مؤهل؛ الاستشهاد بمعرّف صحيح لا يثبت أن الإجابة مدعومة دلاليًا. لا يستخدم هذا المسار سياق السؤال السابق.
-- يمكن تفعيل إعادة ترتيب هجينة تجريبية لوكيل السياسات بضبط `TAWZEEF_USE_POLICY_HYBRID=1` في بيئة الخادم مع إعداد PostgreSQL والنموذج المحلي وتفعيل البحث الهجين كما في [تفاصيل التجربة](docs/local-semantic-experiment.md). تعيد ترتيب المطابقات اللفظية المؤهلة فقط؛ لا تضيف دعمًا مثبتًا للمرادفات، وتعود للترتيب اللفظي مع إشعار عند تعذر الخدمة. نجح اختبار تكاملي واحد على PostgreSQL وpgvector حقيقيين ببيانات صناعية؛ لا يثبت الاختبار جودة الترتيب بين مصادر متعددة أو صحة الإجابات.
-- مسار مراجعة LangGraph يحفظ حالته ويتوقف للمراجعة البشرية ثم يُستأنف. يمكن لـHR اختيار خطة مراجعة تتغير حسب حالة الطلب: عند تفعيل Groq يقترح النموذج خطوات قراءة من قائمة محدودة، ويتحقق الخادم منها قبل التنفيذ؛ وإلا تُستخدم خطة محددة أو بديلة ويظهر مصدرها. لا يرسل المخطط هوية المرشح أو نص سيرته، وإنما حالة الطلب ووجود فحص فقط. لا يغيّر هذا المسار الطلب أو يحجز أو يرسل بريدًا، ويُرفض استكماله إذا تغير الطلب أو الوظيفة. ويمكن في مسار منفصل اقتراح إضافة موعد عام بعد موافقة HR؛ يستطيع أي مرشح مؤهل حجزه. في المسار الشامل، يستدعي Groq عند تفعيله مساعد أدوات قراءة محدودًا. يعرض البحث في السياسة مقتطفات يعيد بناءها من مصادر ما زال الوصول إليها مصرحًا، ويحفظ معرّفاتها وبصماتها دون نص السؤال أو المقتطفات في حالة المراجعة. لا يمثل هذا بعد منظومة الوكلاء الخمسة المكتملة المطلوبة في العرض.
-- هدف الجدولة المتكيفة يجمع قراءة حالة الطلب والمواعيد مع اقتراح موعد يحدده HR ويتوقف لمراجعة تفاصيله؛ بعد الموافقة يُضاف موعد عام يمكن لأي مرشح مؤهل حجزه، دون إرسال بريد أو إنشاء حدث Google. يتحقق الخادم مجددًا من الصلاحية والتعارض والبيانات قبل الإضافة.
-- يستطيع HR تشغيل مساعد تحضير مراجعة يستخدم نموذج Groq لاختيار أدوات قراءة محددة؛ يعرض مؤشرات الأدوات محليًا ولا يملك أداة للتوظيف أو الرفض أو الجدولة. تُرسل للمزوّد متطلبات مهارات الوظيفة ومؤشرات حالة الطلب والفحص فقط عند اختيار أدواتها، ولا يُرسل نص السيرة أو اسم المرشح في هذا المسار. لا تتحول هذه القيود إلى ضمان عام للخصوصية أو دقة النموذج.
-- المواعيد تُحجز محليًا؛ إجراءات Google الاختيارية منفصلة عن الحجز، وحدث Calendar الذي ينشئه التطبيق لا يضيف مدعوين. المؤشرات تُحسب من سجلات قاعدة البيانات؛ قياس توفير الوقت يحتاج دراسة بشرية فعلية.
-- البيانات المرجعية في `data/fixtures/` و`data/capstone_samples/` صناعية، والترتيبات المقترحة لم تعتمدها لجنة بشرية. اختبارات الأمثلة لا تثبت غياب التحيز أو التسرب عمومًا، ولا تقيس دقة الإجابة أو توفير الوقت على بيانات فعلية.
+- Candidates can upload text-based PDF or DOCX files and view their applications and appointments. Image-only PDFs require OCR and produce an error rather than a claim of extraction. File size limits and explicit errors apply.
+- HR can view résumé text, run a skill-mention screening with text evidence, and record a manual decision. Negation and instruction detection use limited heuristics and can fail; the result is not verified experience or a hiring decision.
+- HR can define job criteria, link judgments to excerpts from a partially redacted résumé, and calculate a weighted score range based on reviewed coverage. A missing-evidence judgment requires the reviewer to attest that the source was examined. Rule-based redaction is limited and does not guarantee anonymity. Résumé section extraction relies on clear headings and shows unverified excerpts; unknown sections are not treated as absent.
+- HR reviews show fields extracted from explicit labels or limited patterns in recognized sections, with positions in the partially redacted text available through the API. Record grouping is tentative, and fields not extracted remain unknown. Extraction does not verify experience or guarantee redaction, and image-only files are not OCRed.
+- HR can select spans from partially redacted text and classify them manually as experience, education, or project fields. The application stores offsets, a review version, and a source fingerprint; selections must be redone if the résumé changes. Selections do not prove qualifications.
+- A LangGraph review shows a summary of the current human assessment, its range and evidence, and follow-up questions for unknown criteria; it does not make a hiring decision. New assessments are bound to fingerprints of the criteria and redacted résumé. Older assessments without fingerprints remain in the record but require review before comparison, as do assessments affected by changed résumés, criteria, or evidence.
+- When optional semantic résumé screening is enabled, a local model suggests excerpts for review from sections recognized by the parser. It can miss evidence or suggest negated or inappropriate text; similarity does not change judgments or decisions, and redaction is partial. See the [synthetic evaluation plan](docs/semantic-resume-evaluation.md).
+- HR can compare current assessment ranges for a job. Overlapping or touching ranges do not establish a difference, and outdated or missing assessments are excluded. Clarifying questions are suggested for unknown or unproven criteria; review and decisions remain human.
+- HR can configure a threshold per job to show review priority based on current assessment ranges. Outdated or missing assessments are inconclusive, and the classification does not automatically reject or hire anyone; every application remains available for review.
+- Account administration is a separate capability from the HR role. It supports disabling accounts, resetting passwords, and revoking sessions for subsequent requests. Operations started before access was revoked may complete. See [SETUP](SETUP.md) for creating the first local administrator.
+- General policy and job search is lexical, not general semantic search, and Arabic support is limited. Current documents, policies, and jobs are fictional.
+- Optional hybrid retrieval for added policy documents uses a local model and PostgreSQL/pgvector. It can be enabled separately for answers and conversations and returns excerpts requiring review; a small development sample showed unsupported retrievals and incorrect abstentions. See [experiment and setup details](docs/local-semantic-experiment.md).
+- HR can classify added knowledge documents as policies, job descriptions, or past-hire patterns and optionally link them to a job. Older documents remain unclassified and unlinked. Experimental hybrid retrieval filters uploaded documents by type and job; past-hire patterns are restricted to HR. Classification does not remove personal data; use synthetic data in the local demo.
+- Text-based PDF policy documents are indexed page by page, with actual file page numbers that may differ from printed page numbers. Image-only pages require OCR. Older imports without page metadata must be reimported to display page numbers.
+- New DOCX files using Word heading styles are split by heading and show the section name with the source. Older files and files without recognized headings retain the previous text splitting behavior; reliable DOCX page numbers are not available from this extraction.
+- Conversations are saved and isolated by account. Access to the sources of old answers is rechecked when displayed. Certain short, explicit follow-up questions may use the most recent eligible question from the same conversation as limited context after role and source checks; the previous answer is not sent. Follow-up detection is limited and is not full conversational memory; state the topic explicitly if a follow-up is not understood.
+- Candidates can choose one of their own applications in conversation to see its current stage. The stage is recalculated when the history is opened from authorized application data, without revealing HR notes or sending the question to an AI provider.
+- Candidates can view a fresh keyword-mention screening preview based on their current résumé and the job requirements. It is not the recorded HR screening, verification of experience, or a hiring decision; negation detection and redaction are imperfect.
+- The conversation policy agent searches sample policies and authorized handbook sources only; it excludes job descriptions, past-hire patterns, and older unclassified documents. Its conservative lexical search may miss synonyms or evidence spread across passages. When enabled, the model may choose its search tool. It abstains when no eligible match is found; a valid citation ID does not prove semantic support. This mode does not use the previous question as context.
+- Experimental hybrid reranking for the policy agent can be enabled by setting `TAWZEEF_USE_POLICY_HYBRID=1` in the server environment and configuring PostgreSQL, the local model, and hybrid retrieval as described in [experiment details](docs/local-semantic-experiment.md). It only reorders eligible lexical matches, does not establish synonym support, and falls back to lexical ranking with a notice if unavailable. One integration test passed with real PostgreSQL and pgvector on synthetic data; it does not establish ranking quality across multiple sources or answer correctness.
+- The LangGraph review persists its state, pauses for human review, and resumes. HR can choose a plan that varies with application state: when Groq is enabled, the model proposes read steps from a limited list and the server validates them; otherwise a deterministic or fallback plan is used and its source is shown. The planner sends application status and whether screening exists, not the candidate's identity or résumé. This review path does not change the application, book a slot, or send email; resumption is rejected if the application or job has changed. A separate path can propose a shared slot after HR approval, which any eligible candidate may book. In the full path, Groq can also invoke a limited read-tool assistant. Policy results are reconstructed from sources still accessible at display time; references and fingerprints are stored without the question or excerpts in review state. This is not yet the complete five-agent system described in the presentation.
+- The adaptive scheduling goal combines reading application status and availability with an HR-specified slot proposal and pauses for review. After approval, a shared slot is added for any eligible candidate to book, without sending email or creating a Google event. The server rechecks authorization, conflicts, and data before adding it.
+- HR can run a review-preparation assistant that uses Groq to choose limited read tools. It displays tool indicators locally and has no hiring, rejection, or scheduling tool. When those tools are selected, only job skill requirements and application and screening status indicators are sent to the provider; the résumé text and candidate name are not sent on this path. These restrictions do not guarantee general privacy or model accuracy.
+- Interviews are booked locally; optional Google actions are separate, and Calendar events created by the application do not add attendees. Metrics are computed from database records; measuring time savings requires an actual human study.
+- Reference data under `data/fixtures/` and `data/capstone_samples/` is synthetic, and the proposed rankings have not been approved by a human panel. Example tests do not prove absence of bias or leaks in general and do not measure answer accuracy or time savings on real data.
 
-راجع [المتطلبات](docs/requirements.md) و[خطة التقييم](docs/evaluation-plan.md) للتفاصيل وما يحتاج استكمالًا.
+See the [requirements](docs/requirements.md) and [evaluation plan](docs/evaluation-plan.md) for details and outstanding work.

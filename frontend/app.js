@@ -1049,6 +1049,10 @@ function renderApplicationDetail(target, application, role) {
     candidateProgress.setAttribute("aria-live", "polite");
     panel.append(candidateProgress);
     loadCandidateProgress(candidateProgress, application.id);
+    const screeningPanel = element("section", "application-detail");
+    screeningPanel.setAttribute("aria-label", "Candidate screening preview");
+    panel.append(screeningPanel);
+    loadCandidateScreening(screeningPanel, application.id);
   }
   if (role === "candidate" && application.status === "advanced") {
     const slotsPanel = element("section", "application-detail");
@@ -1296,6 +1300,29 @@ async function loadApplicationOffers(target, application, role) {
     }
   } catch (error) {
     if (!isStale(error) && target.isConnected) target.replaceChildren(element("h4", "", "عروض التوظيف"), element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم لتحميل العروض." : error.message));
+  }
+}
+
+async function loadCandidateScreening(target, applicationId) {
+  target.replaceChildren(element("h4", "", "Current screening preview"), element("p", "subtle-note", "Loading..."));
+  try {
+    const result = await api(`/api/applications/${encodeURIComponent(applicationId)}/candidate-screening`);
+    if (!target.isConnected) return;
+    target.replaceChildren(element("h4", "", "Current screening preview"),
+      element("p", "subtle-note", "A keyword-based preview of the current resume and job requirements. It does not verify experience, represent HR's saved assessment, or make a hiring decision."),
+      element("p", "result-badge", `Required skill mentions: ${result.score} / 100`));
+    for (const [key, label] of [["required", "Required skills"], ["preferred", "Preferred skills"]]) {
+      const list = element("ul", "evidence-list");
+      for (const skill of result[key] || []) {
+        const item = element("li");
+        item.append(element("strong", "", skill.skill), element("p", "", skill.mentioned ? "Mention found; review context." : "No reliable mention found; this does not prove a lack of skill."));
+        for (const excerpt of skill.evidence || []) item.append(element("p", "", excerpt));
+        list.append(item);
+      }
+      target.append(element("h5", "", label), list);
+    }
+  } catch (error) {
+    if (!isStale(error) && target.isConnected) target.replaceChildren(element("h4", "", "Current screening preview"), element("p", "form-error", "Unable to load the screening preview."));
   }
 }
 
