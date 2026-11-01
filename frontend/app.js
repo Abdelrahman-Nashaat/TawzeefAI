@@ -802,6 +802,7 @@ function setupGraphReview(target, application) {
   const storageKey = `tawzeef-graph-${currentUserId}-${application.id}`;
   const title = element("h4", "", "مراجعة متعددة المراحل باستخدام LangGraph");
   const note = element("p", "subtle-note", "تجمع المراجعة نتائج أدوات محلية وتتوقف لتأكيد بشري. يمكن اقتراح موعد عام متاح بعد مراجعة تفاصيله والموافقة عليه؛ يمكن لأي مرشح مؤهل اختياره. لا ينشئ هذا المسار حدث Google أو يرسل دعوة. المواعيد لقطة قد تتغير.");
+  note.textContent = "Review local tool results and approve proposed slots. Choose a shared slot or reserve a slot for this application. The candidate books separately; this does not create a Google event or send an invitation. Availability can change.";
   const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
   const form = element("form", "decision-form");
   const intentLabel = element("label", "", "نوع المراجعة");
@@ -809,6 +810,8 @@ function setupGraphReview(target, application) {
   for (const [value, text] of [["full", "مراجعة شاملة"], ["adaptive", "خطة مراجعة حسب حالة الطلب"], ["adaptive_schedule", "خطة جدولة مع مراجعة بشرية"], ["policy", "سؤال سياسة"], ["scheduling", "المواعيد"], ["status", "حالة الطلب"], ["create_slot", "اقتراح موعد متاح"]]) {
     const option = element("option", "", text); option.value = value; intent.append(option);
   }
+  const privateSlotOption = element("option", "", "Propose a slot for this candidate only");
+  privateSlotOption.value = "create_private_slot"; intent.append(privateSlotOption);
   intentLabel.append(intent);
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
   const question = element("textarea"); question.maxLength = 2000; question.placeholder = "يمكن تركه فارغًا"; questionLabel.append(question);
@@ -825,7 +828,7 @@ function setupGraphReview(target, application) {
     questionLabel.firstChild.textContent = question.required ? "سؤال السياسة المطلوب للبحث المحلي" : "سؤال سياسة اختياري للبحث المحلي";
     question.placeholder = question.required ? "اكتب سؤالك عن السياسة" : "يمكن تركه فارغًا";
     if (!supportsPolicy) question.value = "";
-    const createSlot = intent.value === "create_slot" || intent.value === "adaptive_schedule";
+    const createSlot = ["create_slot", "create_private_slot", "adaptive_schedule"].includes(intent.value);
     slotFields.hidden = !createSlot;
     for (const field of [slotStart, slotEnd, interviewer]) { field.disabled = !createSlot; field.required = createSlot; }
   });
@@ -937,18 +940,19 @@ function setupGraphReview(target, application) {
     }
     const proposal = review.state.action_proposal;
     const result = review.state.action_result;
-    if (proposal?.type === "create_slot" && proposal.slot) {
+    if (["create_slot", "create_private_slot"].includes(proposal?.type) && proposal.slot) {
       output.append(element("h4", "", "تفاصيل الموعد المقترح"),
         element("p", "", `طلب سياق المراجعة: #${proposal.application_id}`),
         element("p", "", `من ${displayDate(proposal.slot.start_at)} إلى ${displayDate(proposal.slot.end_at)}`),
         element("p", "", `المحاور: ${proposal.slot.interviewer}`),
-        element("p", "subtle-note", "الموافقة تضيف موعدًا عامًا يستطيع أي مرشح مؤهل حجزه؛ الموعد غير مخصص للطلب المعروض. لا تعني الموافقة حجزه أو إرسال دعوة."));
+        element("p", "subtle-note", proposal.type === "create_private_slot" ? "Approval makes this slot available only to the candidate for this application. It does not book the interview or send a message." : "Approval makes this slot available to all eligible candidates. It does not book the interview or send a message."));
     }
-    if (result?.status === "created") output.append(element("p", "result-badge", "تمت إضافة موعد عام متاح للمرشحين المؤهلين بعد الموافقة."));
+    if (result?.status === "created") output.append(element("p", "result-badge", proposal?.type === "create_private_slot" ? "The candidate-specific slot was added after approval." : "The shared slot was added after approval."));
     else if (result?.status === "declined") output.append(element("p", "result-badge", "رُفض المقترح ولم يُضف موعد."));
-    if (review.awaiting_review && (proposal || review.state.intent === "create_slot")) {
+    if (review.awaiting_review && (proposal || ["create_slot", "create_private_slot"].includes(review.state.intent))) {
       output.append(element("p", "result-badge", "المقترح بانتظار قرار الموارد البشرية."));
-      if (proposal?.type !== "create_slot" || proposal.availability_scope !== "all_eligible_candidates" || proposal.application_id !== application.id || !proposal.slot?.start_at || !proposal.slot?.end_at || !proposal.slot?.interviewer || !proposal.approval_fingerprint) {
+      const validScope = (proposal?.type === "create_slot" && proposal.availability_scope === "all_eligible_candidates") || (proposal?.type === "create_private_slot" && proposal.availability_scope === "selected_application_only");
+      if (!validScope || proposal.application_id !== application.id || !proposal.slot?.start_at || !proposal.slot?.end_at || !proposal.slot?.interviewer || !proposal.approval_fingerprint) {
         output.append(element("p", "form-error", "تعذّرت مراجعة تفاصيل المقترح بأمان. أعد تحميل المراجعة."));
         return;
       }
@@ -994,7 +998,7 @@ function setupGraphReview(target, application) {
       const body = { application_id: application.id, intent: intent.value === "adaptive_schedule" ? "adaptive" : intent.value };
       if (intent.value === "adaptive" || intent.value === "adaptive_schedule") body.adaptive_goal = intent.value === "adaptive" ? "review_application" : "schedule_interview";
       else body.policy_question = question.value.trim();
-      if (intent.value === "create_slot" || intent.value === "adaptive_schedule") {
+      if (["create_slot", "create_private_slot", "adaptive_schedule"].includes(intent.value)) {
         const startTime = new Date(slotStart.value), endTime = new Date(slotEnd.value);
         if (!interviewer.value.trim() || Number.isNaN(startTime.valueOf()) || Number.isNaN(endTime.valueOf()) || endTime <= startTime) throw new Error("تحقق من اسم المحاور وأن نهاية الموعد بعد بدايته.");
         body.slot = { start_at: startTime.toISOString(), end_at: endTime.toISOString(), interviewer: interviewer.value.trim() };

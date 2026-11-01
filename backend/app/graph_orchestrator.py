@@ -44,7 +44,7 @@ from app.resume_fields import resume_fields_for_display
 from app.resume_structure import structure_resume
 from app.scheduling import utc_text
 from app.slot_reservations import private_slot_conflict
-from app.slots import SlotCreate, create_slot_record
+from app.slots import BatchSlot, SlotCreate, _validate_batch, create_slot_record
 
 router = APIRouter(prefix="/api/graph-reviews")
 HR = Annotated[User, Depends(require_roles("hr"))]
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 class ReviewRequest(BaseModel):
     application_id: int = Field(gt=0)
     policy_question: str = Field(default="", max_length=2000)
-    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'adaptive'] = 'full'
+    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'adaptive'] = 'full'
     slot: SlotCreate | None = None
     adaptive_goal: Literal['review_application', 'schedule_interview'] | None = None
 
@@ -72,10 +72,10 @@ class ReviewRequest(BaseModel):
             raise ValueError('Policy review requires a question')
         if self.intent in ('scheduling', 'status') and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
-        needs_slot = self.intent == 'create_slot' or (self.intent == 'adaptive' and self.adaptive_goal == 'schedule_interview')
+        needs_slot = self.intent in ('create_slot', 'create_private_slot') or (self.intent == 'adaptive' and self.adaptive_goal == 'schedule_interview')
         if needs_slot != (self.slot is not None):
             raise ValueError('Slot details are required only for scheduling')
-        if self.intent == 'create_slot' and self.policy_question.strip():
+        if self.intent in ('create_slot', 'create_private_slot') and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
         if (self.intent == 'adaptive') != (self.adaptive_goal is not None):
             raise ValueError('Adaptive goal is required only for adaptive review')
@@ -212,6 +212,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             'scheduling': ['scheduler', 'human_review'],
             'status': ['status', 'human_review'],
             'create_slot': ['prepare_slot', 'human_review', 'execute_slot'],
+            'create_private_slot': ['prepare_slot', 'human_review', 'execute_slot'],
         }
         return {'plan': plans[state.get('intent', 'full')]}
 
@@ -250,7 +251,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             answer = run_policy_agent(path, user, question, enabled=enable_agent, authorize=authorize).answer
         except PermissionError as exc:
             raise HTTPException(status_code=409, detail='Policy access changed; please retry') from exc
-        if answer.mode == 'abstain' and not answer.sources:
+        if answer.mode == 'abstain':
             return {"policy": {"status": "abstain"}}
         return {"policy": {"status": "source_refs_v2", "refs": [
             {"id": source.id, "digest": _digest(source)} for source in answer.sources
@@ -273,18 +274,21 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         return {"agent_review": {"status": result['status'], "tool_trace": result['tool_trace']}}
 
     def prepare_slot(state: ReviewState):
+        private = state.get('intent') == 'create_private_slot'
         with connect(path) as db:
             application = get_application(db, state['application_id'])
             if application['status'] != 'advanced':
                 raise HTTPException(status_code=409, detail='Application is not eligible for candidate booking')
-            proposal = {'type': 'create_slot', 'application_id': state['application_id'],
+            proposal = {'type': 'create_private_slot' if private else 'create_slot', 'application_id': state['application_id'],
                         'operation_id': state['operation_id'], 'slot': state['slot'],
                         'candidate_id': application['candidate_id'],
                         'application_updated_at': application['updated_at'],
-                        'availability_scope': 'all_eligible_candidates',
-                        'notice': 'This creates a shared slot available to all eligible candidates. '
+                        'availability_scope': 'selected_application_only' if private else 'all_eligible_candidates',
+                        'notice': ('This reserves a slot for the selected application and candidate only. '
+                                   'The candidate must book it separately; no invitation is sent.' if private else
+                                  'This creates a shared slot available to all eligible candidates. '
                                   'It is not reserved for this application; the application is used '
-                                  'to verify eligibility and conflicts.'}
+                                  'to verify eligibility and conflicts.')}
         encoded = json.dumps(proposal, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
         proposal['approval_fingerprint'] = hashlib.sha256(encoded).hexdigest()
         return {'action_proposal': proposal}
@@ -300,6 +304,12 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
                 or application['updated_at'] != proposal['application_updated_at']):
             raise HTTPException(status_code=409, detail='Application changed; start a new review')
         slot = SlotCreate.model_validate(proposal['slot'])
+        private = proposal.get('availability_scope') == 'selected_application_only'
+        if private:
+            item = BatchSlot.model_validate({**proposal['slot'], 'application_id': state['application_id']})
+            candidates = _validate_batch(action_db, [item])
+            if candidates[state['application_id']] != proposal['candidate_id']:
+                raise HTTPException(status_code=409, detail='Candidate ownership changed; start a new review')
         start, end = utc_text(slot.start_at), utc_text(slot.end_at)
         if private_slot_conflict(action_db, start, end, slot.interviewer.casefold(),
                                  candidate_id=application['candidate_id']):
@@ -315,10 +325,17 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
                 AND interviewer_key=?""", (end, start, slot.interviewer.casefold())).fetchone():
             raise HTTPException(status_code=409, detail='Interviewer has a conflicting slot')
         created = create_slot_record(action_db, slot, user.id)
+        if private:
+            action_db.execute('UPDATE interview_slots SET target_application_id=?, target_candidate_id=? WHERE id=?',
+                              (state['application_id'], proposal['candidate_id'], created['id']))
+            created['application_id'] = state['application_id']
         return {'action_result': {'status': 'created', 'slot': created}}
 
     def human_review(state: ReviewState):
-        notice = ('Approve creation of a shared slot available to all eligible candidates. '
+        notice = ('Approve creation of a slot for this application and candidate only. '
+                  'The candidate must book it separately; no invitation is sent.'
+                  if state.get('intent') == 'create_private_slot' else
+                  'Approve creation of a shared slot available to all eligible candidates. '
                   'It is not reserved for this application; a candidate must book it separately.'
                   if state.get('intent') == 'create_slot' or state.get('adaptive_goal') == 'schedule_interview' else
                   'Acknowledge review; no hiring or booking action will be taken.')
@@ -359,7 +376,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
     choices = ['parser', 'matching', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'human_review', 'execute_slot']
     for name in ['plan', *choices[:-2]]:
         builder.add_conditional_edges(name, next_after(name), choices)
-    builder.add_conditional_edges('human_review', lambda state: 'execute_slot' if state.get('intent') == 'create_slot' or state.get('adaptive_goal') == 'schedule_interview' else END,
+    builder.add_conditional_edges('human_review', lambda state: 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
                                   {'execute_slot': 'execute_slot', END: END})
     builder.add_edge('execute_slot', END)
     return builder.compile(checkpointer=checkpointer)
@@ -426,7 +443,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     selected = state.get('intent', 'full')
     scoped_fields = {'parsed': 'full', 'matching': 'full', 'agent_review': 'full',
                      'policy': 'policy', 'scheduling': 'scheduling', 'status': 'status'}
-    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'adaptive'}:
+    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'adaptive'}:
         selected = 'invalid'
     for field, scope in scoped_fields.items():
         adaptive_fields = {'parsed': 'parser', 'matching': 'matching', 'scheduling': 'scheduler', 'status': 'status'}
@@ -589,7 +606,7 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             if (snapshot.values.get('intent') == 'adaptive' and
                     context_for(db, snapshot.values['application_id'])[1] != snapshot.values.get('context_digest')):
                 raise HTTPException(status_code=409, detail='Application changed; start a new review')
-            if (snapshot.values.get('intent') == 'create_slot' or snapshot.values.get('adaptive_goal') == 'schedule_interview') and payload.reviewed:
+            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot') or snapshot.values.get('adaptive_goal') == 'schedule_interview') and payload.reviewed:
                 expected = snapshot.values.get('action_proposal', {}).get('approval_fingerprint', '')
                 if (not expected or not payload.approval_fingerprint or
                         not secrets.compare_digest(expected.encode('utf-8'), payload.approval_fingerprint.encode('utf-8'))):

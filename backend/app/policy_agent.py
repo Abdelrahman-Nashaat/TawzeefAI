@@ -205,7 +205,9 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
     chosen = [source for _, source in _rank_lexical(_tokens(query), initial) if source.id in allowed]
     chosen_ids = {source.id for source in chosen}
     candidates = chosen + [source for _, source in ranked if source.id not in chosen_ids]
-    if os.environ.get('TAWZEEF_USE_POLICY_HYBRID') == '1':
+    hybrid_suggestions = os.environ.get('TAWZEEF_POLICY_HYBRID_SUGGESTIONS') == '1'
+    suggested = []
+    if os.environ.get('TAWZEEF_USE_POLICY_HYBRID') == '1' or (hybrid_suggestions and not candidates):
         try:
             result = _policy_hybrid(path, user.role, question)
             if not isinstance(result, dict) or not isinstance(result.get('sources'), list):
@@ -233,9 +235,33 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
             candidates = reranked + [source for source in candidates if source.id not in seen]
             notice = ' '.join(filter(None, (notice,
                 'Experimental hybrid reorders eligible lexical matches only; it does not ensure synonym support.')))
+            if hybrid_suggestions and not candidates:
+                # These passages are suggestions only, not verified evidence.
+                # Never trust text, authorization, or collection claims from the
+                # index: resolve every row to the still-authorized local source.
+                initial_by_id = {source.id: source for source in initial}
+                suggested_ids = set()
+                for row in rows:
+                    if not isinstance(row, dict) or row.get('collection') != 'handbook':
+                        continue
+                    source = initial_by_id.get(row.get('id'))
+                    if (source is None or source.id in suggested_ids or current.get(source.id) != source or
+                            any(row.get(field) != getattr(source, field) for field in ('title', 'text', 'page', 'section'))):
+                        continue
+                    suggested.append(source)
+                    suggested_ids.add(source.id)
+                    if len(suggested) == 3:
+                        break
     sources = candidates[:3]
     if not sources:
-        _current(path, user, authorize)
+        current = {source.id: source for source in _current(path, user, authorize)}
+        if any(current.get(source.id) != source for source in suggested):
+            raise PermissionError('Policy source authorization changed')
+        if suggested:
+            notice = ' '.join(filter(None, (notice,
+                'Experimental search suggestions are unverified and may not answer this question.')))
+            return PolicyAgentResult(KnowledgeAnswer('No supported policy answer was found. The passages below are possible leads for review, not an answer.',
+                suggested, 'abstain', notice), ['search_policy'])
         return PolicyAgentResult(KnowledgeAnswer('No supported policy answer was found.', [], 'abstain', notice or None), ['search_policy'])
     def revalidate():
         current = {source.id: source for source in _current(path, user, authorize)}

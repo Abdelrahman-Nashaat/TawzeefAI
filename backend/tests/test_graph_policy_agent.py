@@ -73,6 +73,29 @@ def test_graph_policy_does_not_treat_job_descriptions_as_policy(tmp_path):
         assert response.json()['state']['policy']['status'] == 'abstain'
 
 
+def test_abstention_with_suggested_passages_is_not_presented_as_an_answer(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app import graph_orchestrator
+
+    suggestion = SimpleNamespace(id='suggestion', text='Unverified suggestion')
+    monkeypatch.setattr(graph_orchestrator, 'run_policy_agent', lambda *args, **kwargs:
+                        SimpleNamespace(answer=SimpleNamespace(mode='abstain', sources=[suggestion])))
+    path = tmp_path / 'graph-abstention.sqlite3'
+    with TestClient(create_app(path, seed_demo=True)) as client:
+        assert client.post('/api/auth/login', json={'username': 'hr', 'password': 'hr-demo-only'}).status_code == 200
+        with connect(path) as db:
+            candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
+            application = db.execute("""INSERT INTO applications(candidate_id,job_id,filename,resume_text)
+                VALUES (?,'job-backend-python','test.pdf','synthetic')""", (candidate,)).lastrowid
+        response = client.post('/api/graph-reviews', json={
+            'application_id': application, 'intent': 'policy', 'policy_question': 'Unanswered question',
+        })
+        assert response.status_code == 201, response.text
+        assert response.json()['state']['policy'] == {'status': 'abstain'}
+        assert 'Unverified suggestion' not in response.text
+
+
 def test_legacy_policy_references_remain_readable_but_respect_revocation(tmp_path):
     from types import SimpleNamespace
 
