@@ -108,6 +108,29 @@ def slot_view(row) -> dict:
     return {key: row[key] for key in ('id', 'start_at', 'end_at', 'interviewer')}
 
 
+def candidate_available_slots(db, application_id: int, user: User, *, limit: int = -1) -> list[dict]:
+    """Return the same owner-scoped slots used for booking, within the caller's snapshot."""
+    application = owned_advanced_application(db, application_id, user)
+    if db.execute("""SELECT 1 FROM interviews i WHERE i.application_id = ? AND i.status = 'scheduled'
+                  AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id)""", (application_id,)).fetchone():
+        return []
+    now = utc_text(datetime.now(UTC))
+    rows = db.execute('''SELECT s.* FROM interview_slots s
+        LEFT JOIN interviews linked ON linked.id = s.interview_id
+        WHERE s.withdrawn = 0 AND s.start_at > ? AND (s.interview_id IS NULL OR linked.status = 'cancelled')
+        AND (s.target_application_id IS NULL OR (s.target_application_id=? AND s.target_candidate_id=?))
+        AND NOT EXISTS (SELECT 1 FROM interviews i WHERE i.status = 'scheduled'
+            AND i.start_at < s.end_at AND i.end_at > s.start_at
+            AND (i.candidate_id = ? OR i.interviewer_key = s.interviewer_key))
+        AND NOT EXISTS (SELECT 1 FROM interview_slots reserved
+            WHERE reserved.target_application_id IS NOT NULL AND reserved.withdrawn=0 AND reserved.id != s.id
+            AND reserved.start_at < s.end_at AND reserved.end_at > s.start_at
+            AND (reserved.interviewer_key=s.interviewer_key OR reserved.target_candidate_id=?))
+        ORDER BY s.start_at, s.id LIMIT ?''',
+        (now, application_id, user.id, application['candidate_id'], user.id, limit)).fetchall()
+    return [slot_view(row) for row in rows]
+
+
 class BatchSlot(SlotCreate):
     model_config = ConfigDict(extra='forbid')
     application_id: int = Field(gt=0, strict=True)
@@ -257,24 +280,7 @@ def list_slots(request: Request, user: Authenticated, application_id: int | None
             raise HTTPException(status_code=403, detail='Access denied')
         if application_id is None or application_id <= 0:
             raise HTTPException(status_code=422, detail='Application is required')
-        application = owned_advanced_application(db, application_id, user)
-        if db.execute("""SELECT 1 FROM interviews i WHERE i.application_id = ? AND i.status = 'scheduled'
-                      AND NOT EXISTS (SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id)""", (application_id,)).fetchone():
-            return []
-        now = utc_text(datetime.now(UTC))
-        rows = db.execute('''SELECT s.* FROM interview_slots s
-            LEFT JOIN interviews linked ON linked.id = s.interview_id
-            WHERE s.withdrawn = 0 AND s.start_at > ? AND (s.interview_id IS NULL OR linked.status = 'cancelled')
-            AND (s.target_application_id IS NULL OR (s.target_application_id=? AND s.target_candidate_id=?))
-            AND NOT EXISTS (SELECT 1 FROM interviews i WHERE i.status = 'scheduled'
-                AND i.start_at < s.end_at AND i.end_at > s.start_at
-                AND (i.candidate_id = ? OR i.interviewer_key = s.interviewer_key))
-            AND NOT EXISTS (SELECT 1 FROM interview_slots reserved
-                WHERE reserved.target_application_id IS NOT NULL AND reserved.withdrawn=0 AND reserved.id != s.id
-                AND reserved.start_at < s.end_at AND reserved.end_at > s.start_at
-                AND (reserved.interviewer_key=s.interviewer_key OR reserved.target_candidate_id=?))
-            ORDER BY s.start_at, s.id''', (now, application_id, user.id, application['candidate_id'], user.id)).fetchall()
-        return [slot_view(row) for row in rows]
+        return candidate_available_slots(db, application_id, user)
 
 
 @router.post('/slots/{slot_id}/book', status_code=201)

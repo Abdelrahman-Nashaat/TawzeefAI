@@ -911,6 +911,7 @@ function setupGraphReview(target, application) {
       else {
         if (specialist.notice) output.append(element("p", "subtle-note", specialist.notice));
         if (specialist.bounds) output.append(element("p", "result-badge", `النطاق: ${specialist.bounds.minimum}–${specialist.bounds.maximum} من 100 · التغطية: ${specialist.bounds.coverage_percent}%`));
+        renderAssessmentComponents(output, specialist.components);
         const list = element("ul", "evidence-list");
         const claimLabels = { met: "مثبت بالمراجعة", missing: "لم يُثبت بعد المراجعة", unknown: "غير معروف" };
         for (const criterion of specialist.criteria || []) {
@@ -1371,10 +1372,22 @@ async function loadApplicationOffers(target, application, role) {
   }
 }
 
+function renderAssessmentComponents(target, components) {
+  if (!Array.isArray(components)) return;
+  const labels = {mandatory: "Mandatory skills", preferred: "Preferred skills", experience: "Experience", projects: "Projects", education: "Education"};
+  const list = element("ul", "evidence-list");
+  for (const part of components) {
+    const counts = part.counts || {};
+    list.append(element("li", "", `${labels[part.category] || part.category}: ${part.minimum_points}–${part.maximum_points} of ${part.weight} points; reviewed weight ${part.covered_weight}. Met ${counts.met ?? 0}, missing evidence ${counts.missing ?? 0}, unknown ${counts.unknown ?? 0}.${part.unconfigured ? " No criteria configured." : ""}`));
+  }
+  target.append(element("h5", "", "Score breakdown"), list, element("p", "subtle-note", "Ranges reflect reviewed evidence and uncertainty; they are not verified ability or a hiring decision."));
+}
+
 function renderCandidateAssessment(target, assessment) {
   const bounds = assessment.bounds;
   target.append(element("p", "result-badge", `Reviewed score range: ${bounds.minimum}–${bounds.maximum} / 100 · coverage ${bounds.coverage_percent}%`),
     element("p", "subtle-note", assessment.notice));
+  renderAssessmentComponents(target, assessment.components);
   const list = element("ul", "evidence-list");
   const status = { met: "Evidence reviewed", missing: "Not established from available evidence", unknown: "Not yet established" };
   for (const item of assessment.criteria) {
@@ -2002,6 +2015,14 @@ function setupConversations(role) {
         const mode = entry.mode === "application_status" ? "مرحلة الطلب الحالية؛ تُحدّث عند تحميل المحادثة." : entry.mode === "groq" ? "إجابة مولدة بالذكاء الاصطناعي؛ تحقق من المصادر." : entry.mode === "abstain" ? "لم يُعثر على دليل مناسب." : "مقتطفات مسترجعة من المصادر.";
         item.append(element("p", "subtle-note", mode));
         if (entry.notice) item.append(element("p", "subtle-note", entry.notice));
+        if (entry.mode === "application_status") {
+          if (entry.interview) item.append(element("p", "", `Your interview: ${displayDate(entry.interview.start_at)} – ${displayDate(entry.interview.end_at)} · ${entry.interview.interviewer}${entry.interview.completed ? " · completed" : ""}`));
+          if (entry.available_slots?.length) {
+            const slots = element("ul", "evidence-list");
+            for (const slot of entry.available_slots) slots.append(element("li", "", `${displayDate(slot.start_at)} – ${displayDate(slot.end_at)} · ${slot.interviewer}`));
+            item.append(element("h5", "", "Currently available interview slots"), slots, element("p", "subtle-note", `Availability can change. Open your application to book.${entry.slots_truncated ? " More slots may be available there." : ""}`));
+          }
+        }
         if (entry.sources?.length) {
           const list = element("ul", "evidence-list");
           for (const source of entry.sources) { const li = element("li"); li.append(element("strong", "", knowledgeSourceLabel(source)), element("p", "", source.text)); list.append(li); }
@@ -2152,6 +2173,20 @@ function renderDashboard(data) {
   const pipeline = element("ul", "evidence-list");
   for (const item of data.pipeline || []) pipeline.append(element("li", "", `${statusLabels[item.status] || item.status}: ${item.count}`));
   if (pipeline.childNodes.length) box.append(element("h3", "", "الطلبات حسب المرحلة"), pipeline);
+  const perJob = element("section", "application-detail");
+  perJob.append(element("h4", "", "Recruitment metrics by job"), element("p", "subtle-note", "Loading..."));
+  box.append(perJob);
+  api("/api/dashboard/jobs").then((result) => {
+    if (!perJob.isConnected) return;
+    perJob.replaceChildren(element("h4", "", "Recruitment metrics by job"), element("p", "subtle-note", result.definition));
+    for (const job of result.jobs || []) {
+      const sectionNode = element("section", "application-detail");
+      sectionNode.append(element("h5", "", job.title), element("p", "", `Applications: ${job.applications_total} · screenings: ${job.screening_events} · average days to hire: ${job.time_to_hire.average_days ?? "unavailable"} (${job.time_to_hire.count} hires)`));
+      const counts = element("ul", "evidence-list");
+      for (const stage of job.pipeline || []) counts.append(element("li", "", `${statusLabels[stage.status] || stage.status}: ${stage.count}`));
+      sectionNode.append(counts); perJob.append(sectionNode);
+    }
+  }).catch((error) => { if (!isStale(error) && perJob.isConnected) perJob.replaceChildren(element("h4", "", "Recruitment metrics by job"), element("p", "form-error", "Unable to load job metrics.")); });
   const evaluation = element("section", "application-detail");
   evaluation.setAttribute("aria-label", "التقييم الاصطناعي");
   evaluation.append(element("h4", "", "تقييم المشروع ببيانات اصطناعية"),

@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -42,7 +43,8 @@ def test_current_stage_is_rebuilt_and_no_sensitive_data_saved(setup, monkeypatch
         row = db.execute('SELECT * FROM conversation_messages').fetchone()
         assert row['answer'] == '' and json.loads(row['sources_json']) == []
         assert row['status_application_id'] == app_id
-        db.execute("UPDATE applications SET status='advanced',score_json='{}' WHERE id=?", (app_id,))
+        db.execute("UPDATE applications SET status='advanced',score_json=?,resume_text=? WHERE id=?",
+                   (json.dumps({'hr_note': 'private-review-marker'}), 'private-resume-marker', app_id))
     message = client.get(f'/api/conversations/{chat_id}').json()['messages'][0]
     assert message['stage'] == 'shortlisted'
     assert message['application_id'] == app_id
@@ -115,3 +117,68 @@ def test_mixed_history_still_requires_authorized_general_sources(setup, monkeypa
     monkeypatch.setattr(conversations, '_authorized_sources', fail_knowledge)
     with pytest.raises(RuntimeError, match='knowledge unavailable'):
         client.get(f'/api/conversations/{chat_id}')
+
+
+def test_status_rebuilds_only_owned_bookable_slots_and_current_interview(setup):
+    client, path, chat_id, app_id = setup
+    with connect(path) as db:
+        owner = db.execute('SELECT candidate_id FROM applications WHERE id=?', (app_id,)).fetchone()[0]
+        hr = db.execute("SELECT id FROM users WHERE username='hr'").fetchone()[0]
+        other = db.execute("INSERT INTO users(username,display_name,role,password_hash) VALUES ('other','Other','candidate',?)", (hash_password('password-123'),)).lastrowid
+        other_app = db.execute("INSERT INTO applications(candidate_id,job_id,filename,resume_text,status) VALUES (?,'job-backend-python','x','x','advanced')", (other,)).lastrowid
+        db.execute("UPDATE applications SET status='advanced',score_json='{}' WHERE id=?", (app_id,))
+        start = datetime.now(UTC) + timedelta(days=2)
+        for index, (target, candidate, withdrawn) in enumerate(((None, None, 0), (app_id, owner, 0), (other_app, other, 0), (app_id, owner, 1))):
+            when = start + timedelta(hours=index)
+            db.execute('''INSERT INTO interview_slots(start_at,end_at,interviewer,interviewer_key,created_by,target_application_id,target_candidate_id,withdrawn)
+                VALUES (?,?,?,?,?,?,?,?)''', (when.isoformat(), (when + timedelta(minutes=30)).isoformat(), f'Interviewer {index}', f'interviewer {index}', hr, target, candidate, withdrawn))
+    response = ask(client, chat_id, app_id)
+    assert response.status_code == 201
+    initial = response.json()
+    assert 'private-review-marker' not in response.text and 'private-resume-marker' not in response.text
+    assert initial['stage'] == 'shortlisted' and initial['interview'] is None
+    assert [slot['interviewer'] for slot in initial['available_slots']] == ['Interviewer 0', 'Interviewer 1']
+    assert initial['slots_truncated'] is False
+    slot_id = initial['available_slots'][1]['id']
+    assert client.post(f'/api/slots/{slot_id}/book', json={'application_id': app_id}).status_code == 201
+    refreshed = client.get(f'/api/conversations/{chat_id}').json()['messages'][0]
+    assert refreshed['stage'] == 'interview_scheduled'
+    assert refreshed['available_slots'] == []
+    assert refreshed['interview']['interviewer'] == 'Interviewer 1'
+    assert refreshed['interview']['completed'] is False
+    assert set(refreshed['interview']) == {'id', 'start_at', 'end_at', 'interviewer', 'completed'}
+    with connect(path) as db:
+        row = db.execute('SELECT answer,sources_json FROM conversation_messages WHERE conversation_id=?', (chat_id,)).fetchone()
+        assert row['answer'] == '' and json.loads(row['sources_json']) == []
+        db.execute('INSERT INTO interview_completions(interview_id,recorded_by) VALUES (?,?)', (refreshed['interview']['id'], hr))
+    completed = client.get(f'/api/conversations/{chat_id}').json()['messages'][0]
+    assert completed['stage'] == 'interviewed' and completed['interview']['completed'] is True
+    assert completed['interview']['interviewer'] == 'Interviewer 1'
+    with connect(path) as db:
+        db.execute('UPDATE applications SET candidate_id=? WHERE id=?', (other, app_id))
+    assert client.get(f'/api/conversations/{chat_id}').json()['messages'][0]['mode'] == 'unavailable'
+    assert client.post('/api/auth/login', json={'username': 'other', 'password': 'password-123'}).status_code == 200
+    other_chat = client.post('/api/conversations', json={}).json()['id']
+    reassigned = ask(client, other_chat, app_id).json()
+    assert reassigned['stage'] == 'shortlisted' and reassigned['interview'] is None
+    assert 'Interviewer 1' not in json.dumps(reassigned)
+
+
+def test_status_caps_slots_and_revoked_ownership_hides_details(setup):
+    client, path, chat_id, app_id = setup
+    with connect(path) as db:
+        hr = db.execute("SELECT id FROM users WHERE username='hr'").fetchone()[0]
+        db.execute("UPDATE applications SET status='advanced',score_json='{}' WHERE id=?", (app_id,))
+        start = datetime.now(UTC) + timedelta(days=3)
+        for index in range(12):
+            when = start + timedelta(hours=index)
+            db.execute('INSERT INTO interview_slots(start_at,end_at,interviewer,interviewer_key,created_by) VALUES (?,?,?,?,?)',
+                (when.isoformat(), (when + timedelta(minutes=30)).isoformat(), f'I{index}', f'i{index}', hr))
+    response = ask(client, chat_id, app_id)
+    assert len(response.json()['available_slots']) == 10 and response.json()['slots_truncated'] is True
+    with connect(path) as db:
+        other = db.execute("INSERT INTO users(username,display_name,role,password_hash) VALUES ('other','Other','candidate',?)", (hash_password('password-123'),)).lastrowid
+        db.execute('UPDATE applications SET candidate_id=? WHERE id=?', (other, app_id))
+    message = client.get(f'/api/conversations/{chat_id}').json()['messages'][0]
+    assert message['mode'] == 'unavailable'
+    assert 'available_slots' not in message and 'interview' not in message

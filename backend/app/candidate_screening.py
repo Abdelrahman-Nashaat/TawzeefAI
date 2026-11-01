@@ -28,6 +28,12 @@ def _candidate_assessment(snapshot: dict) -> dict:
     return {
         'status': 'current',
         'bounds': {key: snapshot['bounds'][key] for key in ('minimum', 'maximum', 'coverage_percent')},
+        'components': [
+            {**{key: component[key] for key in ('category', 'weight', 'minimum_points',
+               'maximum_points', 'covered_weight', 'unconfigured')},
+             'counts': {key: component['counts'][key] for key in ('met', 'missing', 'unknown')}}
+            for component in snapshot['components']
+        ],
         'criteria': [
             {'category': item['category'], 'criterion': item['criterion'], 'status': item['status'],
              'evidence': [entry['excerpt'] for entry in item['evidence']]}

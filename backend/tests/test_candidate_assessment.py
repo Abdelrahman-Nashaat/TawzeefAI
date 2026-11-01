@@ -56,6 +56,13 @@ def test_explicit_release_and_withdrawal_are_private_and_owner_only(scenario):
     assert client.get(candidate_path).status_code == 403
     publication_path, preview, _ = release(client, app_id)
     assert preview['preview']['bounds']['minimum'] < preview['preview']['bounds']['maximum']
+    components = {item['category']: item for item in preview['preview']['components']}
+    assert components['mandatory']['weight'] == 40
+    assert components['mandatory']['minimum_points'] == components['mandatory']['maximum_points'] == 40.0
+    assert components['experience']['minimum_points'] == 0.0
+    assert components['experience']['maximum_points'] == 20.0
+    assert components['education']['unconfigured'] is True
+    assert all('claims' not in component for component in components.values())
     assert preview['preview']['criteria'][0]['evidence'] == ['Python']
     login(client, 'candidate')
     response = client.get(candidate_path)

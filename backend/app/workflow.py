@@ -117,8 +117,8 @@ def candidate_stage(db, application_id: int, candidate_id: int) -> dict:
         stage = status
     else:
         interview = db.execute("""SELECT i.id, EXISTS(SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) AS completed
-            FROM interviews i WHERE i.application_id=? AND i.status='scheduled' ORDER BY i.id DESC LIMIT 1""",
-            (application_id,)).fetchone()
+            FROM interviews i WHERE i.application_id=? AND i.candidate_id=? AND i.status='scheduled' ORDER BY i.id DESC LIMIT 1""",
+            (application_id, candidate_id)).fetchone()
         if interview:
             stage = 'interviewed' if interview['completed'] else 'interview_scheduled'
         elif status == 'advanced':

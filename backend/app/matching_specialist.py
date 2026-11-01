@@ -101,4 +101,9 @@ def matching_snapshot(db, application_id: int) -> tuple[str, dict]:
                     'assessed_at': assessment_data['created_at'],
                     'bounds': {'minimum': result['minimum_score'], 'maximum': result['maximum_score'],
                                'coverage_percent': result['coverage_percent']},
+                    'components': [
+                        {key: component[key] for key in ('category', 'weight', 'minimum_points',
+                         'maximum_points', 'covered_weight', 'counts', 'unconfigured')}
+                        for component in result['components']
+                    ],
                     'criteria': items, 'notice': notice, 'reviewed_fields': reviewed_fields}

@@ -47,6 +47,14 @@ def test_matching_graph_exposes_reviewed_evidence_and_fails_closed_on_change(tmp
         review = response.json()
         report = review['state']['matching_specialist']
         assert report['status'] == 'current'
+        components = {component['category']: component for component in report['components']}
+        assert components['mandatory'] == {'category': 'mandatory', 'weight': 40,
+            'minimum_points': 40.0, 'maximum_points': 40.0, 'covered_weight': 40.0,
+            'counts': {'met': 1, 'missing': 0, 'unknown': 0}, 'unconfigured': False}
+        assert components['projects']['minimum_points'] == 0.0
+        assert components['projects']['maximum_points'] == 15.0
+        assert components['education']['unconfigured'] is True
+        assert all('claims' not in component for component in components.values())
         assert report['bounds']['minimum'] == 40
         python = next(item for item in report['criteria'] if item['criterion_ref'] == required['criterion_ref'])
         assert python['status'] == 'met'

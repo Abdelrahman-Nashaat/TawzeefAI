@@ -27,6 +27,7 @@ from app.knowledge import (
     is_context_followup,
 )
 from app.knowledge_documents import authorized_documents_in_db
+from app.slots import candidate_available_slots
 from app.workflow import candidate_stage
 
 router = APIRouter(prefix='/api/conversations')
@@ -181,8 +182,23 @@ def _visible_status_message(db, row, user: User) -> dict:
         if user.role != 'candidate' or row['context_role'] != 'candidate' or not isinstance(row['status_application_id'], int):
             raise ValueError('Status is unavailable')
         current = candidate_stage(db, row['status_application_id'], user.id)
+        application = db.execute('SELECT status FROM applications WHERE id=? AND candidate_id=?',
+                                 (row['status_application_id'], user.id)).fetchone()
+        if application is None:
+            raise ValueError('Status is unavailable')
+        interview = None
+        if current['stage'] in ('interview_scheduled', 'interviewed'):
+            interview_row = db.execute('''SELECT i.id,i.start_at,i.end_at,i.interviewer,
+                EXISTS(SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) AS completed
+                FROM interviews i WHERE i.application_id=? AND i.candidate_id=? AND i.status='scheduled'
+                ORDER BY i.id DESC LIMIT 1''', (row['status_application_id'], user.id)).fetchone()
+            if interview_row:
+                interview = dict(interview_row)
+                interview['completed'] = bool(interview['completed'])
+        slots = candidate_available_slots(db, row['status_application_id'], user, limit=11) if application['status'] == 'advanced' else []
         label = _STAGE_LABELS[current['stage']]
         result.update({'mode': 'application_status', **current, 'answer': f'مرحلة الطلب الحالية: {label}.',
+                       'interview': interview, 'available_slots': slots[:10], 'slots_truncated': len(slots) > 10,
                        'sources': [], 'notice': 'تُعرض المرحلة الحالية عند فتح المحادثة وقد تتغير.'})
     except (HTTPException, ValueError, KeyError):
         result.update({'mode': 'unavailable', 'answer': 'حالة هذا الطلب لم تعد متاحة.', 'sources': [], 'notice': None})
