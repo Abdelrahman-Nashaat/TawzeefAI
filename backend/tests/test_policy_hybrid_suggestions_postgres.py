@@ -129,6 +129,10 @@ def test_real_hybrid_answer_uses_current_source_and_reports_uncertainty(tmp_path
         body = response.json()
         assert body['mode'] == 'groq' and 'relevance' in body['notice']
         assert len(body['sources']) == 1 and body['sources'][0]['id'].startswith(f'db-doc-{doc_id}-')
+        response = client.post(endpoint, json={'question': 'Is manager consent needed to work from home?', 'mode': 'policy'})
+        assert response.status_code == 201
+        assert response.json()['mode'] == 'groq'
+        assert response.json()['sources'][0]['id'].startswith(f'db-doc-{doc_id}-')
         with connect(client.app.state.database_path) as db:
             db.execute("UPDATE knowledge_documents SET audience='hr' WHERE id=?", (doc_id,))
         history = client.get(f'/api/conversations/{conversation}').json()['messages'][0]

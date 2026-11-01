@@ -52,3 +52,41 @@ line and questions. A provider failure or malformed selection is not a passing
 answer; the application abstains for the experimental path. Additional blinded,
 independently labelled multilingual cases, contradictions, conflicting source
 policies, and end-to-end human answer review are required before relying on it.
+
+## Follow-up candidate threshold diagnostic
+
+On 1 November 2026, a follow-up run used the same single fictional policy and
+the same full conversation endpoint, Groq model, local embedding model and
+disposable PostgreSQL/pgvector setup. The earlier consent question had cosine
+similarity 0.8285 and was excluded by the 0.85 vector cutoff; the original
+remote-work question scored 0.8513. The separately opted-in experimental
+answer path now uses 0.82 to select possible passages for model review. This
+cutoff was chosen using the consent example and is **not** an independently
+validated support threshold. Independent search and the suggestion-only path
+retain 0.85. Candidate retrieval still includes lexical matches, so neither
+cutoff proves that a selected paragraph answers a question.
+
+The complete conversation returned exact source lines for both original
+supported questions and abstained on the original eight unsupported cases.
+Eight further draft-labelled questions were added after choosing the cutoff:
+
+| Added case | Draft label | Full endpoint outcome |
+| --- | --- | --- |
+| `additional-days` | Supported | Source line returned |
+| `additional-approval` | Supported | Source line returned |
+| `additional-permission` | Supported | Source line returned |
+| `additional-ar-consent` | Supported | Abstained |
+| `additional-hours` | Unsupported | Abstained |
+| `additional-transport` | Unsupported | Abstained after model error or invalid tool response |
+| `additional-salary` | Unsupported | Abstained |
+| `additional-ar-equipment` | Unsupported | Abstained |
+
+The added cases use the same policy and were authored by the development
+team, without independent review; they are not a blinded or independent test
+set. The provider-error case is an operational failure, not evidence that the
+model correctly recognized unsupported content. The supported Arabic question
+remained unanswered. Results can vary between model calls. A real PostgreSQL
+test with the local model and a mocked selector separately verified that the
+consent passage becomes eligible at the new cutoff. More multilingual policies,
+conflicting documents, human-reviewed holdout cases and answer-quality
+evaluation remain necessary before relying on this experimental path.

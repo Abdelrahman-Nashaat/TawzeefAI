@@ -725,7 +725,7 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
           const item = element("div");
           item.append(element("p", "resume-preview", excerpt));
           item.append(element("p", "subtle-note", candidate.section === "unclassified" ? "Source: unclassified résumé text" : `Source section: ${candidate.section || "unknown"}`));
-          if (Number.isFinite(similarity)) item.append(element("p", "subtle-note", `درجة التشابه: ${similarity.toFixed(2)}؛ ليست تقييمًا للمؤهل.`));
+          if (Number.isFinite(similarity)) item.append(element("p", "subtle-note", `Similarity: ${similarity.toFixed(2)} for the matched passage; surrounding text is context. This is not a qualification assessment.`));
           const accept = element("button", "outline-button", "حفظ المقتطف بعد مراجعته"); accept.type = "button";
           accept.addEventListener("click", async () => {
             if (revision !== criteriaRevision || !target.isConnected || !accept.isConnected) {
@@ -1518,6 +1518,13 @@ const workflowLabels = {
   screen: "فحص السيرة",
   human_review: "مراجعة بشرية",
   schedule_interview: "جدولة مقابلة",
+  await_interview: "Wait for the scheduled interview",
+  confirm_interview: "Confirm whether the interview took place",
+  review_interview: "Review the interview details",
+  prepare_offer: "Review the interview and prepare an offer",
+  await_offer_response: "Wait for the candidate to respond to the offer",
+  finalize_hire: "Review the accepted offer and record the hiring decision",
+  review_offer: "Review the offer status",
   human_decision: "القرار البشري النهائي",
   complete: "اكتملت المعالجة"
 };
@@ -1535,7 +1542,7 @@ async function loadWorkflow(target, applicationId, detailTarget, role) {
 
 function renderWorkflow(target, state, applicationId, detailTarget, role) {
   const heading = element("h4", "", "خطة متابعة الطلب");
-  const note = element("p", "subtle-note", "خطة ثابتة تعتمد على حالة الطلب؛ المراجع يقرر ويحجز المقابلات يدويًا.");
+  const note = element("p", "subtle-note", "The next step reflects recorded application, interview, and offer status. Some steps wait for the candidate; HR decisions remain manual.");
   const plan = element("ol", "evidence-list");
   for (const step of state.plan || []) plan.append(element("li", "", workflowLabels[step] || step));
   const next = element("p", "result-badge", `الخطوة التالية: ${workflowLabels[state.next_step] || state.next_step}`);
@@ -1555,6 +1562,10 @@ function renderWorkflow(target, state, applicationId, detailTarget, role) {
       } finally { run.disabled = false; }
     });
     target.append(run);
+  } else if (state.next_step === "await_interview") {
+    target.append(element("p", "subtle-note", "The interview is scheduled; wait until it ends before confirming completion."));
+  } else if (state.next_step === "await_offer_response") {
+    target.append(element("p", "subtle-note", "The offer has been presented; wait for the candidate to respond."));
   } else if (state.next_step !== "complete") {
     target.append(element("p", "subtle-note", "هذه الخطوة تحتاج إجراءً من موظف الموارد البشرية."));
   }

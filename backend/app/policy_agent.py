@@ -149,7 +149,7 @@ def _search_query(message: dict, question: str) -> str | None:
     return query.strip()
 
 
-def _policy_hybrid(path: str | Path, role: str, question: str) -> dict:
+def _policy_hybrid(path: str | Path, role: str, question: str, min_similarity: float = 0.85) -> dict:
     """Use the shared experimental index with a server-owned handbook filter."""
     from app.hybrid_api import _busy, _load_model
 
@@ -166,7 +166,7 @@ def _policy_hybrid(path: str | Path, role: str, question: str) -> dict:
         model = _load_model(directory)
         with psycopg.connect(autocommit=True, connect_timeout=3) as connection:
             return search_postgres(path, role, question, model, connection,
-                                   collection='handbook', limit=10)
+                                   collection='handbook', limit=10, min_similarity=min_similarity)
     finally:
         _busy.release()
 
@@ -277,7 +277,12 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
     suggested = []
     if os.environ.get('TAWZEEF_USE_POLICY_HYBRID') == '1' or ((hybrid_suggestions or hybrid_answers) and not candidates):
         try:
-            result = _policy_hybrid(path, user.role, question)
+            # The lower cutoff supplies model-reviewed candidates only to the
+            # separately opted-in experimental answer path. It is not a
+            # semantic support threshold and is intentionally not shared with
+            # the independent search and suggestions endpoints.
+            threshold = 0.82 if hybrid_answers and not candidates else 0.85
+            result = _policy_hybrid(path, user.role, question, threshold)
             if not isinstance(result, dict) or not isinstance(result.get('sources'), list):
                 raise TypeError('Invalid hybrid result')
             rows = result['sources'][:10]

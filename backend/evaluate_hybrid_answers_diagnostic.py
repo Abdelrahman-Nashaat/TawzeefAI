@@ -26,6 +26,14 @@ CASES = [
     ('electricity', 'Does the company reimburse electricity used while working from home?', False),
     ('denial', 'Can managers deny a request to work from home without giving a reason?', False),
     ('childcare', 'Does working from home include a childcare allowance?', False),
+    ('additional-days', 'How many days can staff do their jobs from home?', True),
+    ('additional-approval', 'Must staff obtain approval before working remotely?', True),
+    ('additional-permission', 'Does a supervisor need to permit work from home?', True),
+    ('additional-ar-consent', '\u0647\u0644 \u064a\u062d\u062a\u0627\u062c \u0627\u0644\u0645\u0648\u0638\u0641 \u0625\u0644\u0649 \u0645\u0648\u0627\u0641\u0642\u0629 \u0627\u0644\u0645\u062f\u064a\u0631 \u0644\u0644\u0639\u0645\u0644 \u0645\u0646 \u0627\u0644\u0645\u0646\u0632\u0644\u061f', True),
+    ('additional-hours', 'What are the working hours for staff working from home?', False),
+    ('additional-transport', 'Is commuting reimbursement provided to remote workers?', False),
+    ('additional-salary', 'Does the manager grant extra salary for working remotely?', False),
+    ('additional-ar-equipment', '\u0647\u0644 \u062a\u0648\u0641\u0631 \u0627\u0644\u0634\u0631\u0643\u0629 \u062d\u0627\u0633\u0648\u0628\u0627 \u0644\u0644\u0639\u0645\u0644 \u0645\u0646 \u0627\u0644\u0645\u0646\u0632\u0644\u061f', False),
 ]
 
 

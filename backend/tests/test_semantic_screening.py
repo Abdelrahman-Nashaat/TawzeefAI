@@ -204,3 +204,31 @@ def test_long_unclassified_line_is_bounded_without_duplicate_spans():
     assert all(passages[i]['start'] < passages[i + 1]['start'] <= passages[i]['end']
                for i in range(len(passages) - 1))
     assert all(p['section'] == 'unclassified' and source[p['start']:p['end']] == p['excerpt'] for p in passages)
+
+
+def test_semantic_suggestions_keep_adjacent_negation_context(monkeypatch):
+    from app import semantic_screening
+
+    monkeypatch.setenv('TAWZEEF_ENABLE_SEMANTIC_SCREENING', '1')
+    monkeypatch.setenv('TAWZEEF_EMBEDDING_MODEL_DIR', 'local-model')
+    monkeypatch.setattr(semantic_screening, '_model', lambda directory: FakeLocalModel())
+    source = 'Experience\nI have never worked with\nPython\nProjects\nBuilt a Java app'
+    result = semantic_screening.suggest(source, [{'label': 'Python'}])[0]['candidates']
+    assert result
+    assert 'I have never worked with\nPython' in result[0]['excerpt']
+    assert all(source[item['start']:item['end']] == item['excerpt'] for item in result)
+    assert source[result[0]['matched_start']:result[0]['matched_end']] == 'Python'
+    assert result[0]['start'] <= result[0]['matched_start'] < result[0]['matched_end'] <= result[0]['end']
+    assert all('Projects' not in item['excerpt'] for item in result)
+
+
+def test_semantic_suggestions_diversify_overlapping_windows(monkeypatch):
+    from app import semantic_screening
+
+    monkeypatch.setenv('TAWZEEF_ENABLE_SEMANTIC_SCREENING', '1')
+    monkeypatch.setenv('TAWZEEF_EMBEDDING_MODEL_DIR', 'local-model')
+    monkeypatch.setattr(semantic_screening, '_model', lambda directory: FakeLocalModel())
+    source = 'Skills\n' + 'Python ' * 150 + '\nExperience\nPython project with a separate team'
+    result = semantic_screening.suggest(source, [{'label': 'Python'}])[0]['candidates']
+    assert any('separate team' in item['excerpt'] for item in result)
+    assert all(source[item['start']:item['end']] == item['excerpt'] for item in result)

@@ -41,7 +41,7 @@ def test_workflow_screens_once_then_waits_for_hr_and_scheduling(tmp_path, accept
             'end_at': '2099-01-01T11:00:00Z', 'interviewer': 'Demo HR',
         })
         assert created.status_code == 201
-        assert client.get(path).json()['next_step'] == 'human_decision'
+        assert client.get(path).json()['next_step'] == 'await_interview'
         assert client.post(f"/api/interviews/{created.json()['id']}/cancel").status_code == 200
         assert client.get(path).json()['next_step'] == 'schedule_interview'
         second = client.post('/api/interviews', json={

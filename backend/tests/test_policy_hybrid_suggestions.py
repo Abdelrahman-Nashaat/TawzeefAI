@@ -211,3 +211,20 @@ def test_hybrid_answer_requires_explicit_caller_opt_in(setup, monkeypatch):
     monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: pytest.fail('Unexpected model selection'))
     result = policy_agent.run_policy_agent(path, users['employee'], 'Can employees work from home?', enabled=True)
     assert result.answer.mode == 'abstain' and not result.answer.sources
+
+
+def test_lower_threshold_is_confined_to_opted_in_model_answer_candidates(setup, monkeypatch):
+    path, users, _, source, _, _ = setup
+    enable_hybrid_answers(monkeypatch, [source])
+    thresholds = []
+    monkeypatch.setattr(policy_agent, '_policy_hybrid', lambda _path, _role, _question, threshold:
+                        thresholds.append(threshold) or {'sources': [source]})
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: '{"quotes":[]}')
+    question = 'Can employees work from home?'
+    result = policy_agent.run_policy_agent(path, users['employee'], question, enabled=True,
+                                           allow_hybrid_answers=True)
+    assert result.answer.mode == 'abstain' and thresholds == [0.82]
+    thresholds.clear()
+    monkeypatch.setenv('TAWZEEF_POLICY_HYBRID_SUGGESTIONS', '1')
+    result = policy_agent.run_policy_agent(path, users['employee'], question, enabled=True)
+    assert result.answer.mode == 'abstain' and thresholds == [0.85]

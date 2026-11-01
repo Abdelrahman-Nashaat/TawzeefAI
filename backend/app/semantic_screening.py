@@ -82,6 +82,25 @@ def _passages(source: str) -> list[dict]:
     return result
 
 
+def _contextual_passage(source: str, passages: list[dict], index: int) -> dict:
+    """Include adjacent lines from the same section when they fit in the span."""
+    item = passages[index]
+    start, end = item['start'], item['end']
+    if index:
+        previous = passages[index - 1]
+        gap = source[previous['end']:start] if previous['end'] <= start else ''
+        if (previous['section'] == item['section'] and re.fullmatch(r'[ \t]*\r?\n[ \t]*', gap)
+                and end - previous['start'] <= 500):
+            start = previous['start']
+    if index + 1 < len(passages):
+        following = passages[index + 1]
+        gap = source[end:following['start']] if end <= following['start'] else ''
+        if (following['section'] == item['section'] and re.fullmatch(r'[ \t]*\r?\n[ \t]*', gap)
+                and following['end'] - start <= 500):
+            end = following['end']
+    return {**item, 'start': start, 'end': end, 'excerpt': source[start:end]}
+
+
 def suggest(source: str, criteria: list[dict]) -> list[dict]:
     """Return up to three candidate source spans for each criterion.
 
@@ -115,10 +134,27 @@ def suggest(source: str, criteria: list[dict]) -> list[dict]:
             similarities = (queries @ vectors.T) / (query_norms[:, None] * passage_norms[None, :])
             for index, row in enumerate(similarities):
                 ranked = sorted(range(len(passages)), key=lambda i: (-float(row[i]), passages[i]['start']))
-                for item in ranked[:3]:
-                    similarity = float(row[item])
-                    if similarity >= MIN_SIMILARITY:
-                        result[index]['candidates'].append({**passages[item], 'similarity': round(similarity, 4)})
+                seen_lines = set()
+                for require_new_line in (True, False):
+                    for item in ranked:
+                        similarity = float(row[item])
+                        if similarity < MIN_SIMILARITY:
+                            break
+                        line = source.rfind('\n', 0, passages[item]['start']) + 1
+                        if require_new_line and line in seen_lines:
+                            continue
+                        contextual = _contextual_passage(source, passages, item)
+                        if any(contextual['start'] < prior['end'] and prior['start'] < contextual['end']
+                               for prior in result[index]['candidates']):
+                            continue
+                        result[index]['candidates'].append({**contextual, 'similarity': round(similarity, 4),
+                                                            'matched_start': passages[item]['start'],
+                                                            'matched_end': passages[item]['end']})
+                        seen_lines.add(line)
+                        if len(result[index]['candidates']) == 3:
+                            break
+                    if len(result[index]['candidates']) == 3:
+                        break
         except Exception as exc:
             # Avoid revealing source text, filesystem paths, or model errors.
             raise HTTPException(status_code=503, detail='Experimental semantic screening is unavailable') from exc
