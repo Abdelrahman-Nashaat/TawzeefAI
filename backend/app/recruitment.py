@@ -63,7 +63,7 @@ def normalize(value: str) -> str:
 
 
 def contains(text: str, phrase: str) -> bool:
-    # Latin token boundaries allow Arabic conjunctions such as وHTML while
+    # Latin token boundaries allow an Arabic conjunction attached to HTML while
     # still preventing SQL matching the separate word NoSQL.
     boundary = r"[a-z0-9_]" if phrase.isascii() else r"\w"
     return re.search(rf"(?<!{boundary})" + re.escape(phrase) + rf"(?!{boundary})", text) is not None
@@ -431,6 +431,21 @@ def decide(application_id: int, payload: Decision, request: Request, user: HR):
                     "INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",
                     (application_id, user.id, "interview_cancelled", json.dumps({"interview_id": interview["id"], "reason": "application_rejected"})),
                 )
+        if payload.decision in ('hire', 'reject'):
+            # Private availability for a finalized application cannot be booked.
+            # Release only future, unbooked (or already cancelled) windows;
+            # keep general slots and scheduled interviews under their existing
+            # cancellation/Google reconciliation rules.
+            now = utc_text(datetime.now(UTC))
+            private_slots = db.execute("""SELECT s.id FROM interview_slots s
+                LEFT JOIN interviews i ON i.id=s.interview_id
+                WHERE s.target_application_id=? AND s.withdrawn=0 AND s.start_at>?
+                  AND (s.interview_id IS NULL OR i.status='cancelled')""",
+                (application_id, now)).fetchall()
+            for slot in private_slots:
+                db.execute('UPDATE interview_slots SET withdrawn=1 WHERE id=?', (slot['id'],))
+                db.execute('INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (?,?,?)',
+                           (slot['id'], user.id, 'slot_withdrawn'))
         _require_current_role(db, request, user, 'hr')
         return application_view(get_application(db, application_id), user)
 
