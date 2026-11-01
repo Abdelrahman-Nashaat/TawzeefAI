@@ -9,7 +9,7 @@ from hashlib import sha256
 from pathlib import Path, PurePath
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.auth import (
@@ -133,8 +133,8 @@ def score_resume(job: dict, text: str) -> dict:
 def screening_audit_details(score: dict, serialized: str) -> str:
     """Record screening metadata without duplicating résumé excerpts in audit.
 
-    The digest identifies the exact serialized result stored on the application;
-    it does not retain previous results after the application is screened again.
+    The digest identifies the exact serialized result stored on the application
+    and, for new screenings, the restricted historical snapshot.
     """
     required = score['required']
     preferred = score['preferred']
@@ -148,6 +148,16 @@ def screening_audit_details(score: dict, serialized: str) -> str:
         'preferred_total': len(preferred),
         'result_sha256': sha256(serialized.encode('utf-8')).hexdigest(),
     }, ensure_ascii=False)
+
+
+def store_screening(db, application_id: int, actor_id: int, score: dict) -> None:
+    """Atomically store the current score, audit event, and historical result."""
+    serialized = json.dumps(score, ensure_ascii=False)
+    db.execute("UPDATE applications SET score_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?", (serialized, application_id))
+    event = db.execute("INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",
+                       (application_id, actor_id, 'screened', screening_audit_details(score, serialized)))
+    db.execute('INSERT INTO screening_history(audit_event_id,score_json) VALUES (?,?)',
+               (event.lastrowid, serialized))
 
 
 def application_view(row, user: User) -> dict:
@@ -282,10 +292,43 @@ def screen(application_id: int, request: Request, user: HR):
         row = get_application(db, application_id)
         job = job_data(db.execute("SELECT * FROM jobs WHERE id = ?", (row["job_id"],)).fetchone())
         score = score_resume(job, row["resume_text"])
-        serialized = json.dumps(score, ensure_ascii=False)
-        db.execute("UPDATE applications SET score_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?", (serialized, application_id))
-        db.execute("INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)", (application_id, user.id, "screened", screening_audit_details(score, serialized)))
+        store_screening(db, application_id, user.id, score)
+        _require_current_role(db, request, user, 'hr')
         return score
+
+
+@router.get('/applications/{application_id}/screening-history')
+def screening_history(application_id: int, request: Request, user: HR,
+                      limit: int = Query(default=20, ge=1, le=100),
+                      before: int | None = Query(default=None, ge=1)):
+    """Return historical results only to HR; snapshots may contain résumé excerpts."""
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _require_current_role(db, request, user, 'hr')
+        get_application(db, application_id)
+        rows = db.execute('''SELECT a.id,a.actor_id,a.created_at,a.details,h.score_json
+            FROM audit_events a LEFT JOIN screening_history h ON h.audit_event_id=a.id
+            WHERE a.application_id=? AND a.action='screened' AND (? IS NULL OR a.id<?)
+            ORDER BY a.id DESC LIMIT ?''', (application_id, before, before, limit + 1)).fetchall()
+        entries = []
+        for row in rows[:limit]:
+            status, result = 'legacy_unavailable', None
+            if row['score_json'] is not None:
+                status = 'integrity_error'
+                try:
+                    expected = json.loads(row['details'])['result_sha256']
+                    decoded = json.loads(row['score_json'])
+                    if (isinstance(decoded, dict) and isinstance(expected, str) and
+                            sha256(row['score_json'].encode('utf-8')).hexdigest() == expected):
+                        status, result = 'available', decoded
+                except (TypeError, ValueError, KeyError):
+                    pass
+            entries.append({'audit_event_id': row['id'], 'actor_id': row['actor_id'],
+                            'created_at': row['created_at'], 'status': status, 'result': result})
+        _require_current_role(db, request, user, 'hr')
+        return {'entries': entries, 'next_before': rows[limit - 1]['id'] if len(rows) > limit else None,
+                'notice': 'Historical keyword screening results may contain partially redacted résumé excerpts. '
+                          'They are not verified qualifications or hiring decisions.'}
 
 
 class OfferCreate(BaseModel):

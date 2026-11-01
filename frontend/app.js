@@ -812,6 +812,8 @@ function setupGraphReview(target, application) {
   }
   const privateSlotOption = element("option", "", "Propose a slot for this candidate only");
   privateSlotOption.value = "create_private_slot"; intent.append(privateSlotOption);
+  const advanceOption = element("option", "", "Review and advance this application");
+  advanceOption.value = "advance_application"; intent.append(advanceOption);
   intentLabel.append(intent);
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
   const question = element("textarea"); question.maxLength = 2000; question.placeholder = "يمكن تركه فارغًا"; questionLabel.append(question);
@@ -842,6 +844,8 @@ function setupGraphReview(target, application) {
   const output = element("div"); output.setAttribute("aria-live", "polite");
   target.replaceChildren(title, note, message, form, restore, output);
   const labels = { parser: "قراءة النص المستخرج", matching: "فحص المهارات المذكورة", policy: "بحث السياسة المحلي", scheduler: "استعراض المواعيد المحلية", status: "حالة الطلب", agent_review: "مساعد أدوات القراءة", prepare_slot: "تجهيز مقترح الموعد", human_review: "مراجعة بشرية", execute_slot: "إضافة الموعد بعد الموافقة" };
+  labels.prepare_advance = "Prepare advancement proposal";
+  labels.execute_advance = "Advance after HR approval";
   function report(text, error = false) { message.textContent = text; message.className = error ? "form-error" : "subtle-note"; }
   function remember(id) { try { sessionStorage.setItem(storageKey, id); } catch { /* Manual restore remains available. */ } }
   function display(review) {
@@ -947,16 +951,24 @@ function setupGraphReview(target, application) {
         element("p", "", `المحاور: ${proposal.slot.interviewer}`),
         element("p", "subtle-note", proposal.type === "create_private_slot" ? "Approval makes this slot available only to the candidate for this application. It does not book the interview or send a message." : "Approval makes this slot available to all eligible candidates. It does not book the interview or send a message."));
     }
+    if (proposal?.type === "advance_application") {
+      output.append(element("h4", "", "Proposed application advancement"),
+        element("p", "", `Application #${proposal.application_id}: ${proposal.current_status} → ${proposal.target_status}`),
+        element("p", "subtle-note", "Approval advances this application for scheduling. It does not book an interview, send a message, or make a hiring decision."));
+    }
     if (result?.status === "created") output.append(element("p", "result-badge", proposal?.type === "create_private_slot" ? "The candidate-specific slot was added after approval." : "The shared slot was added after approval."));
-    else if (result?.status === "declined") output.append(element("p", "result-badge", "رُفض المقترح ولم يُضف موعد."));
-    if (review.awaiting_review && (proposal || ["create_slot", "create_private_slot"].includes(review.state.intent))) {
+    else if (result?.status === "advanced") output.append(element("p", "result-badge", "The application was advanced after HR approval."));
+    else if (result?.status === "declined") output.append(element("p", "result-badge", "The proposal was declined; no action was taken."));
+    if (review.awaiting_review && (proposal || ["create_slot", "create_private_slot", "advance_application"].includes(review.state.intent))) {
       output.append(element("p", "result-badge", "المقترح بانتظار قرار الموارد البشرية."));
       const validScope = (proposal?.type === "create_slot" && proposal.availability_scope === "all_eligible_candidates") || (proposal?.type === "create_private_slot" && proposal.availability_scope === "selected_application_only");
-      if (!validScope || proposal.application_id !== application.id || !proposal.slot?.start_at || !proposal.slot?.end_at || !proposal.slot?.interviewer || !proposal.approval_fingerprint) {
+      const validSlot = validScope && proposal.slot?.start_at && proposal.slot?.end_at && proposal.slot?.interviewer;
+      const validAdvance = proposal?.type === "advance_application" && proposal.current_status === "submitted" && proposal.target_status === "advanced" && Number.isInteger(proposal.assessment_id) && proposal.assessment_id > 0;
+      if ((!validSlot && !validAdvance) || proposal.application_id !== application.id || !proposal.approval_fingerprint) {
         output.append(element("p", "form-error", "تعذّرت مراجعة تفاصيل المقترح بأمان. أعد تحميل المراجعة."));
         return;
       }
-      const approve = element("button", "small-button", "أوافق على إضافة هذا الموعد"); approve.type = "button";
+      const approve = element("button", "small-button", validAdvance ? "Approve advancement" : "Approve this slot"); approve.type = "button";
       const decline = element("button", "outline-button", "أرفض المقترح"); decline.type = "button";
       if (review.state.plan_stale) { approve.disabled = true; decline.disabled = true; }
       async function decide(reviewed) {
@@ -1108,6 +1120,9 @@ function renderApplicationDetail(target, application, role) {
     panel.append(reviewFieldsPanel);
     loadResumeFieldReview(reviewFieldsPanel, application.id);
     const result = element("div"); panel.append(result); renderScore(result, application.score);
+    const historyPanel = element("section", "application-detail");
+    historyPanel.setAttribute("aria-label", "Screening history");
+    panel.append(historyPanel); setupScreeningHistory(historyPanel, application.id);
     const rubricPanel = element("section", "application-detail");
     rubricPanel.setAttribute("aria-label", "التقييم الموزون بالمراجعة البشرية");
     panel.append(rubricPanel);
@@ -1542,6 +1557,55 @@ function renderWorkflow(target, state, applicationId, detailTarget, role) {
   } else if (state.next_step !== "complete") {
     target.append(element("p", "subtle-note", "هذه الخطوة تحتاج إجراءً من موظف الموارد البشرية."));
   }
+}
+
+function setupScreeningHistory(target, applicationId) {
+  const heading = element("h4", "", "Screening history");
+  const note = element("p", "subtle-note", "HR-only snapshots may contain identifying résumé excerpts and remain in the local database until it is removed. Redaction is partial. Older screenings may not have a retained result.");
+  const list = element("div");
+  const button = element("button", "outline-button", "Load screening history"); button.type = "button";
+  const refresh = element("button", "outline-button", "Refresh history"); refresh.type = "button";
+  let cursor = null;
+  refresh.addEventListener("click", () => {
+    cursor = null; list.replaceChildren(); button.hidden = false; button.disabled = false;
+    button.textContent = "Load screening history"; button.click();
+  });
+  button.addEventListener("click", async () => {
+    button.disabled = true; refresh.disabled = true;
+    try {
+      const query = cursor === null ? "" : `?before=${encodeURIComponent(cursor)}`;
+      const page = await api(`/api/applications/${encodeURIComponent(applicationId)}/screening-history${query}`);
+      if (!target.isConnected) return;
+      for (const entry of page.entries) {
+        const record = element("section", "application-detail");
+        record.append(element("p", "", `Screening #${entry.audit_event_id} · ${displayDate(entry.created_at)} · reviewer #${entry.actor_id}`));
+        if (entry.status === "available" && entry.result) {
+          record.append(element("p", "result-badge", `Required skill mentions: ${entry.result.score}%`));
+          record.append(element("p", "subtle-note", `Method: keyword mentions · Evidence status: ${entry.result.evidence_status || "unknown"}`));
+          for (const [label, items] of [["Required skills", entry.result.required], ["Preferred skills", entry.result.preferred]]) {
+            const evidence = element("ul", "evidence-list");
+            for (const item of items || []) {
+              const row = element("li", "", `${item.skill}: ${item.mentioned ? "mentioned" : "not found"}`);
+              for (const excerpt of item.evidence || []) row.append(element("p", "", String(excerpt)));
+              evidence.append(row);
+            }
+            record.append(element("h5", "", label), evidence);
+          }
+          const details = element("details");
+          details.append(element("summary", "", "Show complete retained result"), element("pre", "resume-preview", JSON.stringify(entry.result, null, 2)));
+          record.append(details);
+        } else record.append(element("p", "subtle-note", entry.status === "integrity_error" ? "The retained result could not be verified." : "No historical result was retained for this screening."));
+        list.append(record);
+      }
+      if (!page.entries.length && cursor === null) list.append(element("p", "subtle-note", "No screening history is available."));
+      cursor = page.next_before;
+      if (cursor === null) button.hidden = true; else { button.textContent = "Load older screenings"; button.disabled = false; }
+    } catch (error) {
+      if (!isStale(error) && target.isConnected) list.append(element("p", "form-error", "Unable to load screening history."));
+      button.disabled = false;
+    } finally { refresh.disabled = false; }
+  });
+  target.replaceChildren(heading, note, button, refresh, list);
 }
 
 function renderScore(target, score) {

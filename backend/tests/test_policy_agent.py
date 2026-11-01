@@ -73,13 +73,13 @@ def test_model_tool_and_citations_are_validated(policy_setup, monkeypatch):
     monkeypatch.setenv('GROQ_API_KEY', 'test-key')
     monkeypatch.setattr(policy_agent, '_request_search', lambda q, k: tool('annual leave'))
     def answer(question, passages):
-        return 'Verify the entitlement [' + passages[0]['id'] + ']'
-    monkeypatch.setattr(policy_agent, 'generate_with_groq', answer)
+        return json.dumps({'quotes': [{'source_id': passages[0]['id'], 'quote': passages[0]['text']}]})
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', answer)
     result = policy_agent.run_policy_agent(path, users['employee'], 'What is annual leave?', enabled=True)
     assert result.answer.mode == 'groq'
     assert result.tool_trace == ['search_policy']
     assert result.answer.sources
-    monkeypatch.setattr(policy_agent, 'generate_with_groq', lambda *_: 'Fake [not-a-source]')
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: 'Fake [not-a-source]')
     result = policy_agent.run_policy_agent(path, users['employee'], 'What is annual leave?', enabled=True)
     assert result.answer.mode == 'extractive'
     assert 'Fake' not in result.answer.answer
@@ -89,13 +89,36 @@ def test_invalid_tool_and_added_search_words_fall_back_locally(policy_setup, mon
     path, users, _ = policy_setup
     monkeypatch.setenv('GROQ_API_KEY', 'test-key')
     monkeypatch.setattr(policy_agent, '_request_search', lambda q, k: tool('annual leave salary'))
-    monkeypatch.setattr(policy_agent, 'generate_with_groq', lambda *_: 'Invented [fake]')
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: 'Invented [fake]')
     result = policy_agent.run_policy_agent(path, users['employee'], 'annual leave', enabled=True)
     assert result.answer.mode == 'extractive'
     assert all('salary' not in source.text.lower() for source in result.answer.sources)
     monkeypatch.setattr(policy_agent, '_request_search', lambda q, k: {'tool_calls': [{'type': 'function', 'function': {'name': 'send_email', 'arguments': '{}'}}]})
     result = policy_agent.run_policy_agent(path, users['employee'], 'annual leave', enabled=True)
     assert result.answer.mode == 'extractive'
+
+
+def test_model_cannot_attach_a_real_source_id_to_invented_entitlement(policy_setup, monkeypatch):
+    path, users, _ = policy_setup
+    monkeypatch.setenv('GROQ_API_KEY', 'test-key')
+    monkeypatch.setattr(policy_agent, '_request_search', lambda q, k: tool('annual leave'))
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda q, sources: json.dumps({
+        'quotes': [{'source_id': sources[0]['id'], 'quote': 'Annual leave provides unlimited paid days.'}],
+    }))
+    result = policy_agent.run_policy_agent(path, users['employee'], 'annual leave', enabled=True)
+    assert result.answer.mode == 'extractive'
+    assert 'unlimited' not in result.answer.answer
+    assert 'could not be verified' in result.answer.notice
+
+
+def test_model_empty_selection_causes_abstention(policy_setup, monkeypatch):
+    path, users, _ = policy_setup
+    monkeypatch.setenv('GROQ_API_KEY', 'test-key')
+    monkeypatch.setattr(policy_agent, '_request_search', lambda q, k: tool('annual leave'))
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: '{"quotes":[]}')
+    result = policy_agent.run_policy_agent(path, users['employee'], 'annual leave', enabled=True)
+    assert result.answer.mode == 'abstain'
+    assert result.answer.sources == []
 
 
 def test_model_abstention_never_returns_unverified_text(policy_setup, monkeypatch):
@@ -116,7 +139,7 @@ def test_revoked_or_reclassified_source_cannot_be_returned(policy_setup, monkeyp
         with connect(path) as db:
             db.execute("UPDATE knowledge_documents SET collection='job_description' WHERE id=?", (staff,))
         return 'Entitlement [' + passages[0]['id'] + ']'
-    monkeypatch.setattr(policy_agent, 'generate_with_groq', revoke)
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', revoke)
     with pytest.raises(PermissionError):
         policy_agent.run_policy_agent(path, users['employee'], 'annual leave', enabled=True)
 
@@ -130,7 +153,7 @@ def test_session_rechecked_before_sending(policy_setup, monkeypatch):
         if len(calls) == 2:
             raise PermissionError('revoked')
     monkeypatch.setattr(policy_agent, '_request_search', lambda q, k: tool('annual leave'))
-    monkeypatch.setattr(policy_agent, 'generate_with_groq', lambda *_: pytest.fail('unauthorized send'))
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: pytest.fail('unauthorized send'))
     with pytest.raises(PermissionError):
         policy_agent.run_policy_agent(path, users['employee'], 'annual leave', enabled=True, authorize=check)
 

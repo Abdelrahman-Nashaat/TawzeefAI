@@ -23,7 +23,7 @@ def test_graph_calls_policy_agent_and_rechecks_policy_scope(tmp_path, monkeypatc
         return f"model-answer-marker [{passages[0]['id']}]"
 
     monkeypatch.setattr(policy_agent, '_request_search', plan)
-    monkeypatch.setattr(policy_agent, 'generate_with_groq', generate)
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', generate)
     with TestClient(create_app(path, seed_demo=True)) as client:
         assert client.post('/api/auth/login', json={'username': 'hr', 'password': 'hr-demo-only'}).status_code == 200
         with connect(path) as db:

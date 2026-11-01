@@ -73,5 +73,11 @@ def initialize(path: str | Path) -> None:
                 details TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
+            CREATE TABLE IF NOT EXISTS screening_history (
+                audit_event_id INTEGER PRIMARY KEY REFERENCES audit_events(id),
+                score_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS screened_history_application
+                ON audit_events(application_id, action, id DESC);
             """
         )

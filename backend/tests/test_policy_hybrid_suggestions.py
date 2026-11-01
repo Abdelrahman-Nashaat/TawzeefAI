@@ -44,7 +44,7 @@ def test_suggestions_require_explicit_opt_in_and_never_become_an_answer(setup, m
     monkeypatch.setenv('GROQ_API_KEY', 'dummy')
     monkeypatch.setattr(policy_agent, '_request_search', lambda *_: {'tool_calls': [{'type': 'function', 'function': {
         'name': 'search_policy', 'arguments': '{"query":"work from home"}'}}]})
-    monkeypatch.setattr(policy_agent, 'generate_with_groq', lambda *_: pytest.fail('Unverified suggestions sent to model'))
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: pytest.fail('Unverified suggestions sent to model'))
     monkeypatch.setattr(policy_agent, '_policy_hybrid', lambda *_: {'sources': [secret, source,
         {**source, 'text': 'forged'}, {**source, 'collection': 'job_description'}, source]})
     result = policy_agent.run_policy_agent(path, users['employee'], 'Can employees work from home?', enabled=True)
