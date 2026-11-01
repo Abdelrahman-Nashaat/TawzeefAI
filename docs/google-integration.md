@@ -43,7 +43,7 @@ Gmail API enabled, an OAuth consent configuration, and an OAuth client of type
 Desktop app. Add the intended Google account as a test user if the consent
 configuration requires it. Download its client JSON to a private local location
 outside the repository; do not paste the file contents into chat or commit it.
-The app's OAuth client is separate from any Codex Gmail or Calendar connector.
+The app's OAuth client is separate from any connected Gmail or Calendar integration.
 
 With the project's Windows Python environment and optional Google dependencies
 installed, the following commands initiate separate consent flows, each for one
