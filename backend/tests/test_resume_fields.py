@@ -101,6 +101,61 @@ def test_common_unlabelled_experience_and_education_are_exact_candidates():
     values_match_source(result, source)
 
 
+def test_month_aware_unlabelled_dates_are_literal_unverified_and_exact():
+    source = ('Experience\nData Engineer | Example Co | Jan 2020 – Mar 2023\n'
+              'Developer at Northwind, 04/2022 - Present\n'
+              'الخبرة\nمهندس بيانات | شركة مثال | ٠٣/٢٠١٩ إلى ديسمبر ٢٠٢١\n'
+              'Education\nBSc Computing | Example University | June 2018\n')
+    result = extract_resume_fields(source)
+    experience = result['sections']['experience']['records']
+    assert [row['fields']['period']['value'] for row in experience] == [
+        'Jan 2020 – Mar 2023', '04/2022 - Present', '٠٣/٢٠١٩ إلى ديسمبر ٢٠٢١']
+    assert all(row['origin'] == 'pattern' for row in experience)
+    assert result['sections']['education']['records'][0]['fields']['period']['value'] == 'June 2018'
+    assert result['requires_human_review'] is True
+    values_match_source(result, source)
+
+
+@pytest.mark.parametrize('month', ['APRİL', 'APRıL', 'ſeptember'])
+@pytest.mark.parametrize('section,line', [
+    ('experience', 'Experience\nEngineer | Example | {month} 2020 - 2021\n'),
+    ('education', 'Education\nBSc | Example | {month} 2020\n'),
+])
+def test_unicode_casefold_lookalike_months_are_unclassified(month, section, line):
+    result = extract_resume_fields(line.format(month=month))
+    assert result['sections'][section]['records'] == []
+    assert result['sections'][section]['unclassified_lines'] is True
+
+
+@pytest.mark.parametrize('date_range', ['13/2020 - 02/2022', '00/2020 - 02/2022',
+                                         '01/2020 - ١٣/٢٠٢٢', 'Present - 01/2022'])
+def test_unlabelled_invalid_month_ranges_are_not_inferred(date_range):
+    section = extract_resume_fields(f'Experience\nEngineer | Example | {date_range}\n')['sections']['experience']
+    assert section['records'] == []
+    assert section['unclassified_lines'] is True
+
+
+@pytest.mark.parametrize('date_range', [
+    '12/2024 - 03/2020', 'Mar 2024 - Jan 2020', 'Dec 2023 - Feb 2023',
+    'ديسمبر ٢٠٢٣ إلى فبراير ٢٠٢٣', '2024 - 2020', '2024 - Jan 2023',
+])
+def test_definitely_reversed_unlabelled_ranges_are_not_inferred(date_range):
+    section = extract_resume_fields(f'Experience\nEngineer | Example | {date_range}\n')['sections']['experience']
+    assert section['records'] == []
+    assert section['unclassified_lines'] is True
+
+
+@pytest.mark.parametrize('date_range', [
+    '2024 - 2024', 'Dec 2024 - 2024', '2024 - Jan 2024',
+    '2020 - 2024', '2024 - Present', '٠٣/٢٠٢٢ - ديسمبر ٢٠٢٢',
+])
+def test_year_only_or_open_ended_ranges_are_not_assumed_reversed(date_range):
+    source = f'Experience\nEngineer | Example | {date_range}\n'
+    result = extract_resume_fields(source)
+    assert result['sections']['experience']['records'][0]['fields']['period']['value'] == date_range
+    values_match_source(result, source)
+
+
 @pytest.mark.parametrize('line', [
     'Engineer | [identity field removed] | 2020–2022',
     'Engineer | Example | 2020',

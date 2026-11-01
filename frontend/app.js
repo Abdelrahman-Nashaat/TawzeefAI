@@ -820,6 +820,8 @@ function setupGraphReview(target, application) {
   advanceSlotOption.value = "advance_and_reserve_slot"; intent.append(advanceSlotOption);
   const semanticOption = element("option", "", "Review semantic résumé evidence");
   semanticOption.value = "semantic_review"; intent.append(semanticOption);
+  const semanticAdvanceOption = element("option", "", "Review semantic evidence, advance, and reserve a private slot");
+  semanticAdvanceOption.value = "semantic_advance_and_reserve_slot"; intent.append(semanticAdvanceOption);
   intentLabel.append(intent);
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
   const question = element("textarea"); question.maxLength = 2000; question.placeholder = "يمكن تركه فارغًا"; questionLabel.append(question);
@@ -836,7 +838,7 @@ function setupGraphReview(target, application) {
     questionLabel.firstChild.textContent = question.required ? "سؤال السياسة المطلوب للبحث المحلي" : "سؤال سياسة اختياري للبحث المحلي";
     question.placeholder = question.required ? "اكتب سؤالك عن السياسة" : "يمكن تركه فارغًا";
     if (!supportsPolicy) question.value = "";
-    const createSlot = ["create_slot", "create_private_slot", "advance_and_reserve_slot", "adaptive_schedule"].includes(intent.value);
+    const createSlot = ["create_slot", "create_private_slot", "advance_and_reserve_slot", "semantic_advance_and_reserve_slot", "adaptive_schedule"].includes(intent.value);
     slotFields.hidden = !createSlot;
     for (const field of [slotStart, slotEnd, interviewer]) { field.disabled = !createSlot; field.required = createSlot; }
   });
@@ -1007,7 +1009,8 @@ function setupGraphReview(target, application) {
       }
       const approve = element("button", "small-button", validCombined ? "Approve advancement and private slot" : validAdvance ? "Approve advancement" : "Approve this slot"); approve.type = "button";
       const decline = element("button", "outline-button", "أرفض المقترح"); decline.type = "button";
-      if (review.state.plan_stale) { approve.disabled = true; decline.disabled = true; }
+      const staleSemantic = review.state.intent === "semantic_advance_and_reserve_slot" && semantic?.status !== "current";
+      if (review.state.plan_stale || staleSemantic) { approve.disabled = true; decline.disabled = true; }
       async function decide(reviewed) {
         let uncertain = false;
         approve.disabled = true; decline.disabled = true; start.disabled = true; open.disabled = true; report("جارٍ تسجيل القرار...");
@@ -1018,7 +1021,7 @@ function setupGraphReview(target, application) {
         } catch (error) {
           uncertain = error instanceof TypeError;
           if (!isStale(error) && target.isConnected) report(uncertain ? "تعذّر الاتصال بالخادم. أعد تحميل المراجعة للتحقق من حالة القرار قبل المحاولة مجددًا." : error.message, true);
-        } finally { approve.disabled = uncertain || Boolean(review.state.plan_stale); decline.disabled = uncertain || Boolean(review.state.plan_stale); start.disabled = false; open.disabled = false; }
+        } finally { approve.disabled = uncertain || Boolean(review.state.plan_stale) || staleSemantic; decline.disabled = uncertain || Boolean(review.state.plan_stale) || staleSemantic; start.disabled = false; open.disabled = false; }
       }
       approve.addEventListener("click", () => decide(true)); decline.addEventListener("click", () => decide(false));
       output.append(approve, decline);
@@ -1048,7 +1051,7 @@ function setupGraphReview(target, application) {
       const body = { application_id: application.id, intent: intent.value === "adaptive_schedule" ? "adaptive" : intent.value };
       if (intent.value === "adaptive" || intent.value === "adaptive_schedule") body.adaptive_goal = intent.value === "adaptive" ? "review_application" : "schedule_interview";
       else body.policy_question = question.value.trim();
-      if (["create_slot", "create_private_slot", "advance_and_reserve_slot", "adaptive_schedule"].includes(intent.value)) {
+      if (["create_slot", "create_private_slot", "advance_and_reserve_slot", "semantic_advance_and_reserve_slot", "adaptive_schedule"].includes(intent.value)) {
         const startTime = new Date(slotStart.value), endTime = new Date(slotEnd.value);
         if (!interviewer.value.trim() || Number.isNaN(startTime.valueOf()) || Number.isNaN(endTime.valueOf()) || endTime <= startTime) throw new Error("تحقق من اسم المحاور وأن نهاية الموعد بعد بدايته.");
         body.slot = { start_at: startTime.toISOString(), end_at: endTime.toISOString(), interviewer: interviewer.value.trim() };

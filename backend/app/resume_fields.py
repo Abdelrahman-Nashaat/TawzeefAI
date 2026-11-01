@@ -47,11 +47,51 @@ _OTHER_HEADINGS = frozenset(('skills', 'technical skills', 'languages', 'summary
                              'المهارات', 'اللغات', 'الملخص', 'البيانات الشخصية', 'المراجع',
                              'الشهادات', 'معلومات التواصل'))
 _PREFIX = re.compile(r'^\s*(?:(?:[-+*•▪◦‣]|\d+[.)])\s+|#{1,6}\s+)?')
+_DIGIT = r'[0-9٠-٩۰-۹]'
 _YEAR = r'[0-9٠-٩۰-۹]{4}'
-_RANGE = rf'{_YEAR}\s*(?:[-–—]|\bto\b|إلى|الى)\s*(?:{_YEAR}|present|current|الآن|الان|حتى\s+الآن|حتى\s+الان)'
+_MONTH = (r'(?:(?a:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|'
+          r'aug(?:ust)?|sep(?:tember)?|sept|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)|'
+          r'يناير|فبراير|مارس|أبريل|ابريل|مايو|يونيو|يوليو|أغسطس|اغسطس|سبتمبر|أكتوبر|اكتوبر|نوفمبر|ديسمبر)')
+_DATE = rf'(?:{_DIGIT}{{1,2}}\s*/\s*{_YEAR}|{_MONTH}\.?\s+{_YEAR}|{_YEAR})'
+_RANGE = rf'{_DATE}\s*(?:[-–—]|\bto\b|إلى|الى)\s*(?:{_DATE}|present|current|الآن|الان|حتى\s+الآن|حتى\s+الان)'
 _EXPERIENCE_PIPE = re.compile(rf'^(?P<role>[^|:：\[\]]{{1,120}})\s*\|\s*(?P<organization>[^|:：\[\]]{{1,120}})\s*\|\s*(?P<period>{_RANGE})\s*$', re.IGNORECASE)
 _EXPERIENCE_AT = re.compile(rf'^(?P<role>[^|,:：،\[\]]{{1,120}}?)\s+(?:at|في)\s+(?P<organization>[^|,:：،\[\]]{{1,120}}?)\s*[,،]\s*(?P<period>{_RANGE})\s*$', re.IGNORECASE)
-_EDUCATION_PIPE = re.compile(rf'^(?P<qualification>[^|:：\[\]]{{1,120}})\s*\|\s*(?P<institution>[^|:：\[\]]{{1,120}})\s*\|\s*(?P<period>{_YEAR})\s*$', re.IGNORECASE)
+_EDUCATION_PIPE = re.compile(rf'^(?P<qualification>[^|:：\[\]]{{1,120}})\s*\|\s*(?P<institution>[^|:：\[\]]{{1,120}})\s*\|\s*(?P<period>{_DATE})\s*$', re.IGNORECASE)
+_NUMERIC_MONTH = re.compile(rf'(?<!{_DIGIT})({_DIGIT}{{1,2}})\s*/\s*{_YEAR}(?!{_DIGIT})')
+_CLOSED_RANGE = re.compile(rf'^(?P<start>{_DATE})\s*(?:[-–—]|\bto\b|إلى|الى)\s*(?P<end>{_DATE})$', re.IGNORECASE)
+_MONTH_NAMES = (
+    ('jan', 'january', 'يناير'), ('feb', 'february', 'فبراير'), ('mar', 'march', 'مارس'),
+    ('apr', 'april', 'أبريل', 'ابريل'), ('may', 'مايو'), ('jun', 'june', 'يونيو'),
+    ('jul', 'july', 'يوليو'), ('aug', 'august', 'أغسطس', 'اغسطس'),
+    ('sep', 'sept', 'september', 'سبتمبر'), ('oct', 'october', 'أكتوبر', 'اكتوبر'),
+    ('nov', 'november', 'نوفمبر'), ('dec', 'december', 'ديسمبر'),
+)
+
+
+def _date_parts(value: str) -> tuple[int, int | None]:
+    """Read only dates matching _DATE, leaving unspecified months unknown."""
+    if '/' in value:
+        month, year = value.split('/', 1)
+        return int(year.strip()), int(month.strip())
+    parts = value.strip().split()
+    if len(parts) == 1:
+        return int(parts[0]), None
+    name, year = parts[0].rstrip('.').casefold(), int(parts[1])
+    month = next((index for index, names in enumerate(_MONTH_NAMES, 1) if name in names), None)
+    if month is None:
+        raise ValueError('Unrecognized month spelling')
+    return year, month
+
+
+def _definitely_reversed(value: str) -> bool:
+    """Reject only closed ranges whose known parts establish reverse order."""
+    match = _CLOSED_RANGE.fullmatch(value)
+    if not match:
+        return False
+    start_year, start_month = _date_parts(match['start'])
+    end_year, end_month = _date_parts(match['end'])
+    return start_year > end_year or (start_year == end_year and start_month is not None
+                                     and end_month is not None and start_month > end_month)
 
 
 def _unlabelled_candidate(section: str, text: str, position: int) -> dict | None:
@@ -66,6 +106,15 @@ def _unlabelled_candidate(section: str, text: str, position: int) -> dict | None
             value = raw.strip()
             if not value or len(value) > MAX_FIELD_CHARS or not any(c.isalpha() for c in value) and name != 'period':
                 return None
+            if name == 'period':
+                if any(not 1 <= int(m.group(1)) <= 12 for m in _NUMERIC_MONTH.finditer(value)):
+                    return None
+                try:
+                    reversed_range = _definitely_reversed(value)
+                except ValueError:
+                    return None
+                if reversed_range:
+                    return None
             start = position + match.start(name) + len(raw) - len(raw.lstrip())
             fields[name] = {'value': value, 'start': start, 'end': start + len(value)}
         return {'fields': fields, 'origin': 'pattern',

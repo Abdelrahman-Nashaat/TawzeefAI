@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 class ReviewRequest(BaseModel):
     application_id: int = Field(gt=0)
     policy_question: str = Field(default="", max_length=2000)
-    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'adaptive'] = 'full'
+    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive'] = 'full'
     slot: SlotCreate | None = None
     adaptive_goal: Literal['review_application', 'schedule_interview'] | None = None
 
@@ -72,9 +72,9 @@ class ReviewRequest(BaseModel):
     def check_policy_question(self):
         if self.intent == 'policy' and not self.policy_question.strip():
             raise ValueError('Policy review requires a question')
-        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot', 'semantic_review') and self.policy_question.strip():
+        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot') and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
-        needs_slot = self.intent in ('create_slot', 'create_private_slot', 'advance_and_reserve_slot') or (self.intent == 'adaptive' and self.adaptive_goal == 'schedule_interview')
+        needs_slot = self.intent in ('create_slot', 'create_private_slot', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or (self.intent == 'adaptive' and self.adaptive_goal == 'schedule_interview')
         if needs_slot != (self.slot is not None):
             raise ValueError('Slot details are required only for scheduling')
         if self.intent in ('create_slot', 'create_private_slot') and self.policy_question.strip():
@@ -220,6 +220,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             'advance_application': ['parser', 'matching', 'status', 'prepare_advance', 'human_review', 'execute_advance'],
             'advance_and_reserve_slot': ['parser', 'matching', 'status', 'prepare_advance', 'human_review', 'execute_advance'],
             'semantic_review': ['parser', 'matching', 'semantic', 'human_review'],
+            'semantic_advance_and_reserve_slot': ['parser', 'matching', 'semantic', 'status', 'prepare_advance', 'human_review', 'execute_advance'],
         }
         return {'plan': plans[state.get('intent', 'full')]}
 
@@ -377,13 +378,16 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
                         'assessment_id': assessment['assessment_id'],
                         'notice': 'Approval advances this application for interview scheduling. '
                                   'The candidate must choose a slot separately; no message is sent.'}
-            if state.get('intent') == 'advance_and_reserve_slot':
+            if state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot'):
+                if (state.get('intent') == 'semantic_advance_and_reserve_slot' and
+                        restore_references(db, state['application_id'], state.get('semantic_refs'))['status'] != 'current'):
+                    raise HTTPException(status_code=409, detail='Resume or criteria changed; start a new review')
                 proposal.update({'type': 'advance_and_reserve_slot', 'candidate_id': application['candidate_id'],
                                  'availability_scope': 'selected_application_only', 'slot': state['slot'],
                                  'notice': 'Approval advances this application and reserves this slot for its candidate. '
                                            'The candidate must book separately; no message is sent.'})
             encoded = json.dumps({'proposal': proposal, 'context': context_digest, 'assessment': matching_digest,
-                                  'assessment_revision': revision},
+                                  'assessment_revision': revision, 'semantic_refs': state.get('semantic_refs')},
                                  ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
             proposal['approval_fingerprint'] = hashlib.sha256(encoded).hexdigest()
             return {'action_proposal': proposal, 'context_digest': context_digest, 'assessment_revision': revision}
@@ -402,7 +406,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         if (application['status'] != 'submitted' or context_digest != state.get('context_digest') or
                 matching_digest != state.get('matching_specialist_ref') or assessment['status'] != 'current' or
                 revision != state.get('assessment_revision') or
-                (state.get('intent') == 'advance_and_reserve_slot' and
+                (state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') and
                  application['candidate_id'] != state['action_proposal']['candidate_id']) or
                 assessment['assessment_id'] != state['action_proposal']['assessment_id']):
             raise HTTPException(status_code=409, detail='Application or assessment changed; start a new review')
@@ -411,7 +415,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         details = json.dumps({'decision': 'advance', 'note': ''}, ensure_ascii=False)
         action_db.execute('INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,?,?)',
                           (state['application_id'], user.id, 'decision', details))
-        if state.get('intent') == 'advance_and_reserve_slot':
+        if state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot'):
             current = get_application(action_db, state['application_id'])
             slot_state = {**state, 'action_proposal': {**state['action_proposal'],
                 'application_updated_at': current['updated_at']}}
@@ -421,7 +425,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
 
     def human_review(state: ReviewState):
         notice = ('Approve advancement and a private slot for this candidate. No message is sent.'
-                  if state.get('intent') == 'advance_and_reserve_slot' else
+                  if state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') else
                   'Approve advancing this application for interview scheduling. No message is sent.'
                   if state.get('intent') == 'advance_application' else
                   'Approve creation of a slot for this application and candidate only. '
@@ -469,7 +473,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
     choices = ['parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'human_review', 'execute_slot', 'execute_advance']
     for name in ['plan', *choices[:-3]]:
         builder.add_conditional_edges(name, next_after(name), choices)
-    builder.add_conditional_edges('human_review', lambda state: 'execute_advance' if state.get('intent') in ('advance_application', 'advance_and_reserve_slot') else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
+    builder.add_conditional_edges('human_review', lambda state: 'execute_advance' if state.get('intent') in ('advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
                                   {'execute_slot': 'execute_slot', 'execute_advance': 'execute_advance', END: END})
     builder.add_edge('execute_slot', END)
     builder.add_edge('execute_advance', END)
@@ -538,13 +542,13 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     selected = state.get('intent', 'full')
     scoped_fields = {'parsed': 'full', 'matching': 'full', 'agent_review': 'full',
                      'policy': 'policy', 'scheduling': 'scheduling', 'status': 'status'}
-    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'adaptive'}:
+    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive'}:
         selected = 'invalid'
     for field, scope in scoped_fields.items():
         adaptive_fields = {'parsed': 'parser', 'matching': 'matching', 'scheduling': 'scheduler', 'status': 'status'}
         if selected == 'adaptive' and adaptive_fields.get(field) in state.get('plan', []):
             continue
-        if selected in ('advance_application', 'advance_and_reserve_slot', 'semantic_review') and field in {'parsed', 'matching', 'status'}:
+        if selected in ('advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot') and field in {'parsed', 'matching', 'status'}:
             continue
         if selected != 'full' and scope != selected:
             state.pop(field, None)
@@ -581,7 +585,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     raise HTTPException(status_code=401, detail='Authentication required')
                 if actor['role'] != 'hr':
                     raise HTTPException(status_code=403, detail='HR access required')
-                if selected == 'semantic_review':
+                if selected in ('semantic_review', 'semantic_advance_and_reserve_slot'):
                     state['semantic_suggestions'] = restore_references(db, state['application_id'], semantic_refs)
                 if 'parsed' in state:
                     application = get_application(db, state['application_id'])
@@ -592,7 +596,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     else:
                         state.pop('parsed', None)
                         state['resume_fields'] = {'status': 'stale', 'notice': 'Resume changed or cannot be verified; start a new review.'}
-                if (selected in ('full', 'adaptive', 'advance_application', 'advance_and_reserve_slot', 'semantic_review') and 'matching' in state.get('plan', [])
+                if (selected in ('full', 'adaptive', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot') and 'matching' in state.get('plan', [])
                         and isinstance(specialist_ref, str)):
                     digest, report = matching_snapshot(db, state['application_id'])
                     state['matching_specialist'] = report if secrets.compare_digest(
@@ -623,9 +627,9 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
             state["scheduling"] = _current_scheduling(path, state["application_id"])
         else:
             state.pop('scheduling', None)
-        if selected not in ('full', 'status', 'adaptive', 'advance_application', 'advance_and_reserve_slot') or 'status' not in state.get('plan', []):
+        if selected not in ('full', 'status', 'adaptive', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or 'status' not in state.get('plan', []):
             state.pop('status', None)
-    if selected in ('adaptive', 'advance_application', 'advance_and_reserve_slot'):
+    if selected in ('adaptive', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot'):
         state.pop('context_digest', None)
         state.pop('assessment_revision', None)
     return {"state": state, "awaiting_review": bool(snapshot.next)}
@@ -703,13 +707,13 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             snapshot = graph.get_state(config)
             if not snapshot.next:
                 raise HTTPException(status_code=409, detail="Review is not awaiting input")
-            if (snapshot.values.get('intent') == 'semantic_review' and payload.reviewed and
+            if (snapshot.values.get('intent') in ('semantic_review', 'semantic_advance_and_reserve_slot') and payload.reviewed and
                     restore_references(db, snapshot.values['application_id'], snapshot.values.get('semantic_refs'))['status'] != 'current'):
                 raise HTTPException(status_code=409, detail='Resume or criteria changed; start a new semantic review')
             if (snapshot.values.get('intent') == 'adaptive' and
                     context_for(db, snapshot.values['application_id'])[1] != snapshot.values.get('context_digest')):
                 raise HTTPException(status_code=409, detail='Application changed; start a new review')
-            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot') or snapshot.values.get('adaptive_goal') == 'schedule_interview') and payload.reviewed:
+            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or snapshot.values.get('adaptive_goal') == 'schedule_interview') and payload.reviewed:
                 expected = snapshot.values.get('action_proposal', {}).get('approval_fingerprint', '')
                 if (not expected or not payload.approval_fingerprint or
                         not secrets.compare_digest(expected.encode('utf-8'), payload.approval_fingerprint.encode('utf-8'))):
