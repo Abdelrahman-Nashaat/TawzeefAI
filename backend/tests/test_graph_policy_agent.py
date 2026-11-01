@@ -79,8 +79,13 @@ def test_abstention_with_suggested_passages_is_not_presented_as_an_answer(tmp_pa
     from app import graph_orchestrator
 
     suggestion = SimpleNamespace(id='suggestion', text='Unverified suggestion')
-    monkeypatch.setattr(graph_orchestrator, 'run_policy_agent', lambda *args, **kwargs:
-                        SimpleNamespace(answer=SimpleNamespace(mode='abstain', sources=[suggestion])))
+    calls = []
+
+    def answer(*args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(answer=SimpleNamespace(mode='abstain', sources=[suggestion]))
+
+    monkeypatch.setattr(graph_orchestrator, 'run_policy_agent', answer)
     path = tmp_path / 'graph-abstention.sqlite3'
     with TestClient(create_app(path, seed_demo=True)) as client:
         assert client.post('/api/auth/login', json={'username': 'hr', 'password': 'hr-demo-only'}).status_code == 200
@@ -94,6 +99,7 @@ def test_abstention_with_suggested_passages_is_not_presented_as_an_answer(tmp_pa
         assert response.status_code == 201, response.text
         assert response.json()['state']['policy'] == {'status': 'abstain'}
         assert 'Unverified suggestion' not in response.text
+        assert calls and all(call['allow_hybrid_answers'] is False for call in calls)
 
 
 def test_legacy_policy_references_remain_readable_but_respect_revocation(tmp_path):

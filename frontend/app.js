@@ -703,8 +703,8 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
       const sourcePoints = Array.from(source.text);
       const allowed = new Map(criteria.map((criterion) => [criterion.criterion_ref, criterion]));
       suggestions.replaceChildren(element("p", "subtle-note", "المقتطفات مقترحة بالتشابه فقط، وقد تكون غير مناسبة أو منفية. راجع السياق بنفسك؛ لا تُثبت الاقتراحات المعيار ولا تغيّر التقييم أو قرار التوظيف."));
-      suggestions.append(element("p", "subtle-note", "يبحث الاقتراح في الأقسام التي تم التعرف عليها من السيرة فقط؛ غياب النتائج لا يثبت غياب الخبرة."));
-      if (response.status === "no_recognized_sections") suggestions.append(element("p", "form-error", "تعذّر التعرف على أقسام السيرة للبحث فيها. راجع السيرة كاملة وحدد الأدلة يدويًا."));
+      suggestions.append(element("p", "subtle-note", "Search includes recognized sections and unclassified text. Missing results do not prove missing experience; review the entire résumé."));
+      if (response.status === "no_recognized_sections") suggestions.append(element("p", "subtle-note", "No section headings were recognized. Suggestions, if any, come from unclassified text."));
       if (response.sections_truncated) suggestions.append(element("p", "form-error", "لم يشمل البحث كل الأقسام بسبب حدود المعالجة؛ راجع السيرة كاملة."));
       if (!response.criteria.length) suggestions.append(element("p", "subtle-note", "لا توجد معايير للبحث؛ أضف معايير الوظيفة أولًا."));
       for (const criterion of response.criteria) {
@@ -724,6 +724,7 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
           }
           const item = element("div");
           item.append(element("p", "resume-preview", excerpt));
+          item.append(element("p", "subtle-note", candidate.section === "unclassified" ? "Source: unclassified résumé text" : `Source section: ${candidate.section || "unknown"}`));
           if (Number.isFinite(similarity)) item.append(element("p", "subtle-note", `درجة التشابه: ${similarity.toFixed(2)}؛ ليست تقييمًا للمؤهل.`));
           const accept = element("button", "outline-button", "حفظ المقتطف بعد مراجعته"); accept.type = "button";
           accept.addEventListener("click", async () => {

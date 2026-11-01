@@ -164,4 +164,43 @@ def test_unrecognized_sections_are_explicit(setup, monkeypatch):
     result = response.json()
     assert result['status'] == 'no_recognized_sections'
     assert 'No recognizable resume sections' in result['notice']
-    assert all(not item['candidates'] for item in result['criteria'])
+    python = next(item for item in result['criteria'] if item['label'] == 'Python')
+    assert python['candidates'][0]['section'] == 'unclassified'
+    assert python['candidates'][0]['excerpt'] == 'I have Python experience.'
+    assert all(not item['candidates'] for item in result['criteria'] if item['label'] != 'Python')
+
+
+def test_mixed_classification_and_exact_offsets():
+    from app.semantic_screening import _passages
+
+    source = 'Skills\nPython\nProfile\n👩‍💻 Built Java systems.\nEducation: College\nUnknown: Python projects'
+    passages = _passages(source)
+    assert any(p['section'] == 'skills' and p['excerpt'] == 'Python' for p in passages)
+    assert any(p['section'] == 'unclassified' and 'Built Java systems' in p['excerpt'] for p in passages)
+    assert any(p['section'] == 'education' and p['excerpt'] == 'College' for p in passages)
+    assert any(p['section'] == 'unclassified' and 'Unknown: Python projects' in p['excerpt'] for p in passages)
+    assert all(source[p['start']:p['end']] == p['excerpt'] for p in passages)
+
+
+def test_unclassified_passages_enforce_the_existing_limit():
+    from fastapi import HTTPException
+
+    from app.semantic_screening import _passages
+
+    with pytest.raises(HTTPException) as exc:
+        _passages('\n'.join(f'Project number {i}' for i in range(101)))
+    assert exc.value.status_code == 422
+
+
+def test_long_unclassified_line_is_bounded_without_duplicate_spans():
+    from app.semantic_screening import _passages
+
+    source = ' '.join(f'word{i}' for i in range(220))
+    passages = _passages(source)
+    spans = [(p['start'], p['end']) for p in passages]
+    assert 1 < len(spans) <= 100
+    assert len(spans) == len(set(spans))
+    assert all(0 <= start < end <= len(source) and end - start <= 500 for start, end in spans)
+    assert all(passages[i]['start'] < passages[i + 1]['start'] <= passages[i]['end']
+               for i in range(len(passages) - 1))
+    assert all(p['section'] == 'unclassified' and source[p['start']:p['end']] == p['excerpt'] for p in passages)

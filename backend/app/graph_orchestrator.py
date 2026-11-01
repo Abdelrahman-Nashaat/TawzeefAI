@@ -250,7 +250,8 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         if user is None or authorize is None:
             raise HTTPException(status_code=403, detail='HR access required')
         try:
-            answer = run_policy_agent(path, user, question, enabled=enable_agent, authorize=authorize).answer
+            answer = run_policy_agent(path, user, question, enabled=enable_agent, authorize=authorize,
+                                      allow_hybrid_answers=False).answer
         except PermissionError as exc:
             raise HTTPException(status_code=409, detail='Policy access changed; please retry') from exc
         if answer.mode == 'abstain':

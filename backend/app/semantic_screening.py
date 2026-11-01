@@ -6,7 +6,7 @@ from threading import BoundedSemaphore
 
 from fastapi import HTTPException
 
-from app.resume_structure import structure_resume
+from app.resume_structure import OTHER_HEADINGS, SECTION_HEADINGS, _label, structure_resume
 
 _busy = BoundedSemaphore(1)
 MAX_PASSAGES = 100
@@ -23,33 +23,62 @@ def _model(directory: str):
 def _passages(source: str) -> list[dict]:
     structured = structure_resume(source)
     result = []
+    intervals = []
     for section_name, section in structured['sections'].items():
         for item in section['items']:
+            intervals.append((item['start'], item['end'], section_name))
+    intervals.sort()
+    headings = {heading.casefold() for labels in SECTION_HEADINGS.values() for heading in labels} | OTHER_HEADINGS
+
+    def add(start: int, end: int, section_name: str) -> None:
+        content = source[start:end].strip()
+        if not content or content == '[identity field removed]':
+            return
+        if section_name == 'unclassified' and _label(content.rstrip(':：').strip()) in headings:
+            return
+        while start < end:
             # Prefer sentence/word boundaries. Retain context across long lines
             # so negation near an arbitrary 500-character cut is not lost.
-            start = item['start']
-            while start < item['end']:
-                end = min(start + 500, item['end'])
-                if end < item['end']:
-                    fragment = source[start:end]
-                    boundaries = list(re.finditer(r'(?<=[.!?؟])\s+', fragment))
-                    if boundaries and boundaries[-1].end() >= 200:
-                        end = start + boundaries[-1].end()
-                    else:
-                        word_boundary = fragment.rfind(' ')
-                        if word_boundary >= 200:
-                            end = start + word_boundary + 1
-                excerpt = source[start:end]
-                if excerpt.strip():
-                    result.append({'start': start, 'end': end, 'excerpt': excerpt, 'section': section_name})
-                if end == item['end']:
-                    break
-                overlap_start = max(start + 1, end - 120)
-                # Avoid starting in the middle of a word where possible.
-                space = source.find(' ', overlap_start, min(end, overlap_start + 40))
-                start = space + 1 if space >= 0 else overlap_start
-    if len(result) > MAX_PASSAGES:
-        raise HTTPException(status_code=422, detail='Too many resume passages for experimental screening')
+            stop = min(start + 500, end)
+            if stop < end:
+                fragment = source[start:stop]
+                boundaries = list(re.finditer(r'(?<=[.!?؟])\s+', fragment))
+                if boundaries and boundaries[-1].end() >= 200:
+                    stop = start + boundaries[-1].end()
+                else:
+                    word_boundary = fragment.rfind(' ')
+                    if word_boundary >= 200:
+                        stop = start + word_boundary + 1
+            excerpt = source[start:stop]
+            if excerpt.strip() and excerpt.strip() != '[identity field removed]':
+                result.append({'start': start, 'end': stop, 'excerpt': excerpt, 'section': section_name})
+                if len(result) > MAX_PASSAGES:
+                    raise HTTPException(status_code=422, detail='Too many resume passages for experimental screening')
+            if stop == end:
+                break
+            overlap_start = max(start + 1, stop - 120)
+            # Avoid starting in the middle of a word where possible.
+            space = source.find(' ', overlap_start, min(stop, overlap_start + 40))
+            start = space + 1 if space >= 0 else overlap_start
+
+    # Include remaining lines without claiming a section or a qualification.
+    # Preserve offsets into the exact partially redacted source, even if the
+    # parser classified only part of a line or truncated an item.
+    position = 0
+    index = 0
+    for line in source.splitlines(keepends=True):
+        line_end = position + len(line.rstrip('\r\n'))
+        cursor = position
+        while index < len(intervals) and intervals[index][0] < line_end:
+            start, end, name = intervals[index]
+            if cursor < start:
+                add(cursor, start, 'unclassified')
+            add(start, end, name)
+            cursor = max(cursor, end)
+            index += 1
+        if cursor < line_end:
+            add(cursor, line_end, 'unclassified')
+        position += len(line)
     return result
 
 

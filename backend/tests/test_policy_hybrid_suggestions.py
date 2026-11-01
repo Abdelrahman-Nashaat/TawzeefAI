@@ -1,4 +1,6 @@
 """Hybrid search offers unverified leads only after the policy agent abstains."""
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -109,3 +111,103 @@ def test_conversation_hides_previously_suggested_source_after_revocation(tmp_pat
         entry = client.get(f'/api/conversations/{conversation}').json()['messages'][0]
         assert entry['mode'] == 'unavailable' and entry['sources'] == []
         assert source.text not in entry['answer']
+
+
+def enable_hybrid_answers(monkeypatch, rows):
+    monkeypatch.setenv('TAWZEEF_POLICY_HYBRID_ANSWERS', '1')
+    monkeypatch.delenv('TAWZEEF_POLICY_HYBRID_SUGGESTIONS', raising=False)
+    monkeypatch.delenv('TAWZEEF_USE_POLICY_HYBRID', raising=False)
+    monkeypatch.setenv('GROQ_API_KEY', 'test-only')
+    monkeypatch.setattr(policy_agent, '_request_search', lambda *_: {'tool_calls': [{
+        'type': 'function', 'function': {'name': 'search_policy', 'arguments': '{"query":"work from home"}'},
+    }]})
+    monkeypatch.setattr(policy_agent, '_policy_hybrid', lambda *_: {'sources': rows})
+
+
+def test_hybrid_answer_uses_only_current_authorized_exact_lines(setup, monkeypatch):
+    path, users, _, source, secret, _ = setup
+    enable_hybrid_answers(monkeypatch, [secret, {**source, 'text': 'forged'}, source])
+    seen = []
+    def select(_question, passages):
+        seen.extend(passages)
+        return json.dumps({'quotes': [{'source_id': passages[0]['id'], 'quote': passages[0]['text']}]})
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', select)
+    result = policy_agent.run_policy_agent(path, users['employee'], 'Can employees work from home?', enabled=True, allow_hybrid_answers=True)
+    assert [row['id'] for row in seen] == [source['id']]
+    assert result.answer.mode == 'groq'
+    assert source['text'] in result.answer.answer
+    assert 'relevance and completeness are not' in result.answer.notice
+    assert secret['text'] not in result.answer.answer
+
+
+@pytest.mark.parametrize('selection', [
+    '{"quotes":[]}',
+    '{"quotes":[{"source_id":"fake","quote":"invented"}]}',
+    'not JSON',
+])
+def test_hybrid_answer_abstains_on_empty_or_invalid_selection(setup, monkeypatch, selection):
+    path, users, _, source, _, _ = setup
+    enable_hybrid_answers(monkeypatch, [source])
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: selection)
+    result = policy_agent.run_policy_agent(path, users['employee'], 'Can employees work from home?', enabled=True, allow_hybrid_answers=True)
+    assert result.answer.mode == 'abstain' and not result.answer.sources
+
+
+def test_hybrid_answer_does_not_assume_multipart_question_is_supported(setup, monkeypatch):
+    path, users, _, source, _, _ = setup
+    enable_hybrid_answers(monkeypatch, [source])
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: '{"quotes":[]}')
+    result = policy_agent.run_policy_agent(path, users['employee'],
+                                          'Can employees work from home and get paid internet?', enabled=True, allow_hybrid_answers=True)
+    assert result.answer.mode == 'abstain' and not result.answer.sources
+
+
+def test_hybrid_answer_rechecks_access_after_model_call(setup, monkeypatch):
+    path, users, doc_id, source, _, _ = setup
+    enable_hybrid_answers(monkeypatch, [source])
+    def revoke(_question, passages):
+        with connect(path) as db:
+            db.execute("UPDATE knowledge_documents SET audience='hr' WHERE id=?", (doc_id,))
+        return json.dumps({'quotes': [{'source_id': passages[0]['id'], 'quote': passages[0]['text']}]})
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', revoke)
+    with pytest.raises(PermissionError):
+        policy_agent.run_policy_agent(path, users['employee'], 'Can employees work from home?', enabled=True, allow_hybrid_answers=True)
+
+
+def test_hybrid_answer_provider_failure_abstains(setup, monkeypatch):
+    path, users, _, source, _, _ = setup
+    enable_hybrid_answers(monkeypatch, [source])
+    def fail(*_):
+        raise policy_agent.ProviderUnavailable('secret provider details')
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', fail)
+    result = policy_agent.run_policy_agent(path, users['employee'], 'Can employees work from home?', enabled=True, allow_hybrid_answers=True)
+    assert result.answer.mode == 'abstain' and not result.answer.sources
+    assert 'secret provider details' not in result.answer.notice
+
+
+def test_hybrid_answer_exposes_only_model_selected_sources(setup, monkeypatch):
+    path, users, _, source, _, _ = setup
+    with connect(path) as db:
+        doc_id = db.execute('''INSERT INTO knowledge_documents(title,audience,text,created_by,collection)
+            VALUES (?,?,?,?,?)''', ('Remote policy', 'staff', 'Work remotely with permission.',
+                                   users['hr'].id, 'handbook')).lastrowid
+        second = next(s for s in policy_agent.authorized_policy_sources(db, 'employee')
+                      if s.id.startswith(f'db-doc-{doc_id}-'))
+    row = {'id': second.id, 'title': second.title, 'text': second.text, 'page': second.page,
+           'section': second.section, 'collection': 'handbook'}
+    enable_hybrid_answers(monkeypatch, [source, row])
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda _q, passages: json.dumps({
+        'quotes': [{'source_id': passages[1]['id'], 'quote': passages[1]['text']}],
+    }))
+    result = policy_agent.run_policy_agent(path, users['employee'], 'Can employees work from home?',
+                                           enabled=True, allow_hybrid_answers=True)
+    assert result.answer.mode == 'groq'
+    assert [item.id for item in result.answer.sources] == [second.id]
+
+
+def test_hybrid_answer_requires_explicit_caller_opt_in(setup, monkeypatch):
+    path, users, _, source, _, _ = setup
+    enable_hybrid_answers(monkeypatch, [source])
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: pytest.fail('Unexpected model selection'))
+    result = policy_agent.run_policy_agent(path, users['employee'], 'Can employees work from home?', enabled=True)
+    assert result.answer.mode == 'abstain' and not result.answer.sources

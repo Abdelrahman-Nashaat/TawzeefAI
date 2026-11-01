@@ -1,4 +1,5 @@
 """Opt-in integration test against a disposable PostgreSQL and local model."""
+import json
 import os
 import re
 import uuid
@@ -82,3 +83,53 @@ def test_real_policy_suggestions_are_scoped_unverified_and_revocable(tmp_path, i
         assert history['mode'] == 'unavailable' and history['sources'] == []
         response = client.post(endpoint, json={'question': 'Can employees work from home?', 'mode': 'policy'})
         assert response.status_code == 201 and response.json()['sources'] == []
+
+
+def test_real_hybrid_answer_uses_current_source_and_reports_uncertainty(tmp_path, isolated_vectors, monkeypatch):
+    from app import policy_agent
+    from app.db import connect
+    from app.main import create_app
+
+    model_dir = Path(__file__).resolve().parents[2] / '.tooling' / 'multilingual-e5-small'
+    if not (model_dir / 'model.onnx').is_file() or not (model_dir / 'tokenizer.json').is_file():
+        pytest.skip('Requires the pinned local model files')
+    monkeypatch.setenv('TAWZEEF_ENABLE_HYBRID', '1')
+    monkeypatch.setenv('TAWZEEF_POLICY_HYBRID_ANSWERS', '1')
+    monkeypatch.setenv('TAWZEEF_EMBEDDING_MODEL_DIR', str(model_dir))
+    monkeypatch.setenv('TAWZEEF_ENABLE_GROQ', '1')
+    monkeypatch.setenv('GROQ_API_KEY', 'test-only')
+    monkeypatch.delenv('TAWZEEF_POLICY_HYBRID_SUGGESTIONS', raising=False)
+    monkeypatch.delenv('TAWZEEF_USE_POLICY_HYBRID', raising=False)
+    monkeypatch.setattr(policy_agent, '_request_search', lambda *_: {'tool_calls': [{
+        'type': 'function', 'function': {'name': 'search_policy', 'arguments': '{"query":"work from home"}'},
+    }]})
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda _q, passages: json.dumps({
+        'quotes': [{'source_id': passages[0]['id'], 'quote': passages[0]['text']}],
+    }))
+    with TestClient(create_app(tmp_path / 'policy-answer.sqlite3', seed_demo=True)) as client:
+        def login(role):
+            assert client.post('/api/auth/login', json={
+                'username': role, 'password': f'{role}-demo-only',
+            }).status_code == 200
+
+        login('hr')
+        response = client.post('/api/knowledge/documents/text', json={
+            'title': 'Remote work', 'text': 'Staff may work remotely two days per week with manager approval.',
+            'audience': 'staff', 'collection': 'handbook',
+        })
+        assert response.status_code == 201
+        doc_id = response.json()['id']
+        with connect(client.app.state.database_path) as db:
+            db.execute('UPDATE knowledge_settings SET include_sample_policies=0 WHERE id=1')
+        login('employee')
+        conversation = client.post('/api/conversations', json={'title': 'Policy'}).json()['id']
+        endpoint = f'/api/conversations/{conversation}/messages'
+        response = client.post(endpoint, json={'question': 'Can employees work from home?', 'mode': 'policy'})
+        assert response.status_code == 201
+        body = response.json()
+        assert body['mode'] == 'groq' and 'relevance' in body['notice']
+        assert len(body['sources']) == 1 and body['sources'][0]['id'].startswith(f'db-doc-{doc_id}-')
+        with connect(client.app.state.database_path) as db:
+            db.execute("UPDATE knowledge_documents SET audience='hr' WHERE id=?", (doc_id,))
+        history = client.get(f'/api/conversations/{conversation}').json()['messages'][0]
+        assert history['mode'] == 'unavailable' and history['sources'] == []

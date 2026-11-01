@@ -302,6 +302,7 @@ def add_message(conversation_id: int, payload: MessageCreate, request: Request, 
         try:
             result = run_policy_agent(path, user, payload.question,
                                       enabled=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1',
+                                      allow_hybrid_answers=True,
                                       authorize=lambda: authorize_sources([]))
         except PermissionError as exc:
             raise HTTPException(status_code=409, detail='Policy access changed; please retry') from exc
