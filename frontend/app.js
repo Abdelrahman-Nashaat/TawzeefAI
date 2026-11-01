@@ -1053,6 +1053,10 @@ function renderApplicationDetail(target, application, role) {
     screeningPanel.setAttribute("aria-label", "Candidate screening preview");
     panel.append(screeningPanel);
     loadCandidateScreening(screeningPanel, application.id);
+    const assessmentPanel = element("section", "application-detail");
+    assessmentPanel.setAttribute("aria-label", "Reviewed assessment");
+    panel.append(assessmentPanel);
+    loadCandidateAssessment(assessmentPanel, application.id);
   }
   if (role === "candidate" && application.status === "advanced") {
     const slotsPanel = element("section", "application-detail");
@@ -1067,6 +1071,10 @@ function renderApplicationDetail(target, application, role) {
     loadApplicationOffers(offersPanel, application, role);
   }
   if (role === "hr") {
+    const publicationPanel = element("section", "application-detail");
+    publicationPanel.setAttribute("aria-label", "Candidate assessment publication");
+    panel.append(publicationPanel);
+    loadAssessmentPublication(publicationPanel, application.id);
     panel.append(element("p", "", `الملف: ${application.filename}`));
     panel.append(element("h4", "", "النص المستخرج من السيرة"), element("pre", "resume-preview", application.resume_text));
     const duplicatesPanel = element("section", "application-detail");
@@ -1300,6 +1308,75 @@ async function loadApplicationOffers(target, application, role) {
     }
   } catch (error) {
     if (!isStale(error) && target.isConnected) target.replaceChildren(element("h4", "", "عروض التوظيف"), element("p", "form-error", error instanceof TypeError ? "تعذّر الاتصال بالخادم لتحميل العروض." : error.message));
+  }
+}
+
+function renderCandidateAssessment(target, assessment) {
+  const bounds = assessment.bounds;
+  target.append(element("p", "result-badge", `Reviewed score range: ${bounds.minimum}–${bounds.maximum} / 100 · coverage ${bounds.coverage_percent}%`),
+    element("p", "subtle-note", assessment.notice));
+  const list = element("ul", "evidence-list");
+  const status = { met: "Evidence reviewed", missing: "Not established from available evidence", unknown: "Not yet established" };
+  for (const item of assessment.criteria) {
+    const row = element("li");
+    row.append(element("strong", "", item.criterion), element("p", "", status[item.status] || "Not yet established"));
+    for (const excerpt of item.evidence) row.append(element("p", "", excerpt));
+    list.append(row);
+  }
+  target.append(list);
+}
+
+async function loadCandidateAssessment(target, applicationId) {
+  target.replaceChildren(element("h4", "", "Reviewed assessment"), element("p", "subtle-note", "Loading..."));
+  try {
+    const result = await api(`/api/applications/${encodeURIComponent(applicationId)}/candidate-assessment`);
+    if (!target.isConnected) return;
+    target.replaceChildren(element("h4", "", "Reviewed assessment"));
+    if (result.status === "current") renderCandidateAssessment(target, result);
+    else target.append(element("p", "subtle-note", "No current reviewed assessment has been shared with you."));
+  } catch (error) {
+    if (!isStale(error) && target.isConnected) target.replaceChildren(element("h4", "", "Reviewed assessment"), element("p", "form-error", "Unable to load the reviewed assessment."));
+  }
+}
+
+async function loadAssessmentPublication(target, applicationId) {
+  const endpoint = `/api/applications/${encodeURIComponent(applicationId)}/rubric/candidate-publication`;
+  target.replaceChildren(element("h4", "", "Share reviewed assessment"), element("p", "subtle-note", "Loading..."));
+  try {
+    const result = await api(endpoint);
+    if (!target.isConnected) return;
+    target.replaceChildren(element("h4", "", "Share reviewed assessment"));
+    const refresh = element("button", "outline-button", "Refresh assessment preview"); refresh.type = "button";
+    refresh.addEventListener("click", () => loadAssessmentPublication(target, applicationId));
+    target.append(refresh);
+    if (result.preview) {
+      target.append(element("p", "subtle-note", "Review everything below before sharing. The candidate will see these criteria, judgments, excerpts and score range."));
+      renderCandidateAssessment(target, result.preview);
+      const publish = element("button", "outline-button", result.published ? "Shared with candidate" : "Share this assessment with candidate");
+      publish.type = "button"; publish.disabled = result.published;
+      publish.addEventListener("click", async () => {
+        publish.disabled = true;
+        try {
+          await api(endpoint, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assessment_id: result.assessment_id, snapshot_digest: result.snapshot_digest }) });
+          if (target.isConnected) await loadAssessmentPublication(target, applicationId);
+        } catch (error) {
+          if (!isStale(error) && target.isConnected) target.append(element("p", "form-error", "Could not share this assessment. Reload the preview and review it again."));
+        } finally { publish.disabled = false; }
+      });
+      target.append(publish);
+    } else target.append(element("p", "subtle-note", "A current reviewed assessment is required before sharing."));
+    if (result.has_publication) {
+      const withdraw = element("button", "outline-button", "Withdraw shared assessment"); withdraw.type = "button";
+      withdraw.addEventListener("click", async () => {
+        withdraw.disabled = true;
+        try { await api(endpoint, { method: "DELETE" }); if (target.isConnected) await loadAssessmentPublication(target, applicationId); }
+        catch (error) { if (!isStale(error) && target.isConnected) target.append(element("p", "form-error", "Could not withdraw the assessment.")); }
+        finally { withdraw.disabled = false; }
+      });
+      target.append(withdraw);
+    }
+  } catch (error) {
+    if (!isStale(error) && target.isConnected) target.replaceChildren(element("h4", "", "Share reviewed assessment"), element("p", "form-error", "Unable to load the assessment preview."));
   }
 }
 

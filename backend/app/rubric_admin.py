@@ -60,6 +60,106 @@ def initialize_rubric_admin(path: str | Path) -> None:
         CREATE INDEX IF NOT EXISTS rubric_criteria_job ON rubric_criteria(job_id);
         CREATE INDEX IF NOT EXISTS rubric_evidence_application ON rubric_evidence(application_id);
         CREATE INDEX IF NOT EXISTS rubric_assessments_application ON rubric_assessments(application_id, id);
+        CREATE TABLE IF NOT EXISTS rubric_publications (
+            application_id INTEGER PRIMARY KEY REFERENCES applications(id),
+            assessment_id INTEGER NOT NULL REFERENCES rubric_assessments(id),
+            snapshot_digest TEXT NOT NULL,
+            published_by INTEGER NOT NULL REFERENCES users(id)
+        );
+        CREATE TABLE IF NOT EXISTS rubric_publication_revisions (
+            application_id INTEGER PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
+            revision INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TRIGGER IF NOT EXISTS publication_revision_application_changed AFTER UPDATE OF resume_text,job_id,candidate_id ON applications BEGIN
+            INSERT OR IGNORE INTO rubric_publication_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE id=OLD.id;
+            UPDATE rubric_publication_revisions SET revision=revision+1 WHERE application_id=OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_revision_job_changed AFTER UPDATE ON jobs BEGIN
+            INSERT OR IGNORE INTO rubric_publication_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE id IN (SELECT id FROM applications WHERE job_id=OLD.id);
+            UPDATE rubric_publication_revisions SET revision=revision+1 WHERE application_id IN (SELECT id FROM applications WHERE job_id=OLD.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_revision_criterion_added AFTER INSERT ON rubric_criteria BEGIN
+            INSERT OR IGNORE INTO rubric_publication_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE id IN (SELECT id FROM applications WHERE job_id=NEW.job_id);
+            UPDATE rubric_publication_revisions SET revision=revision+1 WHERE application_id IN (SELECT id FROM applications WHERE job_id=NEW.job_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_revision_criterion_changed AFTER UPDATE ON rubric_criteria BEGIN
+            INSERT OR IGNORE INTO rubric_publication_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE id IN (SELECT id FROM applications WHERE job_id IN (OLD.job_id,NEW.job_id));
+            UPDATE rubric_publication_revisions SET revision=revision+1 WHERE application_id IN (SELECT id FROM applications WHERE job_id IN (OLD.job_id,NEW.job_id));
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_revision_criterion_removed AFTER DELETE ON rubric_criteria BEGIN
+            INSERT OR IGNORE INTO rubric_publication_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE id IN (SELECT id FROM applications WHERE job_id=OLD.job_id);
+            UPDATE rubric_publication_revisions SET revision=revision+1 WHERE application_id IN (SELECT id FROM applications WHERE job_id=OLD.job_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_revision_evidence_added AFTER INSERT ON rubric_evidence BEGIN
+            INSERT OR IGNORE INTO rubric_publication_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE id=NEW.application_id;
+            UPDATE rubric_publication_revisions SET revision=revision+1 WHERE application_id=NEW.application_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_revision_evidence_changed AFTER UPDATE ON rubric_evidence BEGIN
+            INSERT OR IGNORE INTO rubric_publication_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE id IN (OLD.application_id,NEW.application_id);
+            UPDATE rubric_publication_revisions SET revision=revision+1 WHERE application_id IN (OLD.application_id,NEW.application_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_revision_evidence_removed AFTER DELETE ON rubric_evidence BEGIN
+            INSERT OR IGNORE INTO rubric_publication_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE id=OLD.application_id;
+            UPDATE rubric_publication_revisions SET revision=revision+1 WHERE application_id=OLD.application_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_revision_assessment_added AFTER INSERT ON rubric_assessments BEGIN
+            INSERT OR IGNORE INTO rubric_publication_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE id=NEW.application_id;
+            UPDATE rubric_publication_revisions SET revision=revision+1 WHERE application_id=NEW.application_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_revision_assessment_changed AFTER UPDATE ON rubric_assessments BEGIN
+            INSERT OR IGNORE INTO rubric_publication_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE id IN (OLD.application_id,NEW.application_id);
+            UPDATE rubric_publication_revisions SET revision=revision+1 WHERE application_id IN (OLD.application_id,NEW.application_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_revision_assessment_removed AFTER DELETE ON rubric_assessments BEGIN
+            INSERT OR IGNORE INTO rubric_publication_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE id=OLD.application_id;
+            UPDATE rubric_publication_revisions SET revision=revision+1 WHERE application_id=OLD.application_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_application_changed
+        AFTER UPDATE OF resume_text,job_id,candidate_id ON applications BEGIN
+            DELETE FROM rubric_publications WHERE application_id=OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_job_changed
+        AFTER UPDATE ON jobs BEGIN
+            DELETE FROM rubric_publications WHERE application_id IN (SELECT id FROM applications WHERE job_id=OLD.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_criterion_added AFTER INSERT ON rubric_criteria BEGIN
+            DELETE FROM rubric_publications WHERE application_id IN (SELECT id FROM applications WHERE job_id=NEW.job_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_criterion_changed AFTER UPDATE ON rubric_criteria BEGIN
+            DELETE FROM rubric_publications WHERE application_id IN (SELECT id FROM applications WHERE job_id IN (OLD.job_id,NEW.job_id));
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_criterion_removed AFTER DELETE ON rubric_criteria BEGIN
+            DELETE FROM rubric_publications WHERE application_id IN (SELECT id FROM applications WHERE job_id=OLD.job_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_evidence_added AFTER INSERT ON rubric_evidence BEGIN
+            DELETE FROM rubric_publications WHERE application_id=NEW.application_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_evidence_changed AFTER UPDATE ON rubric_evidence BEGIN
+            DELETE FROM rubric_publications WHERE application_id IN (OLD.application_id,NEW.application_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_evidence_removed AFTER DELETE ON rubric_evidence BEGIN
+            DELETE FROM rubric_publications WHERE application_id=OLD.application_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_assessment_added AFTER INSERT ON rubric_assessments BEGIN
+            DELETE FROM rubric_publications WHERE application_id=NEW.application_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_assessment_changed AFTER UPDATE ON rubric_assessments BEGIN
+            DELETE FROM rubric_publications WHERE application_id IN (OLD.application_id,NEW.application_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS publication_assessment_removed AFTER DELETE ON rubric_assessments BEGIN
+            DELETE FROM rubric_publications WHERE application_id=OLD.application_id;
+        END;
         ''')
         columns = {row['name'] for row in db.execute('PRAGMA table_info(rubric_assessments)')}
         if 'criteria_fingerprint' not in columns:
