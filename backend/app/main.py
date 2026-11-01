@@ -48,6 +48,7 @@ from app.jobs_admin import router as jobs_admin_router
 from app.knowledge import answer_question
 from app.knowledge_documents import initialize_knowledge_documents
 from app.knowledge_documents import router as knowledge_documents_router
+from app.model_evidence_proposal import router as model_evidence_proposal_router
 from app.recruitment import router as recruitment_router
 from app.recruitment import seed_jobs
 from app.resume_field_review import initialize_resume_field_reviews
@@ -144,6 +145,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
     application.include_router(knowledge_documents_router)
     application.include_router(jobs_admin_router)
     application.include_router(rubric_admin_router)
+    application.include_router(model_evidence_proposal_router)
     application.include_router(rubric_evidence_bundle_router)
     application.include_router(audit_timeline_router)
     application.include_router(interview_guide_router)

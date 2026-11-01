@@ -59,7 +59,7 @@ class ReviewRequest(BaseModel):
     policy_question: str = Field(default="", max_length=2000)
     intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive'] = 'full'
     slot: SlotCreate | None = None
-    adaptive_goal: Literal['review_application', 'schedule_interview'] | None = None
+    adaptive_goal: Literal['review_application', 'schedule_interview', 'advance_and_reserve'] | None = None
     allow_semantic: StrictBool = False
 
     @model_validator(mode='before')
@@ -76,7 +76,7 @@ class ReviewRequest(BaseModel):
             raise ValueError('Policy review requires a question')
         if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot') and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
-        needs_slot = self.intent in ('create_slot', 'create_private_slot', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or (self.intent == 'adaptive' and self.adaptive_goal == 'schedule_interview')
+        needs_slot = self.intent in ('create_slot', 'create_private_slot', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or (self.intent == 'adaptive' and self.adaptive_goal in ('schedule_interview', 'advance_and_reserve'))
         if needs_slot != (self.slot is not None):
             raise ValueError('Slot details are required only for scheduling')
         if self.intent in ('create_slot', 'create_private_slot') and self.policy_question.strip():
@@ -206,6 +206,10 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             if state.get('allow_semantic'):
                 facts['semantic_available'] = (os.environ.get('TAWZEEF_ENABLE_SEMANTIC_SCREENING') == '1'
                                                and bool(os.environ.get('TAWZEEF_EMBEDDING_MODEL_DIR', '').strip()))
+            if state.get('adaptive_goal') == 'advance_and_reserve':
+                if facts['status'] != 'submitted':
+                    raise HTTPException(status_code=409, detail='Application must be submitted for advancement')
+                facts['goal'] = 'advance_and_reserve'
             if state.get('adaptive_goal') == 'schedule_interview' and facts['status'] != 'advanced':
                 raise HTTPException(status_code=409, detail='Application is not eligible for candidate booking')
             steps, source = make_plan(facts, enabled=enable_agent)
@@ -215,7 +219,9 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             with connect(path) as db:
                 if context_for(db, state['application_id'])[1] != digest:
                     raise HTTPException(status_code=409, detail='Application changed; start a new review')
-            action_steps = ['prepare_slot', 'human_review', 'execute_slot'] if state.get('adaptive_goal') == 'schedule_interview' else ['human_review']
+            action_steps = (['prepare_slot', 'human_review', 'execute_slot'] if state.get('adaptive_goal') == 'schedule_interview'
+                            else ['prepare_advance', 'human_review', 'execute_advance'] if state.get('adaptive_goal') == 'advance_and_reserve'
+                            else ['human_review'])
             return {'plan': [*steps, *action_steps], 'plan_source': source,
                     'plan_context': facts, 'context_digest': digest}
         plans = {
@@ -386,8 +392,9 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
                         'assessment_id': assessment['assessment_id'],
                         'notice': 'Approval advances this application for interview scheduling. '
                                   'The candidate must choose a slot separately; no message is sent.'}
-            if state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot'):
-                if (state.get('intent') == 'semantic_advance_and_reserve_slot' and
+            if state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or state.get('adaptive_goal') == 'advance_and_reserve':
+                if ((state.get('intent') == 'semantic_advance_and_reserve_slot' or
+                     (state.get('adaptive_goal') == 'advance_and_reserve' and 'semantic' in state.get('plan', []))) and
                         restore_references(db, state['application_id'], state.get('semantic_refs'))['status'] != 'current'):
                     raise HTTPException(status_code=409, detail='Resume or criteria changed; start a new review')
                 proposal.update({'type': 'advance_and_reserve_slot', 'candidate_id': application['candidate_id'],
@@ -414,7 +421,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         if (application['status'] != 'submitted' or context_digest != state.get('context_digest') or
                 matching_digest != state.get('matching_specialist_ref') or assessment['status'] != 'current' or
                 revision != state.get('assessment_revision') or
-                (state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') and
+                ((state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or state.get('adaptive_goal') == 'advance_and_reserve') and
                  application['candidate_id'] != state['action_proposal']['candidate_id']) or
                 assessment['assessment_id'] != state['action_proposal']['assessment_id']):
             raise HTTPException(status_code=409, detail='Application or assessment changed; start a new review')
@@ -423,7 +430,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         details = json.dumps({'decision': 'advance', 'note': ''}, ensure_ascii=False)
         action_db.execute('INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,?,?)',
                           (state['application_id'], user.id, 'decision', details))
-        if state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot'):
+        if state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or state.get('adaptive_goal') == 'advance_and_reserve':
             current = get_application(action_db, state['application_id'])
             slot_state = {**state, 'action_proposal': {**state['action_proposal'],
                 'application_updated_at': current['updated_at']}}
@@ -433,7 +440,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
 
     def human_review(state: ReviewState):
         notice = ('Approve advancement and a private slot for this candidate. No message is sent.'
-                  if state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') else
+                  if state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or state.get('adaptive_goal') == 'advance_and_reserve' else
                   'Approve advancing this application for interview scheduling. No message is sent.'
                   if state.get('intent') == 'advance_application' else
                   'Approve creation of a slot for this application and candidate only. '
@@ -481,7 +488,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
     choices = ['parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'human_review', 'execute_slot', 'execute_advance']
     for name in ['plan', *choices[:-3]]:
         builder.add_conditional_edges(name, next_after(name), choices)
-    builder.add_conditional_edges('human_review', lambda state: 'execute_advance' if state.get('intent') in ('advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
+    builder.add_conditional_edges('human_review', lambda state: 'execute_advance' if state.get('intent') in ('advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or state.get('adaptive_goal') == 'advance_and_reserve' else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
                                   {'execute_slot': 'execute_slot', 'execute_advance': 'execute_advance', END: END})
     builder.add_edge('execute_slot', END)
     builder.add_edge('execute_advance', END)
@@ -725,7 +732,7 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             if (snapshot.values.get('intent') == 'adaptive' and
                     context_for(db, snapshot.values['application_id'])[1] != snapshot.values.get('context_digest')):
                 raise HTTPException(status_code=409, detail='Application changed; start a new review')
-            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or snapshot.values.get('adaptive_goal') == 'schedule_interview') and payload.reviewed:
+            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or snapshot.values.get('adaptive_goal') in ('schedule_interview', 'advance_and_reserve')) and payload.reviewed:
                 expected = snapshot.values.get('action_proposal', {}).get('approval_fingerprint', '')
                 if (not expected or not payload.approval_fingerprint or
                         not secrets.compare_digest(expected.encode('utf-8'), payload.approval_fingerprint.encode('utf-8'))):

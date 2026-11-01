@@ -31,6 +31,32 @@ class DocumentTextError(ValueError):
         super().__init__(message)
 
 
+_PDF_PAINT_OPERATORS = frozenset((
+    b'Do', b'INLINE IMAGE', b'S', b's', b'f', b'F', b'f*', b'B', b'B*', b'b', b'b*', b'sh',
+    b'Tj', b'TJ', b"'", b'"',
+))
+
+
+def _page_has_unextracted_content(page) -> bool:
+    """Flag nonblank graphics or text operations when extraction yields no text.
+
+    This intentionally does not classify visible content: a decorative image or
+    line can trigger the same warning as a scanned page. Conversely, extracted
+    text on a page does not establish that all of its visible content was read.
+    """
+    contents = page.get_contents()
+    return contents is not None and any(operator in _PDF_PAINT_OPERATORS for _, operator in contents.operations)
+
+
+def _check_partial_pdf(has_text: bool, has_unextracted_content: bool) -> None:
+    if has_text and has_unextracted_content:
+        raise DocumentTextError(
+            'partial_text',
+            'Some PDF pages contain graphics or unextractable text without a text layer. '
+            'Review the document and provide a complete text-based PDF; OCR may be required.',
+        )
+
+
 def extract_pdf_pages(filename: str, content: bytes) -> list[dict]:
     """Extract numbered PDF text pages, including blank pages, without OCR."""
     if not isinstance(filename, str) or not isinstance(content, bytes):
@@ -49,14 +75,18 @@ def extract_pdf_pages(filename: str, content: bytes) -> list[dict]:
             raise DocumentTextError('document_too_large', 'The PDF has too many pages.')
         pages = []
         total = 0
+        unextracted_content = False
         for number, page in enumerate(reader.pages, 1):
             content_text = (page.extract_text() or '').strip()
+            if not content_text and _page_has_unextracted_content(page):
+                unextracted_content = True
             if '\x00' in content_text:
                 raise DocumentTextError('invalid_document', 'PDF text contains invalid characters.')
             total += len(content_text) + (1 if pages and content_text else 0)
             if total > MAX_TEXT_CHARS:
                 raise DocumentTextError('document_too_large', 'Extracted text exceeds the limit.')
             pages.append({'page': number, 'text': content_text})
+        _check_partial_pdf(any(page['text'] for page in pages), unextracted_content)
     except DocumentTextError:
         raise
     except Exception as exc:
@@ -104,7 +134,7 @@ def extract_document_text(
     """Extract text or raise DocumentTextError; extension must be PDF or DOCX.
 
     Error codes: unsupported_type, empty_file, file_too_large,
-    document_too_large, protected_document, invalid_document, and no_text.
+    document_too_large, protected_document, invalid_document, no_text, and partial_text.
     ``no_text`` includes image-only PDFs, which need a separate OCR pipeline.
     PDF extraction supports text layers, not images. DOCX paragraphs and table
     cells are read in document order; headers, footers, and images are omitted.
@@ -133,8 +163,13 @@ def extract_document_text(
                 raise DocumentTextError('protected_document', 'Password-protected PDFs are unsupported.')
             if len(reader.pages) > max_pages:
                 raise DocumentTextError('document_too_large', 'The PDF has too many pages.')
+            unextracted_content = False
             for page in reader.pages:
-                length = _append_text(parts, page.extract_text() or '', length, max_chars)
+                text = page.extract_text() or ''
+                if not text.strip() and _page_has_unextracted_content(page):
+                    unextracted_content = True
+                length = _append_text(parts, text, length, max_chars)
+            _check_partial_pdf(bool(parts), unextracted_content)
         else:
             if content.startswith(b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'):
                 raise DocumentTextError(

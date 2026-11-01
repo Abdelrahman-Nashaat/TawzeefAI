@@ -27,6 +27,8 @@ def context_for(db, application_id: int) -> tuple[dict, str]:
 
 
 def default_steps(facts: dict) -> list[str]:
+    if facts.get('goal') == 'advance_and_reserve':
+        return ['parser', 'matching', 'semantic', 'status'] if facts.get('semantic_available') else ['parser', 'matching', 'status']
     if facts['status'] in ('hired', 'rejected'):
         return ['status']
     if not facts['has_screening']:
@@ -47,6 +49,9 @@ def validate_steps(proposal: object, facts: dict) -> list[str]:
         raise ValueError('Invalid plan steps')
     if 'status' not in steps:
         raise ValueError('Status is required')
+    if facts.get('goal') == 'advance_and_reserve' and (
+            facts['status'] != 'submitted' or 'parser' not in steps or 'matching' not in steps):
+        raise ValueError('Advancement requires a submitted application, parser and matching')
     if facts['status'] in ('hired', 'rejected') and steps != ['status']:
         raise ValueError('Terminal applications permit only status')
     if 'scheduler' in steps and (facts['status'] != 'advanced' or steps.index('scheduler') < steps.index('status')):

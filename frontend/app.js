@@ -605,13 +605,63 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
   const suggestEvidence = element("button", "outline-button", "اقتراح مقتطفات لكل معيار"); suggestEvidence.type = "button";
   const suggestions = element("div"); suggestions.setAttribute("aria-live", "polite");
   const evidenceList = element("ul", "evidence-list");
+  const modelReview = element("details", "application-detail");
+  modelReview.append(element("summary", "", "Optional model-assisted evidence preview"));
+  const modelPanel = element("div"); modelReview.append(modelPanel);
+  let modelReviewGeneration = 0;
+  modelReview.addEventListener("toggle", async () => {
+    const generation = ++modelReviewGeneration;
+    if (!modelReview.open) { modelPanel.replaceChildren(); return; }
+    modelPanel.replaceChildren(element("p", "subtle-note", "Loading current criteria and evidence..."));
+    let context, reviewedCriteria, reviewedEvidence;
+    try {
+      context = await api(`${base}/evidence-bundle/context`);
+      [reviewedCriteria, reviewedEvidence] = await Promise.all([api(jobPath), api(`${base}/evidence`)]);
+      const verified = await api(`${base}/evidence-bundle/context`);
+      if (!modelReview.open || generation !== modelReviewGeneration || !modelPanel.isConnected) return;
+      if (context.snapshot !== verified.snapshot || !Array.isArray(reviewedCriteria) || !Array.isArray(reviewedEvidence)) throw new Error("Changed review context");
+    } catch (error) {
+      if (!isStale(error) && modelReview.open && generation === modelReviewGeneration && modelPanel.isConnected) modelPanel.replaceChildren(element("p", "form-error", "Unable to load a current review. Close and reopen this panel."));
+      return;
+    }
+    const note = element("p", "form-error", "Use synthetic data only. Your selected criterion and partially redacted excerpts are sent to Groq. Redaction can miss personal information. Suggestions can be wrong and do not change judgments or scores.");
+    const criterionLabel = element("label", "", "Criterion to review");
+    const criterionSelect = element("select");
+    for (const criterion of reviewedCriteria) { const option = element("option", "", criterion.label); option.value = criterion.criterion_ref; criterionSelect.append(option); }
+    criterionLabel.append(criterionSelect);
+    const choices = element("div");
+    for (const entry of reviewedEvidence) {
+      const label = element("label", "rubric-evidence-choice"); const checkbox = element("input"); checkbox.type = "checkbox"; checkbox.value = entry.evidence_ref;
+      label.append(checkbox, document.createTextNode(` ${entry.evidence_ref}: ${entry.excerpt}`)); choices.append(label);
+    }
+    const consent = element("input"); consent.type = "checkbox";
+    const consentLabel = element("label", "", "I reviewed the selected synthetic text and approve sending it to Groq for this preview."); consentLabel.prepend(consent);
+    const run = element("button", "outline-button", "Request evidence preview"); run.type = "button";
+    const output = element("div"); output.setAttribute("aria-live", "polite");
+    run.addEventListener("click", async () => {
+      const refs = Array.from(choices.querySelectorAll("input:checked"), (input) => input.value);
+      if (!consent.checked || !criterionSelect.value || !refs.length || refs.length > 5) { output.replaceChildren(element("p", "form-error", "Choose a criterion and one to five evidence excerpts, then approve the preview.")); return; }
+      run.disabled = true; consent.disabled = true; criterionSelect.disabled = true;
+      for (const checkbox of choices.querySelectorAll("input")) checkbox.disabled = true;
+      try {
+        const response = await api(`${base}/model-evidence-proposal`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({snapshot: context.snapshot, confirmed: true, selections: [{criterion_ref: criterionSelect.value, evidence_refs: refs}]})});
+        if (!output.isConnected) return;
+        output.replaceChildren(element("p", "subtle-note", response.notice));
+        const list = element("ul", "evidence-list");
+        for (const proposal of response.proposals || []) list.append(element("li", "", `${proposal.evidence_ref}: ${proposal.relation} · ${proposal.reason_code}`));
+        output.append(list);
+      } catch (error) { if (!isStale(error) && output.isConnected) output.replaceChildren(element("p", "form-error", "Preview unavailable or evidence changed. Reload and review the selection before trying again.")); }
+      finally { run.disabled = false; consent.disabled = false; criterionSelect.disabled = false; for (const checkbox of choices.querySelectorAll("input")) checkbox.disabled = false; }
+    });
+    modelPanel.replaceChildren(note, criterionLabel, choices, consentLabel, run, output);
+  });
   const evaluation = element("form", "decision-form");
   const judgmentList = element("div");
   const save = element("button", "small-button", "حفظ التقييم البشري"); save.type = "submit";
   const result = element("div"); result.setAttribute("aria-live", "polite");
   evaluation.append(judgmentList, save);
   target.replaceChildren(heading, notice, message, element("h4", "", "معايير الوظيفة"), criterionForm,
-    element("h4", "", "أدلة المراجعة"), privacyNote, sourceLabel, addEvidence, suggestEvidence, suggestions, evidenceList,
+    element("h4", "", "أدلة المراجعة"), privacyNote, sourceLabel, addEvidence, suggestEvidence, suggestions, evidenceList, modelReview,
     element("h4", "", "تقييم كل معيار"), evaluation, result);
 
   let drafts = new Map();
@@ -848,6 +898,8 @@ function setupGraphReview(target, application) {
   semanticOption.value = "semantic_review"; intent.append(semanticOption);
   const semanticAdvanceOption = element("option", "", "Review semantic evidence, advance, and reserve a private slot");
   semanticAdvanceOption.value = "semantic_advance_and_reserve_slot"; intent.append(semanticAdvanceOption);
+  const adaptiveAdvanceOption = element("option", "", "Adaptive review, advance, and reserve a private slot");
+  adaptiveAdvanceOption.value = "adaptive_advance"; intent.append(adaptiveAdvanceOption);
   intentLabel.append(intent);
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
   const question = element("textarea"); question.maxLength = 2000; question.placeholder = "يمكن تركه فارغًا"; questionLabel.append(question);
@@ -861,7 +913,7 @@ function setupGraphReview(target, application) {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "التوقيت المحلي";
   slotFields.append(element("p", "subtle-note", `الوقت المدخل حسب المنطقة الزمنية لجهازك: ${timezone}.`), slotStartLabel, slotEndLabel, interviewerLabel);
   intent.addEventListener("change", () => {
-    const adaptiveMode = ["adaptive", "adaptive_schedule"].includes(intent.value);
+    const adaptiveMode = ["adaptive", "adaptive_schedule", "adaptive_advance"].includes(intent.value);
     adaptiveSemanticLabel.hidden = !adaptiveMode; adaptiveSemantic.disabled = !adaptiveMode;
     if (!adaptiveMode) adaptiveSemantic.checked = false;
     const supportsPolicy = intent.value === "full" || intent.value === "policy";
@@ -870,7 +922,7 @@ function setupGraphReview(target, application) {
     questionLabel.firstChild.textContent = question.required ? "سؤال السياسة المطلوب للبحث المحلي" : "سؤال سياسة اختياري للبحث المحلي";
     question.placeholder = question.required ? "اكتب سؤالك عن السياسة" : "يمكن تركه فارغًا";
     if (!supportsPolicy) question.value = "";
-    const createSlot = ["create_slot", "create_private_slot", "advance_and_reserve_slot", "semantic_advance_and_reserve_slot", "adaptive_schedule"].includes(intent.value);
+    const createSlot = ["create_slot", "create_private_slot", "advance_and_reserve_slot", "semantic_advance_and_reserve_slot", "adaptive_schedule", "adaptive_advance"].includes(intent.value);
     slotFields.hidden = !createSlot;
     for (const field of [slotStart, slotEnd, interviewer]) { field.disabled = !createSlot; field.required = createSlot; }
   });
@@ -898,7 +950,7 @@ function setupGraphReview(target, application) {
     output.append(element("h4", "", "مراحل المراجعة"), plan);
     if (review.state.intent === "adaptive") {
       const planSources = { model: "اقترح النموذج الخطة وتحقق الخادم من خطواتها.", deterministic: "استُخدمت خطة محددة حسب حالة الطلب دون نموذج.", deterministic_fallback: "تعذّر استخدام اقتراح النموذج أو لم يجتز التحقق؛ استُخدمت خطة بديلة محددة." };
-      const planNotice = review.state.adaptive_goal === "schedule_interview" ? "يمكن إضافة موعد عام فقط بعد الموافقة البشرية على تفاصيله." : "المراحل للقراءة فقط وتحتاج مراجعة بشرية.";
+      const planNotice = review.state.adaptive_goal === "advance_and_reserve" ? "Advancement and the private slot require explicit HR approval." : review.state.adaptive_goal === "schedule_interview" ? "يمكن إضافة موعد عام فقط بعد الموافقة البشرية على تفاصيله." : "المراحل للقراءة فقط وتحتاج مراجعة بشرية.";
       output.append(element("p", "subtle-note", `${planSources[review.state.plan_source] || "مصدر الخطة غير معروف."} ${planNotice}`));
       if (review.state.plan_stale) output.append(element("p", "form-error", "تغير الطلب أو الوظيفة منذ إعداد الخطة؛ ابدأ مراجعة جديدة."));
     }
@@ -1083,10 +1135,11 @@ function setupGraphReview(target, application) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); start.disabled = true; open.disabled = true; output.replaceChildren(); report("جارٍ تنفيذ المراحل حتى نقطة المراجعة البشرية...");
     try {
-      const body = { application_id: application.id, intent: intent.value === "adaptive_schedule" ? "adaptive" : intent.value };
-      if (intent.value === "adaptive" || intent.value === "adaptive_schedule") { body.adaptive_goal = intent.value === "adaptive" ? "review_application" : "schedule_interview"; body.allow_semantic = adaptiveSemantic.checked; }
+      const adaptiveMode = ["adaptive", "adaptive_schedule", "adaptive_advance"].includes(intent.value);
+      const body = { application_id: application.id, intent: adaptiveMode ? "adaptive" : intent.value };
+      if (adaptiveMode) { body.adaptive_goal = intent.value === "adaptive" ? "review_application" : intent.value === "adaptive_schedule" ? "schedule_interview" : "advance_and_reserve"; body.allow_semantic = adaptiveSemantic.checked; }
       else body.policy_question = question.value.trim();
-      if (["create_slot", "create_private_slot", "advance_and_reserve_slot", "semantic_advance_and_reserve_slot", "adaptive_schedule"].includes(intent.value)) {
+      if (["create_slot", "create_private_slot", "advance_and_reserve_slot", "semantic_advance_and_reserve_slot", "adaptive_schedule", "adaptive_advance"].includes(intent.value)) {
         const startTime = new Date(slotStart.value), endTime = new Date(slotEnd.value);
         if (!interviewer.value.trim() || Number.isNaN(startTime.valueOf()) || Number.isNaN(endTime.valueOf()) || endTime <= startTime) throw new Error("تحقق من اسم المحاور وأن نهاية الموعد بعد بدايته.");
         body.slot = { start_at: startTime.toISOString(), end_at: endTime.toISOString(), interviewer: interviewer.value.trim() };
