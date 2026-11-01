@@ -11,6 +11,7 @@ import json
 from pydantic import ValidationError
 
 from app.blind import redact_resume
+from app.evidence_cautions import evidence_cautions
 from app.recruitment import get_application
 from app.resume_field_review import _latest as latest_field_review
 from app.resume_field_review import _view as field_review_view
@@ -88,7 +89,8 @@ def matching_snapshot(db, application_id: int) -> tuple[str, dict]:
         item = {'criterion_ref': claim.criterion_ref, 'category': category,
                 'criterion': criterion['label'], 'status': claim.status,
                 'evidence': [{'ref': ref, 'excerpt': available[ref]['excerpt'],
-                              'start': available[ref]['start_offset'], 'end': available[ref]['end_offset']}
+                              'start': available[ref]['start_offset'], 'end': available[ref]['end_offset'],
+                              'cautions': evidence_cautions(available[ref]['excerpt'], available[ref]['start_offset'])}
                              for ref in claim.evidence_refs]}
         if claim.status in ('unknown', 'missing'):
             label = criterion['label']

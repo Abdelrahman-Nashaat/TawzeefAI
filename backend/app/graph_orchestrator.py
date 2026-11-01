@@ -37,6 +37,8 @@ from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_d
 from app.blind import redact_resume
 from app.conversations import _authorized_sources, _digest
 from app.db import connect
+from app.graph_semantic import context as semantic_context
+from app.graph_semantic import restore_references, save_references
 from app.matching_specialist import matching_snapshot
 from app.policy_agent import authorized_policy_sources, run_policy_agent
 from app.recruitment import get_application, job_data, score_resume
@@ -54,7 +56,7 @@ logger = logging.getLogger(__name__)
 class ReviewRequest(BaseModel):
     application_id: int = Field(gt=0)
     policy_question: str = Field(default="", max_length=2000)
-    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'adaptive'] = 'full'
+    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'adaptive'] = 'full'
     slot: SlotCreate | None = None
     adaptive_goal: Literal['review_application', 'schedule_interview'] | None = None
 
@@ -70,7 +72,7 @@ class ReviewRequest(BaseModel):
     def check_policy_question(self):
         if self.intent == 'policy' and not self.policy_question.strip():
             raise ValueError('Policy review requires a question')
-        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot') and self.policy_question.strip():
+        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot', 'semantic_review') and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
         needs_slot = self.intent in ('create_slot', 'create_private_slot', 'advance_and_reserve_slot') or (self.intent == 'adaptive' and self.adaptive_goal == 'schedule_interview')
         if needs_slot != (self.slot is not None):
@@ -109,6 +111,7 @@ class ReviewState(TypedDict, total=False):
     plan_context: dict
     context_digest: str
     assessment_revision: int
+    semantic_refs: dict
 
 
 class _AtomicResumeSaver(SqliteSaver):
@@ -186,7 +189,7 @@ def _current_scheduling(path: str | Path, application_id: int) -> dict:
 
 def build_review_graph(path: str | Path, checkpointer, *, policy_question: str = "",
                        user: User | None = None, authorize=None, enable_agent: bool = False,
-                       action_db=None):
+                       action_db=None, request: Request | None = None):
     """Compile a bounded graph around supervised domain operations."""
     def plan(state: ReviewState):
         if state.get('intent') == 'adaptive':
@@ -216,6 +219,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             'create_private_slot': ['prepare_slot', 'human_review', 'execute_slot'],
             'advance_application': ['parser', 'matching', 'status', 'prepare_advance', 'human_review', 'execute_advance'],
             'advance_and_reserve_slot': ['parser', 'matching', 'status', 'prepare_advance', 'human_review', 'execute_advance'],
+            'semantic_review': ['parser', 'matching', 'semantic', 'human_review'],
         }
         return {'plan': plans[state.get('intent', 'full')]}
 
@@ -260,6 +264,24 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         return {"policy": {"status": "source_refs_v2", "refs": [
             {"id": source.id, "digest": _digest(source)} for source in answer.sources
         ]}}
+
+    def semantic(state: ReviewState):
+        if request is None or user is None or authorize is None:
+            raise HTTPException(status_code=403, detail='HR access required')
+        from app.rubric_admin import semantic_suggestions
+
+        authorize()
+        with connect(path) as db:
+            original_context = semantic_context(db, state['application_id'])
+        result = semantic_suggestions(state['application_id'], request, user)
+        authorize()
+        with connect(path) as db:
+            matching_digest, _ = matching_snapshot(db, state['application_id'])
+            if (semantic_context(db, state['application_id']) != original_context
+                    or result['source_sha256'] != state.get('parser_source_ref')
+                    or matching_digest != state.get('matching_specialist_ref')):
+                raise HTTPException(status_code=409, detail='Application changed; start a new semantic review')
+        return {'semantic_refs': save_references(result, original_context)}
 
     def scheduler(state: ReviewState):
         return {"scheduling": _current_scheduling(path, state["application_id"])}
@@ -414,7 +436,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         return {"reviewed": reviewed}
 
     builder = StateGraph(ReviewState)
-    nodes = {"plan": plan, "parser": parser, "matching": matching, "policy": policy,
+    nodes = {"plan": plan, "parser": parser, "matching": matching, "semantic": semantic, "policy": policy,
              "scheduler": scheduler, "status": status, "agent_review": agent_review,
              "human_review": human_review, "prepare_slot": prepare_slot, "execute_slot": execute_slot,
              "prepare_advance": prepare_advance, "execute_advance": execute_advance}
@@ -444,7 +466,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             steps = state['plan']
             return steps[0] if name == 'plan' else steps[steps.index(name) + 1]
         return route
-    choices = ['parser', 'matching', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'human_review', 'execute_slot', 'execute_advance']
+    choices = ['parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'human_review', 'execute_slot', 'execute_advance']
     for name in ['plan', *choices[:-3]]:
         builder.add_conditional_edges(name, next_after(name), choices)
     builder.add_conditional_edges('human_review', lambda state: 'execute_advance' if state.get('intent') in ('advance_application', 'advance_and_reserve_slot') else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
@@ -510,18 +532,19 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     state = dict(snapshot.values)
     specialist_ref = state.pop('matching_specialist_ref', None)
     parser_ref = state.pop('parser_source_ref', None)
+    semantic_refs = state.pop('semantic_refs', None)
     # Old checkpoints lack intent and retain the historical full-review view.
     # Never expose stale stage data outside an explicitly selected scope.
     selected = state.get('intent', 'full')
     scoped_fields = {'parsed': 'full', 'matching': 'full', 'agent_review': 'full',
                      'policy': 'policy', 'scheduling': 'scheduling', 'status': 'status'}
-    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'adaptive'}:
+    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'adaptive'}:
         selected = 'invalid'
     for field, scope in scoped_fields.items():
         adaptive_fields = {'parsed': 'parser', 'matching': 'matching', 'scheduling': 'scheduler', 'status': 'status'}
         if selected == 'adaptive' and adaptive_fields.get(field) in state.get('plan', []):
             continue
-        if selected in ('advance_application', 'advance_and_reserve_slot') and field in {'parsed', 'matching', 'status'}:
+        if selected in ('advance_application', 'advance_and_reserve_slot', 'semantic_review') and field in {'parsed', 'matching', 'status'}:
             continue
         if selected != 'full' and scope != selected:
             state.pop(field, None)
@@ -558,6 +581,8 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     raise HTTPException(status_code=401, detail='Authentication required')
                 if actor['role'] != 'hr':
                     raise HTTPException(status_code=403, detail='HR access required')
+                if selected == 'semantic_review':
+                    state['semantic_suggestions'] = restore_references(db, state['application_id'], semantic_refs)
                 if 'parsed' in state:
                     application = get_application(db, state['application_id'])
                     source = redact_resume(application['resume_text']).text
@@ -567,7 +592,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     else:
                         state.pop('parsed', None)
                         state['resume_fields'] = {'status': 'stale', 'notice': 'Resume changed or cannot be verified; start a new review.'}
-                if (selected in ('full', 'adaptive', 'advance_application', 'advance_and_reserve_slot') and 'matching' in state.get('plan', [])
+                if (selected in ('full', 'adaptive', 'advance_application', 'advance_and_reserve_slot', 'semantic_review') and 'matching' in state.get('plan', [])
                         and isinstance(specialist_ref, str)):
                     digest, report = matching_snapshot(db, state['application_id'])
                     state['matching_specialist'] = report if secrets.compare_digest(
@@ -624,7 +649,7 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
 
             graph = build_review_graph(path, saver, policy_question=payload.policy_question,
                                        user=user, authorize=authorize,
-                                       enable_agent=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1')
+                                       enable_agent=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1', request=request)
             config = _config(thread_id)
             initial = {"application_id": payload.application_id, "intent": payload.intent}
             if payload.adaptive_goal is not None:
@@ -678,6 +703,9 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             snapshot = graph.get_state(config)
             if not snapshot.next:
                 raise HTTPException(status_code=409, detail="Review is not awaiting input")
+            if (snapshot.values.get('intent') == 'semantic_review' and payload.reviewed and
+                    restore_references(db, snapshot.values['application_id'], snapshot.values.get('semantic_refs'))['status'] != 'current'):
+                raise HTTPException(status_code=409, detail='Resume or criteria changed; start a new semantic review')
             if (snapshot.values.get('intent') == 'adaptive' and
                     context_for(db, snapshot.values['application_id'])[1] != snapshot.values.get('context_digest')):
                 raise HTTPException(status_code=409, detail='Application changed; start a new review')

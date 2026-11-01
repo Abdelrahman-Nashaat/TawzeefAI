@@ -817,6 +817,8 @@ function setupGraphReview(target, application) {
   advanceOption.value = "advance_application"; intent.append(advanceOption);
   const advanceSlotOption = element("option", "", "Review, advance, and reserve a candidate-specific slot");
   advanceSlotOption.value = "advance_and_reserve_slot"; intent.append(advanceSlotOption);
+  const semanticOption = element("option", "", "Review semantic résumé evidence");
+  semanticOption.value = "semantic_review"; intent.append(semanticOption);
   intentLabel.append(intent);
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
   const question = element("textarea"); question.maxLength = 2000; question.placeholder = "يمكن تركه فارغًا"; questionLabel.append(question);
@@ -849,6 +851,7 @@ function setupGraphReview(target, application) {
   const labels = { parser: "قراءة النص المستخرج", matching: "فحص المهارات المذكورة", policy: "بحث السياسة المحلي", scheduler: "استعراض المواعيد المحلية", status: "حالة الطلب", agent_review: "مساعد أدوات القراءة", prepare_slot: "تجهيز مقترح الموعد", human_review: "مراجعة بشرية", execute_slot: "إضافة الموعد بعد الموافقة" };
   labels.prepare_advance = "Prepare advancement proposal";
   labels.execute_advance = "Advance after HR approval";
+  labels.semantic = "Find résumé passages for human review";
   function report(text, error = false) { message.textContent = text; message.className = error ? "form-error" : "subtle-note"; }
   function remember(id) { try { sessionStorage.setItem(storageKey, id); } catch { /* Manual restore remains available. */ } }
   function display(review) {
@@ -910,11 +913,32 @@ function setupGraphReview(target, application) {
         for (const criterion of specialist.criteria || []) {
           const item = element("li");
           item.append(element("strong", "", criterion.criterion || criterion.criterion_ref), element("p", "", `الحالة: ${claimLabels[criterion.status] || "غير متاحة"}`));
-          for (const evidence of criterion.evidence || []) item.append(element("p", "", evidence.excerpt));
+          for (const evidence of criterion.evidence || []) {
+            item.append(element("p", "", evidence.excerpt));
+            for (const caution of evidence.cautions || []) item.append(element("p", "subtle-note", `Text cue: ${caution.kind} — ${caution.text}. Review context; other issues may be missed.`));
+          }
           if (criterion.question_ar || criterion.question) item.append(element("p", "subtle-note", criterion.question_ar || criterion.question));
           list.append(item);
         }
         output.append(list);
+      }
+    }
+    const semantic = review.state.semantic_suggestions;
+    if (semantic) {
+      output.append(element("h4", "", "Semantic evidence suggestions"));
+      if (semantic.status !== "current") output.append(element("p", "form-error", "The résumé or criteria changed; start a new review."));
+      else {
+        output.append(element("p", "subtle-note", semantic.notice || "Suggestions are unverified; review the full résumé and context."));
+        for (const criterion of semantic.criteria || []) {
+          output.append(element("h5", "", criterion.label));
+          const list = element("ul", "evidence-list");
+          for (const candidate of criterion.candidates || []) {
+            const item = element("li");
+            item.append(element("p", "resume-preview", candidate.excerpt), element("p", "subtle-note", `Source: ${candidate.section || "unknown"} · similarity: ${Number.isFinite(candidate.similarity) ? candidate.similarity.toFixed(2) : "unavailable"}. Similarity applies to the matched passage; surrounding text is context.`));
+            list.append(item);
+          }
+          if (list.childNodes.length) output.append(list); else output.append(element("p", "subtle-note", "No passage was suggested; this does not establish a missing qualification."));
+        }
       }
     }
     const policy = review.state.policy;
@@ -1000,13 +1024,14 @@ function setupGraphReview(target, application) {
       output.append(element("p", "result-badge", "توقفت المراجعة بانتظار التأكيد البشري."));
       const resume = element("button", "small-button", "أؤكد أنني راجعت النتائج واستكمل المراجعة"); resume.type = "button";
       if (review.state.intent === "adaptive" && review.state.plan_stale) resume.disabled = true;
+      if (review.state.intent === "semantic_review" && semantic?.status !== "current") resume.disabled = true;
       resume.addEventListener("click", async () => {
         resume.disabled = true; start.disabled = true; open.disabled = true; report("جارٍ استكمال المراجعة...");
         try {
           const updated = await api(`/api/graph-reviews/${encodeURIComponent(review.id)}/resume`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewed: true }) });
           if (target.isConnected) { display(updated); report("اكتملت مراجعة المراحل دون تغيير قرار الطلب أو حجز موعد."); }
         } catch (error) { if (!isStale(error) && target.isConnected) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
-        finally { resume.disabled = false; start.disabled = false; open.disabled = false; }
+        finally { resume.disabled = review.state.intent === "semantic_review" && semantic?.status !== "current"; start.disabled = false; open.disabled = false; }
       });
       output.append(resume);
     } else if (!result) output.append(element("p", "result-badge", review.state.reviewed === true ? "اكتملت المراجعة بتأكيد بشري." : "انتهت المراجعة دون تأكيد بأن النتائج روجعت."));
