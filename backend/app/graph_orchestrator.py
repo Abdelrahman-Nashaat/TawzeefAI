@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 class ReviewRequest(BaseModel):
     application_id: int = Field(gt=0)
     policy_question: str = Field(default="", max_length=2000)
-    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'adaptive'] = 'full'
+    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'adaptive'] = 'full'
     slot: SlotCreate | None = None
     adaptive_goal: Literal['review_application', 'schedule_interview'] | None = None
 
@@ -70,9 +70,9 @@ class ReviewRequest(BaseModel):
     def check_policy_question(self):
         if self.intent == 'policy' and not self.policy_question.strip():
             raise ValueError('Policy review requires a question')
-        if self.intent in ('scheduling', 'status', 'advance_application') and self.policy_question.strip():
+        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot') and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
-        needs_slot = self.intent in ('create_slot', 'create_private_slot') or (self.intent == 'adaptive' and self.adaptive_goal == 'schedule_interview')
+        needs_slot = self.intent in ('create_slot', 'create_private_slot', 'advance_and_reserve_slot') or (self.intent == 'adaptive' and self.adaptive_goal == 'schedule_interview')
         if needs_slot != (self.slot is not None):
             raise ValueError('Slot details are required only for scheduling')
         if self.intent in ('create_slot', 'create_private_slot') and self.policy_question.strip():
@@ -215,6 +215,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             'create_slot': ['prepare_slot', 'human_review', 'execute_slot'],
             'create_private_slot': ['prepare_slot', 'human_review', 'execute_slot'],
             'advance_application': ['parser', 'matching', 'status', 'prepare_advance', 'human_review', 'execute_advance'],
+            'advance_and_reserve_slot': ['parser', 'matching', 'status', 'prepare_advance', 'human_review', 'execute_advance'],
         }
         return {'plan': plans[state.get('intent', 'full')]}
 
@@ -354,6 +355,11 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
                         'assessment_id': assessment['assessment_id'],
                         'notice': 'Approval advances this application for interview scheduling. '
                                   'The candidate must choose a slot separately; no message is sent.'}
+            if state.get('intent') == 'advance_and_reserve_slot':
+                proposal.update({'type': 'advance_and_reserve_slot', 'candidate_id': application['candidate_id'],
+                                 'availability_scope': 'selected_application_only', 'slot': state['slot'],
+                                 'notice': 'Approval advances this application and reserves this slot for its candidate. '
+                                           'The candidate must book separately; no message is sent.'})
             encoded = json.dumps({'proposal': proposal, 'context': context_digest, 'assessment': matching_digest,
                                   'assessment_revision': revision},
                                  ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
@@ -374,6 +380,8 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         if (application['status'] != 'submitted' or context_digest != state.get('context_digest') or
                 matching_digest != state.get('matching_specialist_ref') or assessment['status'] != 'current' or
                 revision != state.get('assessment_revision') or
+                (state.get('intent') == 'advance_and_reserve_slot' and
+                 application['candidate_id'] != state['action_proposal']['candidate_id']) or
                 assessment['assessment_id'] != state['action_proposal']['assessment_id']):
             raise HTTPException(status_code=409, detail='Application or assessment changed; start a new review')
         action_db.execute("UPDATE applications SET status='advanced', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?",
@@ -381,10 +389,18 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         details = json.dumps({'decision': 'advance', 'note': ''}, ensure_ascii=False)
         action_db.execute('INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,?,?)',
                           (state['application_id'], user.id, 'decision', details))
+        if state.get('intent') == 'advance_and_reserve_slot':
+            current = get_application(action_db, state['application_id'])
+            slot_state = {**state, 'action_proposal': {**state['action_proposal'],
+                'application_updated_at': current['updated_at']}}
+            slot_result = execute_slot(slot_state)['action_result']
+            return {'action_result': {'status': 'advanced_and_reserved', 'slot': slot_result['slot']}}
         return {'action_result': {'status': 'advanced'}}
 
     def human_review(state: ReviewState):
-        notice = ('Approve advancing this application for interview scheduling. No message is sent.'
+        notice = ('Approve advancement and a private slot for this candidate. No message is sent.'
+                  if state.get('intent') == 'advance_and_reserve_slot' else
+                  'Approve advancing this application for interview scheduling. No message is sent.'
                   if state.get('intent') == 'advance_application' else
                   'Approve creation of a slot for this application and candidate only. '
                   'The candidate must book it separately; no invitation is sent.'
@@ -431,7 +447,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
     choices = ['parser', 'matching', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'human_review', 'execute_slot', 'execute_advance']
     for name in ['plan', *choices[:-3]]:
         builder.add_conditional_edges(name, next_after(name), choices)
-    builder.add_conditional_edges('human_review', lambda state: 'execute_advance' if state.get('intent') == 'advance_application' else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
+    builder.add_conditional_edges('human_review', lambda state: 'execute_advance' if state.get('intent') in ('advance_application', 'advance_and_reserve_slot') else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
                                   {'execute_slot': 'execute_slot', 'execute_advance': 'execute_advance', END: END})
     builder.add_edge('execute_slot', END)
     builder.add_edge('execute_advance', END)
@@ -499,13 +515,13 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     selected = state.get('intent', 'full')
     scoped_fields = {'parsed': 'full', 'matching': 'full', 'agent_review': 'full',
                      'policy': 'policy', 'scheduling': 'scheduling', 'status': 'status'}
-    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'adaptive'}:
+    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'adaptive'}:
         selected = 'invalid'
     for field, scope in scoped_fields.items():
         adaptive_fields = {'parsed': 'parser', 'matching': 'matching', 'scheduling': 'scheduler', 'status': 'status'}
         if selected == 'adaptive' and adaptive_fields.get(field) in state.get('plan', []):
             continue
-        if selected == 'advance_application' and field in {'parsed', 'matching', 'status'}:
+        if selected in ('advance_application', 'advance_and_reserve_slot') and field in {'parsed', 'matching', 'status'}:
             continue
         if selected != 'full' and scope != selected:
             state.pop(field, None)
@@ -551,7 +567,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     else:
                         state.pop('parsed', None)
                         state['resume_fields'] = {'status': 'stale', 'notice': 'Resume changed or cannot be verified; start a new review.'}
-                if (selected in ('full', 'adaptive', 'advance_application') and 'matching' in state.get('plan', [])
+                if (selected in ('full', 'adaptive', 'advance_application', 'advance_and_reserve_slot') and 'matching' in state.get('plan', [])
                         and isinstance(specialist_ref, str)):
                     digest, report = matching_snapshot(db, state['application_id'])
                     state['matching_specialist'] = report if secrets.compare_digest(
@@ -582,9 +598,9 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
             state["scheduling"] = _current_scheduling(path, state["application_id"])
         else:
             state.pop('scheduling', None)
-        if selected not in ('full', 'status', 'adaptive', 'advance_application') or 'status' not in state.get('plan', []):
+        if selected not in ('full', 'status', 'adaptive', 'advance_application', 'advance_and_reserve_slot') or 'status' not in state.get('plan', []):
             state.pop('status', None)
-    if selected in ('adaptive', 'advance_application'):
+    if selected in ('adaptive', 'advance_application', 'advance_and_reserve_slot'):
         state.pop('context_digest', None)
         state.pop('assessment_revision', None)
     return {"state": state, "awaiting_review": bool(snapshot.next)}
@@ -665,7 +681,7 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             if (snapshot.values.get('intent') == 'adaptive' and
                     context_for(db, snapshot.values['application_id'])[1] != snapshot.values.get('context_digest')):
                 raise HTTPException(status_code=409, detail='Application changed; start a new review')
-            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application') or snapshot.values.get('adaptive_goal') == 'schedule_interview') and payload.reviewed:
+            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot') or snapshot.values.get('adaptive_goal') == 'schedule_interview') and payload.reviewed:
                 expected = snapshot.values.get('action_proposal', {}).get('approval_fingerprint', '')
                 if (not expected or not payload.approval_fingerprint or
                         not secrets.compare_digest(expected.encode('utf-8'), payload.approval_fingerprint.encode('utf-8'))):

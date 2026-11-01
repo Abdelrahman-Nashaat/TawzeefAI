@@ -815,6 +815,8 @@ function setupGraphReview(target, application) {
   privateSlotOption.value = "create_private_slot"; intent.append(privateSlotOption);
   const advanceOption = element("option", "", "Review and advance this application");
   advanceOption.value = "advance_application"; intent.append(advanceOption);
+  const advanceSlotOption = element("option", "", "Review, advance, and reserve a candidate-specific slot");
+  advanceSlotOption.value = "advance_and_reserve_slot"; intent.append(advanceSlotOption);
   intentLabel.append(intent);
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
   const question = element("textarea"); question.maxLength = 2000; question.placeholder = "يمكن تركه فارغًا"; questionLabel.append(question);
@@ -831,7 +833,7 @@ function setupGraphReview(target, application) {
     questionLabel.firstChild.textContent = question.required ? "سؤال السياسة المطلوب للبحث المحلي" : "سؤال سياسة اختياري للبحث المحلي";
     question.placeholder = question.required ? "اكتب سؤالك عن السياسة" : "يمكن تركه فارغًا";
     if (!supportsPolicy) question.value = "";
-    const createSlot = ["create_slot", "create_private_slot", "adaptive_schedule"].includes(intent.value);
+    const createSlot = ["create_slot", "create_private_slot", "advance_and_reserve_slot", "adaptive_schedule"].includes(intent.value);
     slotFields.hidden = !createSlot;
     for (const field of [slotStart, slotEnd, interviewer]) { field.disabled = !createSlot; field.required = createSlot; }
   });
@@ -957,19 +959,27 @@ function setupGraphReview(target, application) {
         element("p", "", `Application #${proposal.application_id}: ${proposal.current_status} → ${proposal.target_status}`),
         element("p", "subtle-note", "Approval advances this application for scheduling. It does not book an interview, send a message, or make a hiring decision."));
     }
+    if (proposal?.type === "advance_and_reserve_slot" && proposal.slot) {
+      output.append(element("h4", "", "Proposed advancement and private interview slot"),
+        element("p", "", `Application #${proposal.application_id} · candidate #${proposal.candidate_id}: ${proposal.current_status} → ${proposal.target_status}`),
+        element("p", "", `${displayDate(proposal.slot.start_at)} – ${displayDate(proposal.slot.end_at)} · ${proposal.slot.interviewer}`),
+        element("p", "subtle-note", "Approval advances this application and reserves the slot only for its candidate. The candidate books separately; no message or Google event is sent."));
+    }
     if (result?.status === "created") output.append(element("p", "result-badge", proposal?.type === "create_private_slot" ? "The candidate-specific slot was added after approval." : "The shared slot was added after approval."));
     else if (result?.status === "advanced") output.append(element("p", "result-badge", "The application was advanced after HR approval."));
+    else if (result?.status === "advanced_and_reserved") output.append(element("p", "result-badge", "The application was advanced and its private slot reserved after HR approval."));
     else if (result?.status === "declined") output.append(element("p", "result-badge", "The proposal was declined; no action was taken."));
-    if (review.awaiting_review && (proposal || ["create_slot", "create_private_slot", "advance_application"].includes(review.state.intent))) {
+    if (review.awaiting_review && (proposal || ["create_slot", "create_private_slot", "advance_application", "advance_and_reserve_slot"].includes(review.state.intent))) {
       output.append(element("p", "result-badge", "المقترح بانتظار قرار الموارد البشرية."));
       const validScope = (proposal?.type === "create_slot" && proposal.availability_scope === "all_eligible_candidates") || (proposal?.type === "create_private_slot" && proposal.availability_scope === "selected_application_only");
       const validSlot = validScope && proposal.slot?.start_at && proposal.slot?.end_at && proposal.slot?.interviewer;
       const validAdvance = proposal?.type === "advance_application" && proposal.current_status === "submitted" && proposal.target_status === "advanced" && Number.isInteger(proposal.assessment_id) && proposal.assessment_id > 0;
-      if ((!validSlot && !validAdvance) || proposal.application_id !== application.id || !proposal.approval_fingerprint) {
+      const validCombined = proposal?.type === "advance_and_reserve_slot" && proposal.availability_scope === "selected_application_only" && proposal.current_status === "submitted" && proposal.target_status === "advanced" && Number.isInteger(proposal.candidate_id) && proposal.candidate_id > 0 && Number.isInteger(proposal.assessment_id) && proposal.assessment_id > 0 && proposal.slot?.start_at && proposal.slot?.end_at && proposal.slot?.interviewer;
+      if ((!validSlot && !validAdvance && !validCombined) || proposal.application_id !== application.id || !proposal.approval_fingerprint) {
         output.append(element("p", "form-error", "تعذّرت مراجعة تفاصيل المقترح بأمان. أعد تحميل المراجعة."));
         return;
       }
-      const approve = element("button", "small-button", validAdvance ? "Approve advancement" : "Approve this slot"); approve.type = "button";
+      const approve = element("button", "small-button", validCombined ? "Approve advancement and private slot" : validAdvance ? "Approve advancement" : "Approve this slot"); approve.type = "button";
       const decline = element("button", "outline-button", "أرفض المقترح"); decline.type = "button";
       if (review.state.plan_stale) { approve.disabled = true; decline.disabled = true; }
       async function decide(reviewed) {
@@ -1011,7 +1021,7 @@ function setupGraphReview(target, application) {
       const body = { application_id: application.id, intent: intent.value === "adaptive_schedule" ? "adaptive" : intent.value };
       if (intent.value === "adaptive" || intent.value === "adaptive_schedule") body.adaptive_goal = intent.value === "adaptive" ? "review_application" : "schedule_interview";
       else body.policy_question = question.value.trim();
-      if (["create_slot", "create_private_slot", "adaptive_schedule"].includes(intent.value)) {
+      if (["create_slot", "create_private_slot", "advance_and_reserve_slot", "adaptive_schedule"].includes(intent.value)) {
         const startTime = new Date(slotStart.value), endTime = new Date(slotEnd.value);
         if (!interviewer.value.trim() || Number.isNaN(startTime.valueOf()) || Number.isNaN(endTime.valueOf()) || endTime <= startTime) throw new Error("تحقق من اسم المحاور وأن نهاية الموعد بعد بدايته.");
         body.slot = { start_at: startTime.toISOString(), end_at: endTime.toISOString(), interviewer: interviewer.value.trim() };

@@ -90,3 +90,31 @@ test with the local model and a mocked selector separately verified that the
 consent passage becomes eligible at the new cutoff. More multilingual policies,
 conflicting documents, human-reviewed holdout cases and answer-quality
 evaluation remain necessary before relying on this experimental path.
+
+## Translation-assisted retrieval diagnostic
+
+The supported Arabic manager-consent question scored 0.7806 against the English
+synthetic policy, below the experimental candidate cutoff of 0.82. A live
+translation scored 0.8440. The unsupported Arabic computer question scored
+0.7551 before translation and 0.8174 after one translation. These scores are
+one run on one policy and do not establish a safe threshold or semantic support.
+
+The separately opted-in `TAWZEEF_POLICY_TRANSLATED_RETRIEVAL=1` path retries an
+empty Arabic hybrid retrieval with a model-generated English query. It is only
+available when experimental hybrid policy answers and Groq are enabled. The
+translation is untrusted and may change meaning. The model still selects exact
+lines using the original question; the server validates the lines and rechecks
+source access, but cannot verify relevance or completeness. A translation or
+provider failure yields abstention. The translated query and question are sent
+to the model provider; use synthetic data in the demo.
+
+In one 1 November 2026 live run through the conversation endpoint, a temporary
+PostgreSQL/pgvector database, pinned local model, and Groq were used on the same
+one-policy development set. The supported English permission question and the
+previously missed Arabic consent question returned the source line; unsupported
+English salary and Arabic equipment questions abstained. The Arabic consent
+response disclosed that retrieval used an unverified translation. Provider
+outputs can vary, and these four cases were selected from development data;
+they are not independent evidence of answer quality. A separate real-database
+test used mocked translations and selections to exercise authorization and the
+original-question boundary. No real employee data was used.
