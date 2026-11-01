@@ -34,6 +34,8 @@ from app.conversations import router as conversations_router
 from app.dashboard import router as dashboard_router
 from app.db import connect, initialize
 from app.evaluation_dashboard import router as evaluation_router
+from app.google_cancellation import initialize_cancellation_notices
+from app.google_cancellation import router as google_cancellation_router
 from app.google_outbox import initialize_google_outbox
 from app.google_outbox import router as google_outbox_router
 from app.graph_orchestrator import router as graph_reviews_router
@@ -88,6 +90,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         initialize_admin_users(path)
         initialize_scheduling(path)
         initialize_google_outbox(path)
+        initialize_cancellation_notices(path)
         initialize_slots(path)
         initialize_workflows(path)
         initialize_knowledge_documents(path, include_samples=seed_demo)
@@ -146,6 +149,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
     application.include_router(interview_calendar_router)
     application.include_router(hybrid_router)
     application.include_router(google_outbox_router)
+    application.include_router(google_cancellation_router)
 
     @application.middleware("http")
     async def check_origin(request: Request, call_next):

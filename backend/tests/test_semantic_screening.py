@@ -232,3 +232,44 @@ def test_semantic_suggestions_diversify_overlapping_windows(monkeypatch):
     result = semantic_screening.suggest(source, [{'label': 'Python'}])[0]['candidates']
     assert any('separate team' in item['excerpt'] for item in result)
     assert all(source[item['start']:item['end']] == item['excerpt'] for item in result)
+
+
+def test_exact_skill_phrases_supplement_low_similarity_without_substring_matches(monkeypatch):
+    from app import semantic_screening
+
+    monkeypatch.setenv('TAWZEEF_ENABLE_SEMANTIC_SCREENING', '1')
+    monkeypatch.setenv('TAWZEEF_EMBEDDING_MODEL_DIR', 'local-model')
+
+    class LowSimilarityModel:
+        def encode(self, texts, *, query):
+            return [[1.0, 0.0] if query else [0.0, 1.0] for _ in texts]
+
+    monkeypatch.setattr(semantic_screening, '_model', lambda _: LowSimilarityModel())
+    source = 'Skills\nJavaScript, C+++, C#x and Pythons\nExperience\nNo experience with C++.\n' \
+             'Built React.js apps and used C#\nNever used Python'
+    criteria = [{'label': label} for label in ('Java', 'C++', 'C#', 'React.js', 'Python')]
+    results = semantic_screening.suggest(source, criteria)
+    assert not results[0]['candidates']
+    for result in results[1:]:
+        assert len(result['candidates']) == 1
+        item = result['candidates'][0]
+        assert item['retrieval_method'] == 'exact_phrase' and item['similarity'] is None
+        assert source[item['matched_start']:item['matched_end']].casefold() == result['label'].casefold()
+        assert source[item['start']:item['end']] == item['excerpt']
+    assert 'No experience with C++' in results[1]['candidates'][0]['excerpt']
+    assert 'Never used Python' in results[4]['candidates'][0]['excerpt']
+
+
+def test_exact_phrase_at_chunk_boundary_does_not_match_inside_identifier(monkeypatch):
+    from app import semantic_screening
+
+    monkeypatch.setenv('TAWZEEF_ENABLE_SEMANTIC_SCREENING', '1')
+    monkeypatch.setenv('TAWZEEF_EMBEDDING_MODEL_DIR', 'local-model')
+
+    class LowSimilarityModel:
+        def encode(self, texts, *, query):
+            return [[1.0, 0.0] if query else [0.0, 1.0] for _ in texts]
+
+    monkeypatch.setattr(semantic_screening, '_model', lambda _: LowSimilarityModel())
+    source = 'x' * 493 + '.' + 'Python' + 'x' * 500
+    assert not semantic_screening.suggest(source, [{'label': 'Python'}])[0]['candidates']

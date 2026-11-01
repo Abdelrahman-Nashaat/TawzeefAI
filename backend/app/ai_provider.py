@@ -1,8 +1,12 @@
 """Optional external answer generation; never sends data without explicit opt-in."""
 
+import hashlib
 import http.client
 import json
 import os
+import threading
+import time
+import urllib.error
 import urllib.request
 
 GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
@@ -14,6 +18,29 @@ class ProviderUnavailable(Exception):
     """External generation failed; details are intentionally not exposed."""
 
 
+class ProviderRateLimited(ProviderUnavailable):
+    """The provider requested a temporary pause; no credentials are exposed."""
+
+
+# This process-local guard never sleeps or retries. Bound the provider's hint
+# and stored entries, and retain only a digest of the authorization header.
+_rate_lock = threading.Lock()
+_rate_until: dict[str, float] = {}
+_RATE_DEFAULT_SECONDS = 10.0
+_RATE_MAX_SECONDS = 60.0
+_RATE_MAX_KEYS = 64
+
+
+def _retry_delay(value: str | None) -> float:
+    try:
+        delay = float(value) if value is not None else _RATE_DEFAULT_SECONDS
+        if not 0 < delay < float('inf'):
+            raise ValueError('Invalid delay')
+        return min(_RATE_MAX_SECONDS, max(1.0, delay))
+    except (ValueError, TypeError, OverflowError):
+        return _RATE_DEFAULT_SECONDS
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -21,7 +48,26 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _open(request):
     # urllib's default redirect handler forwards Authorization across origins.
-    return urllib.request.build_opener(_NoRedirect()).open(request, timeout=20)
+    credential = request.get_header('Authorization', '')
+    fingerprint = hashlib.sha256(credential.encode('utf-8')).hexdigest()
+    now = time.monotonic()
+    with _rate_lock:
+        for key in [key for key, expiry in _rate_until.items() if expiry <= now]:
+            del _rate_until[key]
+        if _rate_until.get(fingerprint, 0) > now:
+            raise ProviderRateLimited('The configured model is temporarily rate limited.')
+    try:
+        return urllib.request.build_opener(_NoRedirect()).open(request, timeout=20)
+    except urllib.error.HTTPError as error:
+        if error.code != 429:
+            raise
+        delay = _retry_delay(error.headers.get('Retry-After') if error.headers else None)
+        error.close()
+        with _rate_lock:
+            if len(_rate_until) >= _RATE_MAX_KEYS and fingerprint not in _rate_until:
+                del _rate_until[min(_rate_until, key=_rate_until.get)]
+            _rate_until[fingerprint] = max(_rate_until.get(fingerprint, 0), time.monotonic() + delay)
+        raise ProviderRateLimited('The configured model is temporarily rate limited.') from None
 
 
 def generate_with_groq(question: str, passages: list[dict[str, str]], *, previous_question: str = '') -> str:

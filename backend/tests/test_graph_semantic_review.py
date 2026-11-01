@@ -59,6 +59,41 @@ def test_review_persists_only_references_and_reconstructs(scenario):
     assert client.get(f"/api/graph-reviews/{data['id']}").status_code == 403
 
 
+def test_exact_phrase_graph_review_reconstructs_match_without_storing_text(scenario):
+    client, path, application = scenario
+    with connect(path) as db:
+        db.execute("UPDATE applications SET resume_text='Skills\nNo Python experience' WHERE id=?", (application,))
+    response = client.post('/api/graph-reviews', json={'application_id': application, 'intent': 'semantic_review'})
+    assert response.status_code == 201, response.text
+    review = response.json()
+    item = review['state']['semantic_suggestions']['criteria'][0]['candidates'][0]
+    assert item['retrieval_method'] == 'exact_phrase' and item['similarity'] is None
+    assert item['excerpt'] == 'No Python experience'
+    with sqlite3.connect(path) as db:
+        checkpoints = db.execute('SELECT checkpoint FROM checkpoints').fetchall()
+        assert checkpoints and all(b'No Python experience' not in row[0] for row in checkpoints)
+    loaded = client.get(f"/api/graph-reviews/{review['id']}").json()
+    assert loaded['state']['semantic_suggestions']['criteria'][0]['candidates'][0] == item
+
+
+def test_legacy_semantic_references_remain_readable(scenario):
+    from app.graph_semantic import context, restore_references, save_references
+
+    client, path, application = scenario
+    source = client.get(f'/api/applications/{application}/rubric/source').json()
+    suggestions = client.post(f'/api/applications/{application}/rubric/suggestions').json()
+    assert suggestions['criteria'][0]['candidates'][0]['retrieval_method'] == 'semantic'
+    with connect(path) as db:
+        references = save_references(suggestions, context(db, application))
+        for entry in references['refs']:
+            for item in entry['candidates']:
+                item.pop('retrieval_method')
+        restored = restore_references(db, application, references)
+    assert restored['status'] == 'current'
+    item = restored['criteria'][0]['candidates'][0]
+    assert item['retrieval_method'] == 'semantic' and item['excerpt'] in source['text']
+
+
 @pytest.mark.parametrize('change', ['resume', 'criteria', 'criteria_reverted', 'owner_reverted'])
 def test_changed_inputs_hide_suggestions_and_block_confirmation(scenario, change):
     client, path, application = scenario

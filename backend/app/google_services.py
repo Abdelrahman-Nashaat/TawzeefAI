@@ -12,7 +12,12 @@ from email.message import EmailMessage
 
 import requests
 
-from app.google_templates import CALENDAR_SUMMARY, _times, confirmation_content
+from app.google_templates import (
+    CALENDAR_SUMMARY,
+    _times,
+    cancellation_content,
+    confirmation_content,
+)
 
 CALENDAR_URL = 'https://www.googleapis.com/calendar/v3/calendars/primary/events'
 GMAIL_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send'
@@ -113,6 +118,19 @@ def send_confirmation(session, *, recipient: str, start: str, end: str) -> dict:
     if not isinstance(recipient, str) or len(recipient) > 254 or not _EMAIL.fullmatch(recipient):
         raise ValueError('A single valid email recipient is required')
     subject, body = confirmation_content(start, end)
+    message = EmailMessage(policy=policy.SMTP)
+    message['To'] = recipient
+    message['Subject'] = subject
+    message.set_content(body)
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode('ascii').rstrip('=')
+    return _post(session, GMAIL_URL, {'raw': raw})
+
+
+def send_cancellation(session, *, recipient: str, start: str, end: str) -> dict:
+    """Send one reviewed cancellation message; never retry ambiguous outcomes."""
+    if not isinstance(recipient, str) or len(recipient) > 254 or not _EMAIL.fullmatch(recipient):
+        raise ValueError('A single valid email recipient is required')
+    subject, body = cancellation_content(start, end)
     message = EmailMessage(policy=policy.SMTP)
     message['To'] = recipient
     message['Subject'] = subject

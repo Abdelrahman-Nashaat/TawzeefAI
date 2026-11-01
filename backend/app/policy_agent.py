@@ -14,8 +14,14 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.agent import _NoRedirect
-from app.ai_provider import GROQ_MODEL, GROQ_URL, MAX_RESPONSE_BYTES, ProviderUnavailable, _open
+from app.ai_provider import (
+    GROQ_MODEL,
+    GROQ_URL,
+    MAX_RESPONSE_BYTES,
+    ProviderRateLimited,
+    ProviderUnavailable,
+    _open,
+)
 from app.auth import User
 from app.db import connect
 from app.knowledge import (
@@ -109,7 +115,7 @@ def _request_search(question: str, key: str) -> dict:
     req = urllib.request.Request(GROQ_URL, data=body, method='POST', headers={
         'Authorization': f'Bearer {key}', 'Content-Type': 'application/json', 'User-Agent': 'TawzeefAI/0.1',
     })
-    with urllib.request.build_opener(_NoRedirect()).open(req, timeout=20) as response:
+    with _open(req) as response:
         raw = response.read(65537)
     if len(raw) > 65536:
         raise ValueError('Response too large')
@@ -284,6 +290,7 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
     initial = _current(path, user, authorize)
     key = os.environ.get('GROQ_API_KEY', '').strip() if enabled else ''
     query, notice = question, ''
+    rate_limited = False
     if key:
         try:
             message = _request_search(question, key)
@@ -294,6 +301,9 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
                     'The policy agent declined to search.'), [])
         except PermissionError:
             raise
+        except ProviderRateLimited:
+            query, notice = question, 'Policy model temporarily rate limited; using local search.'
+            rate_limited = True
         except (ValueError, TypeError, KeyError, IndexError, OSError, http.client.HTTPException):
             query, notice = question, 'Policy model unavailable or invalid; using local search.'
     # All normalized content words must occur in each candidate passage. This
@@ -309,7 +319,7 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
     candidates = chosen + [source for _, source in ranked if source.id not in chosen_ids]
     hybrid_suggestions = os.environ.get('TAWZEEF_POLICY_HYBRID_SUGGESTIONS') == '1'
     hybrid_answers = (allow_hybrid_answers and os.environ.get('TAWZEEF_POLICY_HYBRID_ANSWERS') == '1'
-                      and bool(key))
+                      and bool(key) and not rate_limited)
     suggested = []
     if os.environ.get('TAWZEEF_USE_POLICY_HYBRID') == '1' or ((hybrid_suggestions or hybrid_answers) and not candidates):
         try:
@@ -337,6 +347,10 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
                     'An unverified translation was used for retrieval. Review the original question and sources.')))
         except PermissionError:
             raise
+        except ProviderRateLimited:
+            rows = []
+            rate_limited = True
+            notice = ' '.join(filter(None, (notice, 'Policy model temporarily rate limited; using local search.')))
         except Exception:  # noqa: BLE001 - local search failures must not expose provider details.
             rows = []
             notice = ' '.join(filter(None, (notice, 'Policy hybrid unavailable; using lexical ranking.')))
@@ -397,6 +411,8 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
                     return PolicyAgentResult(KnowledgeAnswer(answer, selected_sources, 'groq',
                         ' '.join(filter(None, (notice, ('Experimental hybrid answer: exact source lines are verified, '
                         'but model-assessed relevance and completeness are not. Review the original sources.'))))), ['search_policy'])
+            except ProviderRateLimited:
+                notice = ' '.join(filter(None, (notice, 'Policy model temporarily rate limited; no answer was generated.')))
             except (ValueError, ProviderUnavailable):
                 notice = ' '.join(filter(None, (notice, 'Experimental answer selection unavailable or invalid.')))
             current = {source.id: source for source in _current(path, user, authorize)}
@@ -416,7 +432,7 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
             raise PermissionError('Policy source authorization changed')
     revalidate()
     extractive = '\n\n'.join(f'[{source.id}] {source.text}' for source in sources)
-    if key:
+    if key and not rate_limited:
         try:
             selection = _request_quote_selection(question, [{'id': s.id, 'title': s.title, 'text': s.text[:4000]} for s in sources])
             revalidate()
@@ -428,6 +444,8 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
                 ' '.join(filter(None, (notice, 'Model-selected exact paragraphs; their relevance and completeness are not verified. Review the sources.')))), ['search_policy'])
         except ValueError:
             notice = ' '.join(filter(None, (notice, 'Model selection could not be verified; showing source excerpts.')))
+        except ProviderRateLimited:
+            notice = ' '.join(filter(None, (notice, 'AI service temporarily rate limited; showing source excerpts.')))
         except ProviderUnavailable:
             notice = ' '.join(filter(None, (notice, 'AI service unavailable; showing source excerpts.')))
     revalidate()

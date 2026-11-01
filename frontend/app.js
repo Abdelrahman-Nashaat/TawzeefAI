@@ -725,6 +725,7 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
           const item = element("div");
           item.append(element("p", "resume-preview", excerpt));
           item.append(element("p", "subtle-note", candidate.section === "unclassified" ? "Source: unclassified résumé text" : `Source section: ${candidate.section || "unknown"}`));
+          if (candidate.retrieval_method === "exact_phrase") item.append(element("p", "subtle-note", "Exact phrase match; review the surrounding context. This does not verify a qualification."));
           if (Number.isFinite(similarity)) item.append(element("p", "subtle-note", `Similarity: ${similarity.toFixed(2)} for the matched passage; surrounding text is context. This is not a qualification assessment.`));
           const accept = element("button", "outline-button", "حفظ المقتطف بعد مراجعته"); accept.type = "button";
           accept.addEventListener("click", async () => {
@@ -934,7 +935,8 @@ function setupGraphReview(target, application) {
           const list = element("ul", "evidence-list");
           for (const candidate of criterion.candidates || []) {
             const item = element("li");
-            item.append(element("p", "resume-preview", candidate.excerpt), element("p", "subtle-note", `Source: ${candidate.section || "unknown"} · similarity: ${Number.isFinite(candidate.similarity) ? candidate.similarity.toFixed(2) : "unavailable"}. Similarity applies to the matched passage; surrounding text is context.`));
+            const method = candidate.retrieval_method === "exact_phrase" ? "Exact phrase match; not a verified qualification." : `Similarity: ${Number.isFinite(candidate.similarity) ? candidate.similarity.toFixed(2) : "unavailable"} for the matched passage; surrounding text is context.`;
+            item.append(element("p", "resume-preview", candidate.excerpt), element("p", "subtle-note", `Source: ${candidate.section || "unknown"} · ${method}`));
             list.append(item);
           }
           if (list.childNodes.length) output.append(list); else output.append(element("p", "subtle-note", "No passage was suggested; this does not establish a missing qualification."));
@@ -2087,6 +2089,54 @@ async function loadOperations(role) {
   }
 }
 
+function setupCancellationNotice(card, interview) {
+  const details = element("details", "application-detail");
+  details.append(element("summary", "", "Review cancellation notice"));
+  const panel = element("div");
+  const refresh = element("button", "outline-button", "Load notice preview"); refresh.type = "button";
+  const content = element("div"); content.setAttribute("aria-live", "polite");
+  const endpoint = `/api/google/interviews/${encodeURIComponent(interview.id)}/cancellation-notice`;
+  async function load() {
+    refresh.disabled = true; content.replaceChildren(element("p", "subtle-note", "Loading preview..."));
+    try {
+      const preview = await api(endpoint);
+      if (!content.isConnected) return;
+      content.replaceChildren(element("p", "", `Recipient from the earlier confirmation: ${preview.recipient}`),
+        element("p", "", `Subject: ${preview.subject}`), element("pre", "resume-preview", preview.body),
+        element("p", "form-error", preview.notice || "Review the recipient, sender account, and content before sending."));
+      if (preview.last_notice) content.append(element("p", "", `Last attempt: ${preview.last_notice.state}`));
+      if (preview.can_send) {
+        const checkbox = element("input"); checkbox.type = "checkbox";
+        const label = element("label", "", "I reviewed the recipient and notice and approve sending this email."); label.prepend(checkbox);
+        const send = element("button", "small-button", "Send cancellation notice"); send.type = "button";
+        send.addEventListener("click", async () => {
+          if (!checkbox.checked) return;
+          send.disabled = true; checkbox.disabled = true;
+          try { await api(`${endpoint}/send`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({confirmed: true, fingerprint: preview.fingerprint})}); await load(); }
+          catch (error) { if (!isStale(error) && content.isConnected) content.append(element("p", "form-error", "The send result may be uncertain. Reload the notice and check Gmail before taking further action.")); }
+        });
+        content.append(label, send);
+      }
+      if (["uncertain", "sending"].includes(preview.last_notice?.state)) {
+        content.append(element("p", "form-error", "Verify the result in Gmail before recording either outcome. This is your attestation, not a result verified by the application. A send still in progress cannot be reconciled."));
+        for (const [outcome, labelText] of [["sent", "I verified the email was sent"], ["not_sent", "I verified the email was not sent"]]) {
+          const resolve = element("button", "outline-button", labelText); resolve.type = "button";
+          resolve.addEventListener("click", async () => {
+            resolve.disabled = true;
+            try { await api(`/api/google/cancellation-notices/${encodeURIComponent(preview.last_notice.id)}/resolve`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({confirmed: true, outcome})}); await load(); }
+            catch (error) { if (!isStale(error) && content.isConnected) content.append(element("p", "form-error", "Could not record the verified outcome; reload before trying again.")); }
+          });
+          content.append(resolve);
+        }
+      }
+    } catch (error) {
+      if (!isStale(error) && content.isConnected) content.replaceChildren(element("p", "subtle-note", "No cancellation notice is available for this interview, or Google integration is unavailable."));
+    } finally { refresh.disabled = false; }
+  }
+  refresh.addEventListener("click", load);
+  panel.append(refresh, content); details.append(panel); card.append(details);
+}
+
 function renderDashboard(data) {
   const target = document.getElementById("dashboard-area");
   const box = section("مؤشرات التوظيف");
@@ -2445,6 +2495,7 @@ function renderInterviews(interviews, role, applications, slots) {
       }
       setupGoogleDeliveries(card, interview);
     }
+    if (role === "hr" && interview.status === "cancelled") setupCancellationNotice(card, interview);
     list.append(card);
   }
   box.append(list);

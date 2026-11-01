@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 CALENDAR_SUMMARY = 'TawzeefAI interview'
 EMAIL_SUBJECT = 'Interview confirmation'
+CANCELLATION_SUBJECT = 'Interview cancellation'
 
 
 def _times(start: str, end: str) -> tuple[str, str]:
@@ -23,3 +24,9 @@ def confirmation_content(start: str, end: str) -> tuple[str, str]:
     """Generate the exact message text for both local review and dispatch."""
     start, end = _times(start, end)
     return EMAIL_SUBJECT, f'Your interview is scheduled from {start} to {end}.\n'
+
+
+def cancellation_content(start: str, end: str) -> tuple[str, str]:
+    """Return the exact cancellation message for review and dispatch."""
+    start, end = _times(start, end)
+    return CANCELLATION_SUBJECT, f'Your interview scheduled from {start} to {end} has been cancelled.\n'

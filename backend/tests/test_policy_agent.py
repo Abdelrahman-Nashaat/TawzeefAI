@@ -46,6 +46,44 @@ def test_search_filters_role_and_collection_before_ranking(policy_setup):
     assert all(s.title not in {'Annual leave', 'HR secret'} for s in candidate.answer.sources)
 
 
+def test_search_rate_limit_falls_back_without_another_model_call(policy_setup, monkeypatch):
+    path, users, _ = policy_setup
+    monkeypatch.setenv('GROQ_API_KEY', 'private-test-key')
+    monkeypatch.setattr(policy_agent, '_request_search', lambda *_: (_ for _ in ()).throw(
+        policy_agent.ProviderRateLimited('private-test-key')))
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: pytest.fail('Model called again'))
+    result = policy_agent.run_policy_agent(path, users['employee'], 'annual leave', enabled=True)
+    assert result.answer.mode == 'extractive'
+    assert 'rate limited' in result.answer.notice
+    assert 'private-test-key' not in result.answer.notice
+
+
+def test_selection_rate_limit_preserves_extract_and_reports_rate_limit(policy_setup, monkeypatch):
+    path, users, _ = policy_setup
+    monkeypatch.setenv('GROQ_API_KEY', 'private-test-key')
+    monkeypatch.setattr(policy_agent, '_request_search', lambda *_: tool('annual leave'))
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: (_ for _ in ()).throw(
+        policy_agent.ProviderRateLimited('private-test-key')))
+    result = policy_agent.run_policy_agent(path, users['employee'], 'annual leave', enabled=True)
+    assert result.answer.mode == 'extractive'
+    assert 'rate limited' in result.answer.notice
+    assert 'private-test-key' not in result.answer.notice
+
+
+def test_rate_limited_fallback_still_rechecks_authorization(policy_setup, monkeypatch):
+    path, users, _ = policy_setup
+    monkeypatch.setenv('GROQ_API_KEY', 'private-test-key')
+    monkeypatch.setattr(policy_agent, '_request_search', lambda *_: (_ for _ in ()).throw(
+        policy_agent.ProviderRateLimited('rate limited')))
+    checks = []
+    def authorize():
+        checks.append(True)
+        if len(checks) > 1:
+            raise PermissionError('access revoked')
+    with pytest.raises(PermissionError):
+        policy_agent.run_policy_agent(path, users['employee'], 'annual leave', enabled=True, authorize=authorize)
+
+
 def test_distinctive_missing_qualifier_abstains(policy_setup):
     path, users, _ = policy_setup
     result = policy_agent.run_policy_agent(path, users['employee'], 'parental annual leave')

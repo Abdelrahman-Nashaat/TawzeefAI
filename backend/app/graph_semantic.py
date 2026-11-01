@@ -7,6 +7,7 @@ import math
 from app.blind import redact_resume
 from app.recruitment import get_application
 from app.rubric_admin import public_criterion
+from app.semantic_screening import _phrase_pattern
 
 
 def _fingerprint(criteria):
@@ -30,8 +31,10 @@ def save_references(result, original_context):
     for item in result['criteria']:
         candidates = []
         for candidate in item['candidates']:
-            candidates.append({key: candidate[key] for key in
-                               ('start', 'end', 'matched_start', 'matched_end', 'similarity', 'section')})
+            saved = {key: candidate[key] for key in
+                     ('start', 'end', 'matched_start', 'matched_end', 'similarity', 'section')}
+            saved['retrieval_method'] = candidate.get('retrieval_method', 'semantic')
+            candidates.append(saved)
         references.append({'criterion_ref': item['criterion_ref'], 'candidates': candidates})
     return {'source_sha256': result['source_sha256'], 'criteria_sha256': _fingerprint(criteria),
             'context': original_context,
@@ -62,13 +65,21 @@ def restore_references(db, application_id, saved):
                 start, end = item['start'], item['end']
                 matched_start, matched_end = item['matched_start'], item['matched_end']
                 score = item['similarity']
+                method = item.get('retrieval_method', 'semantic')
                 if (any(type(value) is not int for value in (start, end, matched_start, matched_end))
                         or not (0 <= start <= matched_start < matched_end <= end <= len(source))
-                        or end - start > 500 or type(score) not in (float, int) or not math.isfinite(score)
-                        or not -1 <= score <= 1
+                        or end - start > 500 or method not in ('exact_phrase', 'semantic')
                         or item['section'] not in ('skills', 'experience', 'education', 'projects', 'languages', 'unclassified')):
                     return unavailable
-                candidates.append({**item, 'excerpt': source[start:end]})
+                if method == 'semantic':
+                    if type(score) not in (float, int) or not math.isfinite(score) or not -1 <= score <= 1:
+                        return unavailable
+                else:
+                    pattern = _phrase_pattern(criterion['label'])
+                    match = pattern.match(source, matched_start) if pattern else None
+                    if score is not None or match is None or match.end() != matched_end:
+                        return unavailable
+                candidates.append({**item, 'retrieval_method': method, 'excerpt': source[start:end]})
             restored.append({**criterion, 'candidates': candidates})
         return {'status': 'current', 'source_sha256': saved['source_sha256'],
                 'offset_unit': 'unicode_code_points', 'criteria': restored,

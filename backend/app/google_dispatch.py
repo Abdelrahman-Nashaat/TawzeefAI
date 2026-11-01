@@ -25,16 +25,21 @@ def _binding(session):
 
 
 def prepare_dispatch(kind):
-    if kind not in ('calendar', 'email'):
+    if kind not in ('calendar', 'email', 'cancellation_email'):
         raise ValueError('Unsupported Google service')
     session = _authorized_session('calendar' if kind == 'calendar' else 'gmail')
     binding = _binding(session) if kind == 'calendar' else None
+    prepared_kind = kind
 
     def dispatch(*, kind: str, event_id: str | None, start_at: str, end_at: str, recipient: str | None):
+        if kind != prepared_kind:
+            raise ValueError('Google delivery does not match prepared service')
         if kind == 'calendar' and binding is not None and recipient is None:
             return google_services.create_calendar_event(session, event_id=event_id, start=start_at, end=end_at)
         if kind == 'email' and binding is None and event_id is None:
             return google_services.send_confirmation(session, recipient=recipient, start=start_at, end=end_at)
+        if kind == 'cancellation_email' and binding is None and event_id is None:
+            return google_services.send_cancellation(session, recipient=recipient, start=start_at, end=end_at)
         raise ValueError('Google delivery does not match prepared service')
 
     if binding is not None:

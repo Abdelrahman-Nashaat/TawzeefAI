@@ -101,6 +101,15 @@ def _contextual_passage(source: str, passages: list[dict], index: int) -> dict:
     return {**item, 'start': start, 'end': end, 'excerpt': source[start:end]}
 
 
+def _phrase_pattern(label: str) -> re.Pattern | None:
+    """Match an entire criterion phrase, never a substring of an identifier."""
+    phrase = ' '.join(label.split())
+    if not 2 <= len(phrase) <= 200 or not any(char.isalnum() for char in phrase):
+        return None
+    escaped = re.escape(phrase).replace(r'\ ', r'\s+')
+    return re.compile(r'(?<![\w+#])' + escaped + r'(?![\w+#])', re.IGNORECASE)
+
+
 def suggest(source: str, criteria: list[dict]) -> list[dict]:
     """Return up to three candidate source spans for each criterion.
 
@@ -133,9 +142,40 @@ def suggest(source: str, criteria: list[dict]) -> list[dict]:
                 raise ValueError('Invalid model output')
             similarities = (queries @ vectors.T) / (query_norms[:, None] * passage_norms[None, :])
             for index, row in enumerate(similarities):
+                # Exact phrase occurrences supplement the experimental model;
+                # they are mentions for human review, not verified skills.
+                pattern = _phrase_pattern(criteria[index]['label'])
+                if pattern:
+                    exact_lines = set()
+                    for require_new_line in (True, False):
+                        for item, passage in enumerate(passages):
+                            # Search the full source so a passage boundary cannot
+                            # fabricate an identifier boundary at either end.
+                            match = pattern.search(source, passage['start'])
+                            if not match or match.end() > passage['end']:
+                                continue
+                            line = source.rfind('\n', 0, passage['start']) + 1
+                            if require_new_line and line in exact_lines:
+                                continue
+                            contextual = _contextual_passage(source, passages, item)
+                            if any(contextual['start'] < prior['end'] and prior['start'] < contextual['end']
+                                   for prior in result[index]['candidates']):
+                                continue
+                            result[index]['candidates'].append({**contextual, 'similarity': None,
+                                                                'retrieval_method': 'exact_phrase',
+                                                                'matched_start': match.start(),
+                                                                'matched_end': match.end()})
+                            exact_lines.add(line)
+                            if len(result[index]['candidates']) == 3:
+                                break
+                        if len(result[index]['candidates']) == 3:
+                            break
                 ranked = sorted(range(len(passages)), key=lambda i: (-float(row[i]), passages[i]['start']))
-                seen_lines = set()
+                seen_lines = {source.rfind('\n', 0, item['matched_start']) + 1
+                              for item in result[index]['candidates']}
                 for require_new_line in (True, False):
+                    if len(result[index]['candidates']) == 3:
+                        break
                     for item in ranked:
                         similarity = float(row[item])
                         if similarity < MIN_SIMILARITY:
@@ -148,6 +188,7 @@ def suggest(source: str, criteria: list[dict]) -> list[dict]:
                                for prior in result[index]['candidates']):
                             continue
                         result[index]['candidates'].append({**contextual, 'similarity': round(similarity, 4),
+                                                            'retrieval_method': 'semantic',
                                                             'matched_start': passages[item]['start'],
                                                             'matched_end': passages[item]['end']})
                         seen_lines.add(line)
