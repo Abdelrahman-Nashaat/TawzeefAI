@@ -32,6 +32,12 @@ ocr = [
     "pillow==11.3.0",
     "pypdfium2==4.30.0",
 ]
+streamlit = [
+    "altair>=5,<7",
+    "httpx>=0.28,<1",
+    "pandas>=2,<4",
+    "streamlit>=1.66,<2",
+]
 
 [dependency-groups]
 dev = ["httpx>=0.28,<1", "pytest>=8,<10", "ruff>=0.11,<1"]

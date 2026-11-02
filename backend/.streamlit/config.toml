@@ -1,0 +1,12 @@
+[server]
+address = "127.0.0.1"
+port = 8501
+enableCORS = true
+enableXsrfProtection = true
+allowedHosts = ["127.0.0.1"]
+corsAllowedOrigins = ["http://127.0.0.1:8501"]
+headless = true
+
+[browser]
+serverAddress = "127.0.0.1"
+gatherUsageStats = false
