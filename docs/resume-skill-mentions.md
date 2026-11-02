@@ -1,0 +1,5 @@
+# Skills-section mentions in résumé review
+
+The HR structured résumé view includes individual candidate mentions from an explicitly headed skills section. The source is the current partially redacted text, including any additional HR masking. Each mention carries exact Unicode code-point offsets into that text and is bound to the source and mask revisions. The view links to the rubric, where HR can inspect and select source text as evidence; extraction never writes evidence or an assessment automatically.
+
+These are unverified text fragments, not proof of skill or proficiency. A missing fragment does not mean the person lacks a skill. Identifying information may remain after masking. Comma- and semicolon-separated text is split conservatively; bracketed, quoted, excessively long or otherwise ambiguous fragments can be skipped, and extraction limits are shown. Review the résumé and source context before using any fragment. Source or mask changes during extraction cause the request to fail instead of returning an obsolete result. OCR and document layouts can introduce additional omissions or reading-order errors.

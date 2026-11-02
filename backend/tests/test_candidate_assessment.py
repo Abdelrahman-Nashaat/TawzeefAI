@@ -171,3 +171,14 @@ def test_changed_rendering_keeps_stale_publication_withdrawable(scenario, monkey
     assert result['published'] is False
     assert result['has_publication'] is True
     assert client.delete(publication_path).status_code == 200
+
+
+def test_reviewed_status_transition_preserves_current_candidate_assessment(scenario):
+    client, _, app_id, _ = scenario
+    _, prior, _ = release(client, app_id)
+    review = client.post(f'/api/applications/{app_id}/hr-review-preview').json()
+    response = client.post(f'/api/applications/{app_id}/decision', json={
+        'decision': 'advance', 'review_reference': review['reference']})
+    assert response.status_code == 200
+    login(client, 'candidate')
+    assert client.get(f'/api/applications/{app_id}/candidate-assessment').json() == prior['preview']

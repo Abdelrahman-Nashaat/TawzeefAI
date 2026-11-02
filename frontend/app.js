@@ -111,6 +111,7 @@ function setupLogout() {
 
 const statusLabels = { submitted: "تم التقديم", advanced: "المرحلة التالية", offered: "عرض توظيف", rejected: "مرفوض", hired: "تم التوظيف" };
 const documentErrors = {
+  graph_matching_work_limit: "Graph matching supports resumes up to 4,000 characters and at most 20 job skills of 80 characters each. Review larger inputs manually.",
   unsupported_type: "صيغة الملف غير مدعومة. ارفع PDF نصيًا أو DOCX.",
   empty_file: "الملف فارغ.", file_too_large: "حجم الملف أكبر من 5 ميجابايت.",
   document_too_large: "المستند يتجاوز الحد المسموح للمعالجة.",
@@ -1250,7 +1251,7 @@ function setupGraphReview(target, application) {
   if (idInput.value) load(idInput.value).catch((error) => { if (!isStale(error) && target.isConnected) report("تعذّر تحميل المراجعة السابقة. تحقق من المعرّف وحاول مجددًا.", true); });
 }
 
-async function loadStructuredResume(target, applicationId) {
+async function loadStructuredResume(target, applicationId, openRubric = () => {}) {
   target.replaceChildren(element("h4", "", "الأقسام المستخرجة من السيرة"), element("p", "subtle-note", "جارٍ تحميل الأقسام..."));
   try {
     const result = await api(`/api/applications/${encodeURIComponent(applicationId)}/resume/structured`);
@@ -1258,6 +1259,20 @@ async function loadStructuredResume(target, applicationId) {
     target.replaceChildren(element("h4", "", "الأقسام المستخرجة من السيرة"),
       element("p", "subtle-note", "الاستخراج يعتمد على عناوين الأقسام الظاهرة فقط؛ النصوص المذكورة غير مُتحقق منها، وقد يُحذف أو يختلط ترتيب بعض المحتوى. عدم ظهور قسم يعني أنه غير معروف، لا أنه غير موجود."),
       element("p", "form-error", "تنقيح الهوية جزئي وقد تبقى معلومات تعريفية أو تُحذف معلومات مفيدة؛ راجع النص يدويًا."));
+    const extracted = result.skill_candidates;
+    if (extracted && Array.isArray(extracted.items)) {
+      const details = element("details", "application-detail");
+      details.append(element("summary", "", "Individual skills-section mentions"));
+      details.append(element("p", "subtle-note", "These are exact snippets from the current partially redacted source, not verified skills. Unclear lists may be skipped. Missing mentions do not establish absence. Review the source and select supporting evidence in the rubric."));
+      details.append(element("p", "subtle-note", `Mask review: ${result.mask_review_status}; source revision ${result.source_revision}, mask revision ${result.mask_revision}. Reload after any source or mask change.`));
+      const candidates = element("ul", "evidence-list");
+      for (const mention of extracted.items) candidates.append(element("li", "", `${mention.text} — source characters ${mention.start}–${mention.end}`));
+      if (!extracted.items.length) details.append(element("p", "subtle-note", "No unambiguous mentions extracted; inspect the résumé manually."));
+      else details.append(candidates);
+      if (extracted.truncated || extracted.skipped_lines_or_fragments) details.append(element("p", "form-error", "Some text was skipped or omitted because it was ambiguous or exceeded extraction limits; inspect the source manually."));
+      const review = element("button", "outline-button", "Go to rubric evidence review"); review.type = "button"; review.addEventListener("click", openRubric); details.append(review);
+      target.append(details);
+    }
     const labels = { skills: "المهارات", experience: "الخبرة", education: "التعليم", projects: "المشاريع", languages: "اللغات" };
     for (const [key, label] of Object.entries(labels)) {
       const section = result.sections?.[key];
@@ -1456,7 +1471,7 @@ function renderApplicationDetail(target, application, role) {
     const structurePanel = element("section", "application-detail");
     structurePanel.setAttribute("aria-label", "الأقسام المستخرجة من السيرة");
     panel.append(structurePanel);
-    loadStructuredResume(structurePanel, application.id);
+    loadStructuredResume(structurePanel, application.id, () => rubricPanel.scrollIntoView({behavior: "smooth", block: "start"}));
     const reviewFieldsPanel = element("section", "application-detail");
     reviewFieldsPanel.setAttribute("aria-label", "مراجعة حقول السيرة");
     panel.append(reviewFieldsPanel);

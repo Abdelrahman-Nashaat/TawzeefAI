@@ -104,3 +104,47 @@ def structure_resume(source: str) -> dict:
         'notice': ('Extractive section identification only; mentions are unverified, missing sections are unknown, '
                    'redaction is incomplete, and the extracted document may omit or misorder content.'),
     }
+
+
+MAX_SKILL_CANDIDATES = 100
+MAX_SKILL_CANDIDATE_CHARS = 80
+
+
+def extract_skill_candidates(source: str, structure: dict) -> dict:
+    """Split explicit skills-section lines into unverified, exact source spans.
+
+    Ambiguous quoted or bracketed lists are skipped rather than split incorrectly.
+    A mention is not proof of proficiency, and an omitted item is not absence.
+    """
+    items = structure['sections']['skills']['items']
+    candidates = []
+    skipped = 0
+    truncated = structure['sections']['skills']['truncated']
+    for item in items:
+        line = item['text']
+        if len(line) >= MAX_ITEM_CHARS or any(char in line for char in ('(', ')', '[', ']', '{', '}', '"', "'", '“', '”')):
+            skipped += 1
+            continue
+        prefix = _LIST_PREFIX.match(line)
+        start_index = prefix.end() if prefix else 0
+        for match in re.finditer(r'[^,،;؛]+', line[start_index:]):
+            raw = match.group()
+            text = raw.strip()
+            if not text:
+                continue
+            if len(text) > MAX_SKILL_CANDIDATE_CHARS or not text.isprintable():
+                skipped += 1
+                continue
+            if len(candidates) >= MAX_SKILL_CANDIDATES:
+                truncated = True
+                break
+            start = item['start'] + start_index + match.start() + len(raw) - len(raw.lstrip())
+            end = start + len(text)
+            if source[start:end] != text:
+                raise ValueError('Skill span does not match the source')
+            candidates.append({'text': text, 'start': start, 'end': end,
+                               'section_start': item['start'], 'section_end': item['end']})
+    return {'items': candidates, 'skipped_lines_or_fragments': skipped, 'truncated': truncated,
+            'notice': 'Unverified mentions from an explicitly headed skills section. '
+                      'Split lists can be ambiguous; review the source and select evidence manually. '
+                      'A missing mention does not prove absence or ability.'}

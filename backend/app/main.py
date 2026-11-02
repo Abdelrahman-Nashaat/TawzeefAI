@@ -52,8 +52,8 @@ from app.knowledge_documents import router as knowledge_documents_router
 from app.model_evidence_proposal import router as model_evidence_proposal_router
 from app.provisional_queue import initialize_provisional_queue
 from app.provisional_queue import router as provisional_queue_router
+from app.recruitment import initialize_hr_reviews, seed_jobs
 from app.recruitment import router as recruitment_router
-from app.recruitment import seed_jobs
 from app.resume_field_review import initialize_resume_field_reviews
 from app.resume_field_review import router as resume_field_review_router
 from app.resume_fields_api import router as resume_fields_router
@@ -107,6 +107,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         initialize_jobs_admin(path)
         initialize_rubric_admin(path)
         initialize_resume_masks(path)
+        initialize_hr_reviews(path)
         initialize_provisional_queue(path)
         initialize_auto_screen(path)
         initialize_rubric_triage(path)

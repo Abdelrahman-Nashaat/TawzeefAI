@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path, PurePath
 from typing import Annotated, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -33,7 +34,7 @@ from app.document_text import (
 )
 from app.google_outbox import cancellation_block_reason
 from app.resume_mask import masked_source
-from app.resume_structure import structure_resume
+from app.resume_structure import extract_skill_candidates, structure_resume
 from app.scheduling import utc_text
 
 router = APIRouter(prefix="/api")
@@ -282,9 +283,22 @@ def application_detail(application_id: int, request: Request, user: Authenticate
 def structured_resume(application_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN')
+        _require_current_role(db, request, user, 'hr')
         get_application(db, application_id)
-        source = masked_source(db, application_id)['text']
-    return structure_resume(source)
+        blind = masked_source(db, application_id)
+    result = structure_resume(blind['text'])
+    result['skill_candidates'] = extract_skill_candidates(blind['text'], result)
+    result['source_context'] = blind['context_sha256']
+    result['source_revision'] = blind['source_revision']
+    result['mask_revision'] = blind['mask_revision']
+    result['mask_review_status'] = blind['status']
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_role(db, request, user, 'hr')
+        get_application(db, application_id)
+        if masked_source(db, application_id)['context_sha256'] != blind['context_sha256']:
+            raise HTTPException(status_code=409, detail='Resume or mask changed; reload the extracted fields')
+    return result
 
 
 @router.get("/applications/{application_id}/duplicates")
@@ -460,9 +474,75 @@ def withdraw_offer(offer_id: int, request: Request, user: HR):
         return _offer_view(db.execute('SELECT * FROM job_offers WHERE id=?', (offer_id,)).fetchone())
 
 
+def initialize_hr_reviews(path: str | Path) -> None:
+    with connect(path) as db:
+        db.executescript('''
+            CREATE TABLE IF NOT EXISTS hr_review_status_revisions (
+                application_id INTEGER PRIMARY KEY REFERENCES applications(id), revision INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TRIGGER IF NOT EXISTS hr_review_status_changed AFTER UPDATE OF status ON applications
+            WHEN OLD.status IS NOT NEW.status BEGIN
+                INSERT OR IGNORE INTO hr_review_status_revisions(application_id,revision) VALUES(NEW.id,0);
+                UPDATE hr_review_status_revisions SET revision=revision+1 WHERE application_id=NEW.id;
+            END;
+            CREATE TABLE IF NOT EXISTS hr_review_references (
+                reference TEXT PRIMARY KEY, application_id INTEGER NOT NULL REFERENCES applications(id),
+                actor_id INTEGER NOT NULL REFERENCES users(id), session_hash TEXT NOT NULL,
+                job_id TEXT NOT NULL, status TEXT NOT NULL, revision INTEGER NOT NULL,
+                status_revision INTEGER NOT NULL, expires_at INTEGER NOT NULL, UNIQUE(actor_id, application_id)
+            );
+            CREATE INDEX IF NOT EXISTS hr_review_references_expiry ON hr_review_references(expires_at);
+        ''')
+
+
+def _review_revision(db, application_id: int) -> int:
+    row = db.execute('SELECT revision FROM rubric_publication_revisions WHERE application_id=?',
+                     (application_id,)).fetchone()
+    return row['revision'] if row else 0
+
+
+def _review_status_revision(db, application_id: int) -> int:
+    row = db.execute('SELECT revision FROM hr_review_status_revisions WHERE application_id=?',
+                     (application_id,)).fetchone()
+    return row['revision'] if row else 0
+
+
+@router.post('/applications/{application_id}/hr-review-preview')
+def hr_review_preview(application_id: int, request: Request, user: HR):
+    """Capture visible masked evidence with an actor/session-bound review reference."""
+    now = int(time.time())
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _require_current_role(db, request, user, 'hr')
+        application = get_application(db, application_id)
+        if len(application['resume_text']) > 4000:
+            raise HTTPException(status_code=422, detail='Resume exceeds the review preview limit; use the main interface.')
+        source = masked_source(db, application_id)
+        job_row = db.execute('SELECT * FROM jobs WHERE id=?', (application['job_id'],)).fetchone()
+        if job_row is None:
+            raise HTTPException(status_code=409, detail='Job requirements unavailable')
+        job = job_data(job_row)
+        revision = _review_revision(db, application_id)
+        db.execute('DELETE FROM hr_review_references WHERE expires_at<=?', (now,))
+        db.execute('DELETE FROM hr_review_references WHERE actor_id=? AND application_id=?', (user.id, application_id))
+        if db.execute('SELECT count(*) FROM hr_review_references').fetchone()[0] >= 2000:
+            raise HTTPException(status_code=503, detail='Review capacity reached; try again later.')
+        reference = uuid4().hex
+        db.execute('''INSERT INTO hr_review_references
+            (reference,application_id,actor_id,session_hash,job_id,status,revision,status_revision,expires_at)
+            VALUES (?,?,?,?,?,?,?,?,?)''',
+            (reference, application_id, user.id, token_digest(request.cookies.get(COOKIE_NAME, '')),
+             application['job_id'], application['status'], revision, _review_status_revision(db, application_id), now + 600))
+        _require_current_role(db, request, user, 'hr')
+        return {'reference': reference, 'application_id': application_id, 'job_id': application['job_id'],
+                'job': job, 'status': application['status'], 'source': source['text'], 'source_status': source['status'],
+                'notice': source['notice'], 'expires_in_seconds': 600}
+
+
 class Decision(BaseModel):
     decision: Literal["advance", "reject", "hire"]
     note: str = Field(default="", max_length=1000)
+    review_reference: str | None = Field(default=None, min_length=32, max_length=32, pattern=r'^[0-9a-f]{32}$')
 
 
 @router.post("/applications/{application_id}/decision")
@@ -471,6 +551,19 @@ def decide(application_id: int, payload: Decision, request: Request, user: HR):
         db.execute("BEGIN IMMEDIATE")
         _require_current_role(db, request, user, 'hr')
         application = get_application(db, application_id)
+        if payload.review_reference is not None:
+            reference = db.execute('SELECT * FROM hr_review_references WHERE reference=?',
+                                   (payload.review_reference,)).fetchone()
+            if (reference is None or reference['application_id'] != application_id or reference['actor_id'] != user.id
+                    or reference['session_hash'] != token_digest(request.cookies.get(COOKIE_NAME, ''))
+                    or reference['expires_at'] <= int(time.time()) or reference['job_id'] != application['job_id']
+                    or reference['status'] != application['status']
+                    or reference['revision'] != _review_revision(db, application_id)
+                    or reference['status_revision'] != _review_status_revision(db, application_id)):
+                raise HTTPException(status_code=409, detail='Review expired or changed; review again before deciding.')
+            if payload.decision == 'reject' and not payload.note.strip():
+                raise HTTPException(status_code=422, detail='A rejection reason is required for a reviewed decision.')
+            db.execute('DELETE FROM hr_review_references WHERE reference=?', (payload.review_reference,))
         permitted = {
             "submitted": {"advance", "reject"},
             "advanced": {"reject"},

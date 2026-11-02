@@ -23,6 +23,7 @@ from contextlib import closing, contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import BoundedSemaphore
 from typing import Annotated, Literal, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -41,7 +42,15 @@ from app.graph_semantic import restore_references, save_references
 from app.interview_guide import guide_from_matching
 from app.matching_specialist import matching_snapshot
 from app.policy_agent import authorized_policy_sources, run_policy_agent
-from app.recruitment import get_application, job_data, score_masked_resume, store_screening
+from app.provisional_queue import (
+    MAX_SOURCE_BYTES,
+    MAX_SOURCE_CHARS,
+    _assignment_revision,
+    _bounded_job,
+    _job_revision,
+    _source_revisions,
+)
+from app.recruitment import get_application, score_masked_resume, store_screening
 from app.resume_fields import resume_fields_for_display
 from app.resume_mask import masked_source
 from app.resume_structure import structure_resume
@@ -52,6 +61,7 @@ from app.slots import BatchSlot, SlotCreate, _validate_batch, create_slot_record
 router = APIRouter(prefix="/api/graph-reviews")
 HR = Annotated[User, Depends(require_roles("hr"))]
 logger = logging.getLogger(__name__)
+_matching_workers = BoundedSemaphore(2)
 
 
 class ReviewRequest(BaseModel):
@@ -122,17 +132,37 @@ class ReviewState(TypedDict, total=False):
     screen_score_digest: str
 
 
+def _bounded_matching_inputs(db, application_id: int):
+    """Read bounded, masked scoring inputs from the caller's database snapshot."""
+    row = db.execute("SELECT job_id,length(CAST(resume_text AS BLOB)) AS source_bytes FROM applications WHERE id=?",
+                     (application_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail='Application not found')
+    too_large = {'code': 'graph_matching_work_limit',
+                 'message': 'Graph matching supports resumes up to 4,000 characters and at most 20 job skills of 80 characters each. Review larger inputs manually.'}
+    if row['source_bytes'] > MAX_SOURCE_BYTES:
+        raise HTTPException(status_code=422, detail=too_large)
+    raw = db.execute('SELECT resume_text FROM applications WHERE id=?', (application_id,)).fetchone()[0]
+    if len(raw) > MAX_SOURCE_CHARS:
+        raise HTTPException(status_code=422, detail=too_large)
+    try:
+        job = _bounded_job(db, row['job_id'])
+    except HTTPException as exc:
+        if exc.status_code == 422:
+            raise HTTPException(status_code=422, detail=too_large) from exc
+        raise
+    return row['job_id'], job, masked_source(db, application_id)
+
+
 def _screen_snapshot(db, application_id: int):
     """Build an ephemeral score and references from one database snapshot."""
     application = get_application(db, application_id)
-    job = db.execute('SELECT * FROM jobs WHERE id=?', (application['job_id'],)).fetchone()
-    if job is None:
-        raise HTTPException(status_code=409, detail='Application job is unavailable')
+    _, job, source = _bounded_matching_inputs(db, application_id)
     _, context_digest = context_for(db, application_id)
     row = db.execute('SELECT revision FROM rubric_publication_revisions WHERE application_id=?', (application_id,)).fetchone()
     state_row = db.execute('SELECT revision FROM graph_screen_revisions WHERE application_id=?', (application_id,)).fetchone()
     revision = f"{row['revision'] if row else 0}:{state_row['revision'] if state_row else 0}"
-    score = score_masked_resume(job_data(job), masked_source(db, application_id))
+    score = score_masked_resume(job, source)
     encoded = json.dumps(score, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
     score_digest = hashlib.sha256(encoded).hexdigest()
     return application, score, context_digest, revision, score_digest
@@ -288,17 +318,40 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
                 "parser_source_ref": source['source_sha256'], "parser_context_ref": source['context_sha256']}
 
     def matching(state: ReviewState):
+        if authorize is None or user is None:
+            raise HTTPException(status_code=403, detail='HR access required')
+        application_id = state['application_id']
+        authorize()
         with connect(path) as db:
             db.execute('BEGIN')
-            row = get_application(db, state["application_id"])
-            job = db.execute("SELECT * FROM jobs WHERE id = ?", (row["job_id"],)).fetchone()
-            score = score_masked_resume(job_data(job), masked_source(db, state['application_id']))
-            # Evidence excerpts can include identifying data even after masking.
-            for group in ("required", "preferred"):
-                score[group] = [{"skill": item["skill"], "mentioned": item["mentioned"]}
-                                for item in score[group]]
-            digest, _ = matching_snapshot(db, state['application_id'])
-            return {"matching": score, "matching_specialist_ref": digest}
+            job_id, job, source = _bounded_matching_inputs(db, application_id)
+            parser_context = state.get('parser_context_ref', state.get('parser_source_ref'))
+            if parser_context is not None and parser_context != source['context_sha256']:
+                raise HTTPException(status_code=409, detail='Resume changed; start a new review')
+            digest, _ = matching_snapshot(db, application_id)
+            revisions = (_job_revision(db, job_id), _assignment_revision(db, application_id),
+                         _source_revisions(db, application_id))
+        if not _matching_workers.acquire(blocking=False):
+            raise HTTPException(status_code=503, detail='Graph matching is busy; retry shortly')
+        try:
+            score = score_masked_resume(job, source)
+        finally:
+            _matching_workers.release()
+        authorize()
+        with connect(path) as db:
+            db.execute('BEGIN')
+            row = db.execute('SELECT job_id FROM applications WHERE id=?', (application_id,)).fetchone()
+            current_digest, _ = matching_snapshot(db, application_id) if row else (None, None)
+            current_revisions = (_job_revision(db, job_id), _assignment_revision(db, application_id),
+                                 _source_revisions(db, application_id))
+            if row is None or row['job_id'] != job_id or current_digest != digest or current_revisions != revisions:
+                raise HTTPException(status_code=409, detail='Matching inputs changed; start a new review')
+        authorize()
+        # Evidence excerpts can include identifying data even after masking.
+        for group in ("required", "preferred"):
+            score[group] = [{"skill": item["skill"], "mentioned": item["mentioned"]}
+                            for item in score[group]]
+        return {"matching": score, "matching_specialist_ref": digest}
 
     def policy(state: ReviewState):
         question = policy_question.strip()
