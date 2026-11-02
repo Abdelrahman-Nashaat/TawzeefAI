@@ -16,6 +16,13 @@ class MissingLanguage(Exception):
     pass
 
 
+def _languages_available(path, language):
+    output = subprocess.run([path, '--list-langs'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        timeout=10, check=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout
+    return {item.encode('ascii') for item in language.split('+')}.issubset(
+        {line.strip() for line in output.splitlines()})
+
+
 def contain_process_tree():
     """Ensure Windows terminates descendants when this worker exits or is killed."""
     if os.name != 'nt':
@@ -68,9 +75,7 @@ def main():
         path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
     if not path or not os.path.isfile(path):
         raise ValueError('OCR engine unavailable')
-    available = subprocess.run([path, '--list-langs'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        timeout=10, check=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout.decode('utf-8').splitlines()
-    if not set(language.split('+')).issubset({line.strip() for line in available}):
+    if not _languages_available(path, language):
         raise MissingLanguage()
     document = pdfium.PdfDocument(sys.stdin.buffer.read())
     result = []

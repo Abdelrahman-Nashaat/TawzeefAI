@@ -124,6 +124,29 @@ def enable_hybrid_answers(monkeypatch, rows):
     monkeypatch.setattr(policy_agent, '_policy_hybrid', lambda *_: {'sources': rows})
 
 
+def test_hybrid_answer_does_not_treat_negated_question_as_unnegated(setup, monkeypatch):
+    path, users, _, source, _, _ = setup
+    enable_hybrid_answers(monkeypatch, [source])
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: pytest.fail('Negated question sent for answer'))
+    result = policy_agent.run_policy_agent(path, users['employee'], 'Can employees not work from home?',
+                                           enabled=True, allow_hybrid_answers=True)
+    assert result.answer.mode == 'abstain'
+    assert 'Negation' in result.answer.notice
+
+
+def test_hybrid_answer_does_not_select_negated_policy(setup, monkeypatch):
+    path, users, doc_id, source, _, _ = setup
+    text = 'Employees cannot work from home without permission.'
+    with connect(path) as db:
+        db.execute('UPDATE knowledge_documents SET text=? WHERE id=?', (text, doc_id))
+    enable_hybrid_answers(monkeypatch, [{**source, 'text': text}])
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda *_: pytest.fail('Negated source sent for answer'))
+    result = policy_agent.run_policy_agent(path, users['employee'], 'Can employees work from home?',
+                                           enabled=True, allow_hybrid_answers=True)
+    assert result.answer.mode == 'abstain'
+    assert 'negation' in result.answer.notice.lower()
+
+
 def test_hybrid_answer_uses_only_current_authorized_exact_lines(setup, monkeypatch):
     path, users, _, source, secret, _ = setup
     enable_hybrid_answers(monkeypatch, [secret, {**source, 'text': 'forged'}, source])

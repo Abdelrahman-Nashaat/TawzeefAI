@@ -67,6 +67,16 @@ def _qualifiers_match(question: str, source: Source) -> bool:
                for group in POLICY_QUALIFIERS)
 
 
+_NEGATION_WORDS = frozenset(('no', 'not', 'never', 'neither', 'nor', 'without', 'cannot',
+                            'لا', 'لم', 'لن', 'ليس', 'ليست', 'ليسوا', 'غير', 'دون', 'بدون'))
+_NEGATED_CONTRACTION = re.compile(r"\b(?:isn|aren|wasn|weren|doesn|don|didn|couldn|shouldn|wouldn|mustn|can|won)['’]t\b", re.IGNORECASE)
+
+
+def _has_explicit_negation(text: str) -> bool:
+    """Detect selected negators; scope and indirect negation remain unresolved."""
+    return bool(_qualifier_words(text) & _NEGATION_WORDS or _NEGATED_CONTRACTION.search(text))
+
+
 def authorized_policy_sources(db, role: str) -> list[Source]:
     """Load only currently authorized handbook and sample policy passages."""
     if role not in ROLE_AUDIENCES:
@@ -311,14 +321,20 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
     # leave". It is conservative and can miss paraphrases; it cannot prove that
     # a passage actually answers the question.
     terms = _tokens(question)
-    ranked = [(score, source) for score, source in _rank_lexical(terms, initial)
-              if terms <= _tokens(source.title + ' ' + source.text) and _qualifiers_match(question, source)]
+    negated_question = _has_explicit_negation(question)
+    lexical = _rank_lexical(terms, initial)
+    ranked = [(score, source) for score, source in lexical
+              if not negated_question and not _has_explicit_negation(source.title + ' ' + source.text)
+              and terms <= _tokens(source.title + ' ' + source.text) and _qualifiers_match(question, source)]
+    if negated_question or any(_has_explicit_negation(source.title + ' ' + source.text) for _, source in lexical):
+        notice = ' '.join(filter(None, (notice, ('Negation was detected in the question or a matching source; '
+            'its scope requires manual review and relevant passages may have been omitted.'))))
     allowed = {source.id for _, source in ranked}
     chosen = [source for _, source in _rank_lexical(_tokens(query), initial) if source.id in allowed]
     chosen_ids = {source.id for source in chosen}
     candidates = chosen + [source for _, source in ranked if source.id not in chosen_ids]
     hybrid_suggestions = os.environ.get('TAWZEEF_POLICY_HYBRID_SUGGESTIONS') == '1'
-    hybrid_answers = (allow_hybrid_answers and os.environ.get('TAWZEEF_POLICY_HYBRID_ANSWERS') == '1'
+    hybrid_answers = (not negated_question and allow_hybrid_answers and os.environ.get('TAWZEEF_POLICY_HYBRID_ANSWERS') == '1'
                       and bool(key) and not rate_limited)
     suggested = []
     if os.environ.get('TAWZEEF_USE_POLICY_HYBRID') == '1' or ((hybrid_suggestions or hybrid_answers) and not candidates):
@@ -396,18 +412,22 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
         current = {source.id: source for source in _current(path, user, authorize)}
         if any(current.get(source.id) != source for source in suggested):
             raise PermissionError('Policy source authorization changed')
-        if hybrid_answers and suggested:
+        answerable = [source for source in suggested if not _has_explicit_negation(source.title + ' ' + source.text)]
+        if hybrid_answers and len(answerable) != len(suggested):
+            notice = ' '.join(filter(None, (notice, ('A possible source contains negation and was omitted from the '
+                'experimental answer; review source material manually.'))))
+        if hybrid_answers and answerable:
             try:
                 selection = _request_quote_selection(question, [
-                    {'id': s.id, 'title': s.title, 'text': s.text[:4000]} for s in suggested
+                    {'id': s.id, 'title': s.title, 'text': s.text[:4000]} for s in answerable
                 ])
                 current = {source.id: source for source in _current(path, user, authorize)}
                 if any(current.get(source.id) != source for source in suggested):
                     raise PermissionError('Policy source authorization changed')
-                answer = _grounded_quotes(selection, suggested)
+                answer = _grounded_quotes(selection, answerable)
                 if answer:
                     selected_ids = {item['source_id'] for item in json.loads(selection)['quotes']}
-                    selected_sources = [source for source in suggested if source.id in selected_ids]
+                    selected_sources = [source for source in answerable if source.id in selected_ids]
                     return PolicyAgentResult(KnowledgeAnswer(answer, selected_sources, 'groq',
                         ' '.join(filter(None, (notice, ('Experimental hybrid answer: exact source lines are verified, '
                         'but model-assessed relevance and completeness are not. Review the original sources.'))))), ['search_policy'])

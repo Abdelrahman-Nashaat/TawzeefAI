@@ -340,8 +340,10 @@ function renderJobs(jobs, role) {
       const label = element("label", "", "سيرة ذاتية بصيغة PDF نصي أو DOCX (حتى 5 ميجابايت)");
       const input = element("input"); input.type = "file"; input.accept = ".pdf,.docx"; input.required = true;
       label.append(input);
-      const ocr = element("input"); ocr.type = "checkbox";
-      const ocrLabel = element("label", "", "Use optional local English OCR for scanned PDF pages. OCR may miss or alter text; review it with HR."); ocrLabel.prepend(ocr);
+      const ocrLabel = element("label", "", "Optional OCR language for scanned PDF pages. OCR may miss or alter text; review it with HR. English and Arabic language data must be installed for the bilingual option.");
+      const ocr = element("select");
+      for (const [value, labelText] of [["", "No OCR"], ["eng", "English"], ["eng+ara", "English and Arabic"]]) { const option = element("option", "", labelText); option.value = value; ocr.append(option); }
+      ocrLabel.append(ocr);
       const button = element("button", "small-button", "التقديم لهذه الوظيفة"); button.type = "submit";
       form.append(label, ocrLabel, button);
       form.addEventListener("submit", async (event) => {
@@ -352,7 +354,7 @@ function renderJobs(jobs, role) {
         button.disabled = true;
         try {
           const params = new URLSearchParams({ job_id: job.id, filename: file.name });
-          if (ocr.checked) { params.set("ocr", "true"); params.set("ocr_language", "eng"); }
+          if (ocr.value) { params.set("ocr", "true"); params.set("ocr_language", ocr.value); }
           const uploaded = await api(`/api/applications?${params}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
           if (await loadRecruitment(role)) announce("تم إرسال الطلب بنجاح.");
           if (uploaded.extraction?.ocr_pages?.length) announce(`Application submitted. OCR was used on pages ${uploaded.extraction.ocr_pages.join(", ")}; review the extracted text because OCR can make mistakes.`);
@@ -1989,8 +1991,10 @@ function setupKnowledgeDocuments() {
   const fileInput = element("input");
   fileInput.id = "knowledge-document-file"; fileInput.type = "file"; fileInput.accept = ".pdf,.docx"; fileInput.required = true;
   fileLabel.htmlFor = fileInput.id; fileLabel.append(fileInput);
-  const fileOcr = element("input"); fileOcr.type = "checkbox";
-  const fileOcrLabel = element("label", "", "Use optional local English OCR for scanned PDF pages. OCR may miss or alter text; review the indexed result."); fileOcrLabel.prepend(fileOcr);
+  const fileOcrLabel = element("label", "", "Optional OCR language for scanned PDF pages. OCR may miss or alter text; review the indexed result. English and Arabic language data must be installed for the bilingual option.");
+  const fileOcr = element("select");
+  for (const [value, labelText] of [["", "No OCR"], ["eng", "English"], ["eng+ara", "English and Arabic"]]) { const option = element("option", "", labelText); option.value = value; fileOcr.append(option); }
+  fileOcrLabel.append(fileOcr);
   const fileButton = element("button", "small-button", "رفع المستند"); fileButton.type = "submit";
   fileForm.append(fileLabel, fileOcrLabel, fileButton);
   fileForm.addEventListener("submit", async (event) => {
@@ -2003,7 +2007,7 @@ function setupKnowledgeDocuments() {
     try {
       const params = new URLSearchParams({ title: documentTitle, audience: fileFields.audience.value, collection: fileFields.collection.value, filename: file.name });
       if (fileFields.job.value) params.set("job_id", fileFields.job.value);
-      if (fileOcr.checked) { params.set("ocr", "true"); params.set("ocr_language", "eng"); }
+      if (fileOcr.value) { params.set("ocr", "true"); params.set("ocr_language", fileOcr.value); }
       const uploaded = await api(`/api/knowledge/documents?${params}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
       fileForm.reset();
       fileFields.collection.dispatchEvent(new Event("change"));

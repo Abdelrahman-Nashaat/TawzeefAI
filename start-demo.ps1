@@ -10,6 +10,10 @@ if ($SemanticScreening -and (-not (Test-Path -LiteralPath (Join-Path $modelDir '
 $priorSemantic = [Environment]::GetEnvironmentVariable('TAWZEEF_ENABLE_SEMANTIC_SCREENING', 'Process')
 $priorModel = [Environment]::GetEnvironmentVariable('TAWZEEF_EMBEDDING_MODEL_DIR', 'Process')
 $priorOcr = [Environment]::GetEnvironmentVariable('TAWZEEF_ENABLE_OCR', 'Process')
+$priorTessdata = [Environment]::GetEnvironmentVariable('TESSDATA_PREFIX', 'Process')
+$localTessdata = Join-Path $projectRoot '.tooling\tessdata'
+if ($Ocr -and -not $priorTessdata -and (Test-Path -LiteralPath (Join-Path $localTessdata 'eng.traineddata')) -and
+    (Test-Path -LiteralPath (Join-Path $localTessdata 'ara.traineddata'))) { $env:TESSDATA_PREFIX = $localTessdata }
 $env:TAWZEEF_ENABLE_OCR = if ($Ocr) { '1' } else { '0' }
 $env:TAWZEEF_ENABLE_SEMANTIC_SCREENING = if ($SemanticScreening) { '1' } else { '0' }
 if ($SemanticScreening) { $env:TAWZEEF_EMBEDDING_MODEL_DIR = $modelDir }
@@ -45,5 +49,6 @@ try {
     [Environment]::SetEnvironmentVariable('TAWZEEF_ENABLE_SEMANTIC_SCREENING', $priorSemantic, 'Process')
     [Environment]::SetEnvironmentVariable('TAWZEEF_EMBEDDING_MODEL_DIR', $priorModel, 'Process')
     [Environment]::SetEnvironmentVariable('TAWZEEF_ENABLE_OCR', $priorOcr, 'Process')
+    [Environment]::SetEnvironmentVariable('TESSDATA_PREFIX', $priorTessdata, 'Process')
     Pop-Location
 }
