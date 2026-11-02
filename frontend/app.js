@@ -2355,6 +2355,32 @@ function setupRecruitmentAudit(target, kind = "timeline") {
   more.addEventListener("click", () => load(false));
 }
 
+function renderRecordedMilestones(data) {
+  const chart = element("section", "application-detail");
+  chart.append(element("h3", "", "Recorded recruitment milestones"), element("p", "subtle-note", "Each bar counts distinct retained applications with the recorded event. Repeated events count once; later cancellations, withdrawals, or rejections do not remove past milestones. Older records without an audit event are not counted. Stages can be recorded out of order, so these are not conversion rates."));
+  const total = data.applications_total;
+  const labels = {received: "Applications received", screened: "Screened", advanced: "Advanced", interview_scheduled: "Interview scheduled", interview_completed: "Interview completed", offer_presented: "Offer presented", hired: "Hired"};
+  const outcomes = {interview_cancelled: "Interview cancelled", offer_accepted: "Offer accepted", offer_declined: "Offer declined", offer_withdrawn: "Offer withdrawn", rejected: "Application rejected"};
+  function addBars(entries, names, key) {
+    const list = element("ol", "evidence-list");
+    for (const entry of entries || []) {
+      const name = names[entry[key]];
+      if (!name || !Number.isInteger(entry.count) || entry.count < 0 || !Number.isInteger(total) || entry.count > total) continue;
+      const item = element("li", "", `${name}: ${entry.count} of ${total} applications`);
+      if (total > 0) {
+        const meter = element("meter"); meter.min = 0; meter.max = total; meter.value = entry.count; meter.style.width = "100%"; meter.dir = "ltr";
+        meter.setAttribute("aria-label", `${name}: ${entry.count} of ${total} applications`); item.append(meter);
+      }
+      list.append(item);
+    }
+    chart.append(list);
+  }
+  addBars(data.recorded_milestones, labels, "stage");
+  chart.append(element("h4", "", "Recorded outcomes"));
+  addBars(data.recorded_outcomes, outcomes, "outcome");
+  return chart;
+}
+
 function renderDashboard(data) {
   const target = document.getElementById("dashboard-area");
   const box = section("مؤشرات التوظيف");
@@ -2364,6 +2390,7 @@ function renderDashboard(data) {
     const card = element("div", "metric-card"); card.append(element("strong", "", String(value)), element("span", "", label)); grid.append(card);
   }
   box.append(grid, element("p", "subtle-note", `متوسط الأيام من وقت التقديم حتى آخر قرار توظيف للطلبات المعينة حاليًا؛ عدد الحالات: ${data.time_to_hire?.count ?? 0}.`));
+  box.append(renderRecordedMilestones(data));
   const pipeline = element("ul", "evidence-list");
   for (const item of data.pipeline || []) pipeline.append(element("li", "", `${statusLabels[item.status] || item.status}: ${item.count}`));
   if (pipeline.childNodes.length) box.append(element("h3", "", "الطلبات حسب المرحلة"), pipeline);

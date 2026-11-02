@@ -1,21 +1,21 @@
-# بيانات تعليمية اصطناعية لـTawzeefAI
+# Synthetic educational data for TawzeefAI
 
-كل الوظائف والسير والسياسات وأنماط التعيين والإجابات في هذا المجلد **خيالية**، ولا تمثل أشخاصًا أو مؤسسة أو سياسات فعلية أو قرارات توظيف. الإجابات والأدلة المقترحة مسودات لم يعتمدها مراجع بشري، ولا تصلح بمفردها معيارًا مستقلًا للدقة أو الإنصاف.
+All jobs, résumés, policies, hiring patterns, and answers in this directory are **fictional**. They do not represent people, an organization, actual policies, or hiring decisions. Proposed answers and evidence are draft labels that have not been approved by a human reviewer; they do not independently establish accuracy or fairness.
 
-المجموعة منفصلة عن `data/fixtures/` ولا تُحمّل تلقائيًا داخل التطبيق. تحتوي على:
+The collection is separate from `data/fixtures/` and is not loaded automatically by the application. It contains:
 
-- `jobs.json`: ست وظائف، بينها أدوار بيانات متشابهة، مع المهارات المطلوبة والمفضلة والمسؤوليات.
-- `cvs.json`: 30 سيرة نصية قصيرة، 18 إنجليزية و12 عربية، مع حالات نقص دليل ونفي وتعليمات غير موثوقة. هذه نصوص تركيبية، وليست ملفات PDF/DOCX أو بيانات أشخاص حقيقيين. `expected_evidence` وحقول النفي والنقص مرجع مقترح للمراجعة، وليس حكمًا نهائيًا على مرشح.
-- `handbook.json`: 15 قسمًا ثنائي اللغة عن سياسات افتراضية، لكل قسم معرّف ووصول ورقم صفحة **منطقي**. رقم الصفحة مرجع تجريبي لكل قسم، ولم ينشأ PDF مكوّن من 15 صفحة أو يُتحقق من ترقيمه بصريًا.
-- `policy-qa.json`: 30 سؤالًا وجوابًا مقترحًا، 15 بالعربية و15 بالإنجليزية، تشير إلى معرّف القسم وصفحته المنطقية. يلزم مراجعة بشرية قبل استخدام الإجابات كتقييم مرجعي.
-- `negative-qa.json`: أربع حالات منفصلة مقترحة للامتناع ومنع الوصول والحقن، لا تدخل ضمن الـ30 سؤالًا القابلة للإجابة.
-- `ranking.json`: عشر مقارنات ثنائية مبررة بين نصوص صناعية ضمن الوظيفة نفسها؛ تقارن الأدلة المذكورة، ولا تُصدر حكمًا على أشخاص. التسميات المقترحة لم يراجعها إنسان، والملف لم يقيم الخوارزمية.
-- `hire-patterns.json`: ستة أنماط افتراضية قصيرة، دون سجلات توظيف سابقة، ولا يجوز اعتبارها قواعد أهلية أو دليلًا على نجاح توظيف حقيقي.
+- `jobs.json`: Six jobs, including similar data roles, with required and preferred skills and responsibilities.
+- `cvs.json`: 30 short synthetic résumés, 18 in English and 12 in Arabic, including missing evidence, negation, and untrusted instructions. These are text samples, not PDF/DOCX files or real people's data. `expected_evidence` and the negation and missing-evidence fields are proposed references for review, not final candidate judgments.
+- `handbook.json`: 15 bilingual sections about fictional policies, each with an identifier, access level, and **logical** page number. The page number is a test reference for the section; no 15-page PDF was generated or visually checked.
+- `policy-qa.json`: 30 proposed question-answer pairs, 15 in each language, referencing section identifiers and logical pages. Human review is required before using the answers as an evaluation reference.
+- `negative-qa.json`: Four additional proposed abstention, access-control, and injection cases, separate from the 30 answerable questions.
+- `ranking.json`: Ten justified pairwise comparisons of synthetic résumés for the same job. They compare stated evidence and do not judge people. The proposed labels have not been reviewed by a person, and this file has not evaluated the algorithm.
+- `hire-patterns.json`: Six short fictional patterns, with no past hiring records. They must not be treated as eligibility rules or evidence of real hiring success.
 
-`generate.py` يعيد توليد ملفات JSON بالاعتماد على المحتوى المضمن فيه، وسيستبدل نسخ هذه الملفات في هذا المجلد عند تشغيله. `validate.py` يتحقق من سلامة JSON، الأعداد، تفرّد المعرفات، الإحالات، اللغات، ومطابقة أرقام الصفحات المنطقية؛ لا يقيّم صحة الادعاءات ولا جودة الاسترجاع أو الترخيص.
+`generate.py` regenerates the JSON files from its embedded content and overwrites the copies in this directory. `validate.py` checks JSON integrity, counts, unique identifiers, references, languages, and logical page numbers; it does not assess claim accuracy, retrieval quality, or licensing.
 
 ```powershell
 python data/capstone_samples/validate.py
 ```
 
-لا تُدخل بيانات حقيقية للتجارب أو تقارن هذه الأمثلة بوقت فحص بشري مُختلق. اختبارات الملف المصور وOCR والملفات متعددة الأعمدة والتقييم البشري تحتاج إعدادًا واختبارًا منفصلين.
+Do not introduce real data into these experiments or compare the examples against an invented human screening time. Scanned documents, OCR, multicolumn files, and human evaluation require separate preparation and testing.

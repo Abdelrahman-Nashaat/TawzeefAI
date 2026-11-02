@@ -14,6 +14,30 @@ router = APIRouter(prefix="/api")
 HR = Annotated[User, Depends(require_roles("hr"))]
 
 
+def _milestone_counts(applications, events):
+    """Count each retained application once per explicitly recorded milestone."""
+    retained = {row['id'] for row in applications}
+    actions = ('screened', 'interview_scheduled', 'interview_completed', 'interview_cancelled', 'offer_presented',
+               'offer_accepted', 'offer_declined', 'offer_withdrawn')
+    seen = {name: set() for name in (*actions, 'advanced', 'hired', 'rejected')}
+    for event in events:
+        app_id, action = event['application_id'], event['action']
+        if app_id not in retained:
+            continue
+        if action in actions:
+            seen[action].add(app_id)
+        elif action == 'decision':
+            try:
+                details = json.loads(event['details'])
+                decision = details.get('decision') if isinstance(details, dict) else None
+            except (TypeError, ValueError):
+                continue
+            label = {'advance': 'advanced', 'hire': 'hired', 'reject': 'rejected'}.get(decision) if isinstance(decision, str) else None
+            if label:
+                seen[label].add(app_id)
+    return {name: len(ids) for name, ids in seen.items()}
+
+
 @router.get('/dashboard/jobs')
 def dashboard_by_job(request: Request, user: HR):
     """Describe current job pipelines and their recorded screening activity."""
@@ -77,6 +101,9 @@ def dashboard(request: Request, user: HR):
         apps = db.execute("SELECT id, status, created_at FROM applications").fetchall()
         screenings = db.execute("SELECT COUNT(*) FROM audit_events WHERE action = 'screened'").fetchone()[0]
         decisions = db.execute("SELECT application_id, details, created_at FROM audit_events WHERE action = 'decision' ORDER BY id DESC").fetchall()
+        milestone_events = db.execute("""SELECT application_id, action, details FROM audit_events
+            WHERE action IN ('screened', 'decision', 'interview_scheduled', 'interview_completed', 'interview_cancelled',
+                             'offer_presented', 'offer_accepted', 'offer_declined', 'offer_withdrawn')""").fetchall()
 
     # For an application currently hired, use its latest recorded hire decision.
     hire_times = {}
@@ -99,10 +126,18 @@ def dashboard(request: Request, user: HR):
                     elapsed.append(days)
             except (ValueError, TypeError):
                 continue
+    milestones = _milestone_counts(apps, milestone_events)
     return {
         "applications_total": len(apps),
         "screening_events": screenings,
         "pipeline": [{"status": status, "count": count} for status, count in sorted(by_status.items())],
+        "recorded_milestones": [
+            {"stage": "received", "count": len(apps)},
+            *[{"stage": name, "count": milestones[name]} for name in
+              ('screened', 'advanced', 'interview_scheduled', 'interview_completed', 'offer_presented', 'hired')],
+        ],
+        "recorded_outcomes": [{"outcome": name, "count": milestones[name]} for name in
+                              ('interview_cancelled', 'offer_accepted', 'offer_declined', 'offer_withdrawn', 'rejected')],
         "time_to_hire": {
             "average_days": round(sum(elapsed) / len(elapsed), 2) if elapsed else None,
             "count": len(elapsed),

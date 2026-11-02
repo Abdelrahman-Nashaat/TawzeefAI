@@ -110,7 +110,8 @@ def search_postgres(path, role, question, embedder, connection, *, min_similarit
             continue
         result.append({'document_id': document['id'], 'id': source.id, 'title': source.title,
                        'page': source.page, 'text': source.text, 'similarity': similarity,
-                       'collection': document['collection'], 'job_id': document['job_id'], 'section': source.section})
+                       'collection': document['collection'], 'job_id': document['job_id'], 'section': source.section,
+                       'extraction': source.extraction, 'extraction_notice': source.extraction_notice})
         if len(result) == limit:
             break
     return {'status': 'ok' if result else 'abstain', 'sources': result,

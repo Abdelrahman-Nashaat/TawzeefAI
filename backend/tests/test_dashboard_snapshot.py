@@ -53,6 +53,8 @@ def test_dashboard_reads_one_snapshot_while_an_application_is_screened(tmp_path,
         assert report.status_code == 200
         assert report.json()['applications_total'] == 0
         assert report.json()['screening_events'] == 0
+        assert all(row['count'] == 0 for row in report.json()['recorded_milestones'])
+        assert all(row['count'] == 0 for row in report.json()['recorded_outcomes'])
         with connect(path) as db:
             assert db.execute('SELECT count(*) FROM applications').fetchone()[0] == 1
             assert db.execute("SELECT count(*) FROM audit_events WHERE action='screened'").fetchone()[0] == 1

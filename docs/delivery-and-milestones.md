@@ -1,28 +1,26 @@
-# TawzeefAI: حالة الدمج وخطة التسليم
+# TawzeefAI: integration status and delivery plan
 
-تاريخ المراجعة: 29 أكتوبر 2026. هذه الوثيقة تصف ما شوهد في الملفات وقت المراجعة، وليست شهادة بأن المشروع جاهز للتسليم أو أن الاختبارات نجحت على نسخة جديدة. يُعاد فحص الأدلة بعد كل تغيير.
+This document records the review made on 29 October 2026. It is a historical snapshot, not proof of current delivery readiness or test results. Recheck evidence after each change. LangGraph review paths, résumé section extraction, weighted human assessments, saved conversations, optional OCR, and other capabilities were added after the original review. Consult the [README](../README.md), tests, and [requirements review](pdf-requirements-gap.md) for current evidence and limits.
 
-**تحديث:** الجدول أدناه لقطة سابقة؛ أضيف لاحقًا مسار LangGraph ثابت بمراجعة بشرية، وتحليل أقسام السيرة، وتقييم موزون ومقارنة نطاقات ومحادثات محفوظة. راجع README والاختبارات للحالة الحالية. لا يزال التنفيذ غير مكتمل، بما في ذلك قاعدة المتجهات والخدمات الخارجية المذكورة أدناه.
+## Requirements and repository
 
-## مصادر المطلوب ومكان المشروع
+- `Agentic_AI_Capstone_Project_Idea_Booklet_261029_011440.pdf` describes the recruitment assistant, its knowledge interfaces and permissions, and **suggested** success measures.
+- `4_5987536898589990745_261029_072737.pdf` is the accompanying presentation. It adds detailed architecture and workflow, including LangGraph, specialized agents, PostgreSQL and vector storage, Streamlit, screening weights, approval and scheduling, and evaluation. See the [requirements review](pdf-requirements-gap.md) for slide references.
+- TawzeefAI is an independent repository, separate from `DEPI_projects` and ShopAgent. Verify the current Git status and remote state before delivery.
 
-- كتيب الفكرة `Agentic_AI_Capstone_Project_Idea_Booklet_261029_011440.pdf` يصف مساعد فحص التوظيف ومتطلبات المعرفة والواجهات والصلاحيات، ويعرض مؤشرات نجاح **مقترحة**.
-- العرض `4_5987536898589990745_261029_072737.pdf` يضيف تصميمًا تفصيليًا، منها LangGraph، ووكلاء متخصصون، وPostgreSQL وقاعدة متجهات، وStreamlit، وأوزان فحص محددة، وتدفق موافقة وجدولة، ومقاييس وتجربة عرض. ارجع إلى [مصفوفة الفجوات](pdf-requirements-gap.md) لتفاصيل المصادر والشرائح.
-- التطبيق موجود الآن في مستودع محلي مستقل باسم `TawzeefAI`، منفصل عن نسخة `DEPI_projects` ومشروع ShopAgent. وجود الملفات محليًا لا يثبت رفعها إلى GitHub أو مراجعتها؛ راجع `git status --short` من جذر هذا المستودع قبل التسليم.
+## Running the local demo
 
-## تشغيل النسخة المحلية الحالية
-
-على Windows، من PowerShell داخل مجلد `TawzeefAI`، بعد توفر Python 3.12 أو 3.13 و`uv`:
+On Windows, with Python 3.12 or 3.13 and `uv`, run from the project directory:
 
 ```powershell
 & .\start-demo.ps1
 ```
 
-افتح `http://127.0.0.1:8000/`. السكربت يستخدم `uv run --locked` ويشغّل حسابات العرض ويخزن قاعدة البيانات في `backend/tawzeefai.sqlite3`. لإيقاف الخادم اضغط `Ctrl+C`. بيانات الدخول التجريبية وأوامر الاختبار والتقييم في [دليل التطبيق](../README.md). هذه الحسابات معروفة، والخادم للتجربة المحلية فقط؛ استخدم بيانات صناعية.
+Open `http://127.0.0.1:8000/`. The script uses `uv run --locked`, enables demo accounts, and stores its database in `backend/tawzeefai.sqlite3`. Stop it with `Ctrl+C`. See the [README](../README.md) and [setup guide](../SETUP.md) for credentials, optional integrations, tests, and current limitations. Demo credentials are public; keep the server local and use synthetic data.
 
-السكربت يقرأ مفتاح Groq محميًا لحساب Windows الحالي من `.tooling/groq-key.dpapi` إن وجد؛ لا تنتقل هذه الحماية إلى جهاز آخر تلقائيًا. إن لم يوجد المفتاح يبدأ نمط المقتطفات. لا تضع مفاتيح أو قواعد بيانات أو سيرًا حقيقية في Git، ولا تذكر قيم الأسرار في السجلات. عند تفعيل Groq تُرسل أسئلة ومقاطع سياسات مسموحة إلى الخدمة، ولا يعني ذلك صلاحية استخدامها على بيانات حقيقية.
+If present, a Groq key protected for the current Windows account is loaded from `.tooling/groq-key.dpapi`; otherwise the demo uses extractive answers. The protection does not automatically transfer to another device. Do not commit keys, databases, or real résumés, or expose secrets in logs. With Groq enabled, authorized questions and policy excerpts are sent to the provider; this does not make the demo suitable for real data.
 
-من مجلد `TawzeefAI/backend`، بعد التثبيت من القفل، شغّل عند المراجعة:
+From `TawzeefAI/backend`, the baseline checks include:
 
 ```powershell
 uv run --locked pytest -q
@@ -30,29 +28,21 @@ uv run --locked ruff check .
 uv run --locked python evaluate.py
 ```
 
-تقرير `evaluate.py` فحص أمثلة صناعية ذات تسميات مسودة، وليس benchmark مستقلاً أو تجربة زمن بشري. سجّل نتيجة الأوامر وتاريخها بعد آخر تعديل؛ نجاح الإعداد المحلي لا يثبت أن جميع متطلبات العرض اكتملت.
+The evaluation uses synthetic examples with draft labels; it is not an independent benchmark or human timing study. Record fresh command results after changes. A working local setup does not establish that all presentation requirements are met.
 
-## مقارنة المتطلبات بالحالة الحالية
+## Historical gap categories
 
-| مجال | ما يوجد في الملفات المحلية | المطلوب قبل اعتباره مستوفيًا |
-| --- | --- | --- |
-| المعمارية | FastAPI وSQLite وواجهة HTML/JS وسير ثابت وأدوات قراءة Groq؛ التشغيل محلي | تنفيذ وفحص المعمارية المطلوبة في العرض: LangGraph والوكلاء المتخصصون، PostgreSQL وقاعدة متجهات، وواجهة Streamlit إذا بقيت جزءًا من المواصفات المعتمدة. لا تستبدل العمل السابق دون خطة ترحيل واختبارات. |
-| السيرة والمطابقة | استخراج PDF نصي وDOCX، فحص ذكر مهارات، وإخفاء قواعدي محدود للهوية | Parser لحقول منظمة، وrubric بأوزان 40/15/20/15/10 وأدلة وفجوات وأسئلة مقابلة، ومراجعة بشرية؛ اختبارات تنسيقات ولغتين ونفي ونقص دليل، والإفصاح عن حدود OCR وإزالة الهوية. |
-| السياسات وRAG | مستندات HR ومقاطع وصلاحيات ودليل مصدر نصي، واسترجاع لفظي مع توليد اختياري | ثلاث مجموعات ومصدر صفحة موثوق، واسترجاع vector وBM25 وإعادة ترتيب، وفصل المستندات قبل الاسترجاع وتقييم الاقتباسات وصحة الجواب والامتناع، خصوصًا بين وظائف متشابهة وبالعربية. |
-| رحلة المرشح | طلبات وحالات وفحص ومراجعة HR ومواعيد محلية مع فحص تعارض | تحقق من lifecycle الكامل وموافقة HR، وإتاحة slots للمرشح، وحجز Calendar وتأكيد Email الفعليين فقط بعد إعداد مصرح به؛ اختبار فشل الاتصال والتكرار والمناطق الزمنية. |
-| الأدوار ولوحة HR | أدوار candidate وemployee وHR، وجلسات محلية، ومؤشرات وسجل API | إدارة admin والصلاحيات وJWT وفق العرض، مقارنة وترتيب وواجهة تدقيق وتقييم، واختبارات ملكية وعزل على كل واجهة وendpoint ومصدر بيانات. |
-| البيانات والتقييم | أمثلة صناعية، ووصف وظيفة منشور مشتق، وحالات تقييم مسودة | التحقق من تراخيص أي مجموعات عامة، وإنشاء/مراجعة مجموعة تمثيلية 30 CV و30 سؤالًا كما في العرض، وحجب مجموعة اختبار عن الضبط، ومراجع بشري وقياس baseline فعلي؛ الأمثلة الصناعية لا تثبت الإنصاف أو وقتًا موفرًا. |
-| التسليم | تبعيات محلية مقفلة وملاحظات التشغيل | Docker Compose، وإعداد قاعدة البيانات والأسرار والمراقبة والفشل والاستعادة، واختبار نظيف على جهاز/بيئة مستقلة. لا يُعد هذا التطبيق جاهزًا لبيانات حقيقية أو للنشر العام بمجرد تشغيل localhost. |
+The original review identified gaps in architecture and deployment, structured résumé analysis and weighted screening, role-filtered RAG, the candidate lifecycle and external integrations, role management and dashboards, independent evaluation data, and reproducible delivery. Several subsequent changes address parts of these areas, but the historical matrix in the [requirements review](pdf-requirements-gap.md) must not be mistaken for current status. Each requirement needs current evidence before it is considered complete.
 
-الأرقام الموجودة في نموذج لوحة العرض داخل الشرائح رسومات توضيحية وليست قياسات أُجريت لهذا المشروع. كما أن عناوين ملفات الـPDF ليست موافقة على إرسال البريد، أو معالجة بيانات أشخاص، أو إجراء نشر خارجي.
+The dashboard figures in the presentation are illustrations, not measurements of this project. The PDFs themselves do not authorize sending email, processing real people's data, or publishing a service.
 
-## مراحل العمل المقترحة
+## Proposed work sequence
 
-1. **تثبيت خط الأساس:** مراجعة الملفين والمجلد الحالي، وتشغيل الاختبارات من المستودع المستقل، وتوثيق أي إخفاق فعلي. تأكد أن Git يسمح بتتبع البيانات الصناعية مع بقاء الأسرار والـDB وبيئات التشغيل مستبعدة.
-2. **العقود والبيانات:** تحديد نموذج الصلاحيات والمرشح وحالاته، ونسخ/ترحيل البيانات بإجراءات آمنة قابلة للاختبار؛ إعداد البيانات الاصطناعية ومرجع تقييم مستقل. لا تُوصف التسميات المسودة بأنها اعتماد بشري.
-3. **الـbackend والبحث:** إعداد PostgreSQL وvector extension وعمليات ترحيل قابلة للإعادة، ثم ingestion واسترجاع مرشح بالصلاحية مع استشهادات دقيقة. اختبر الاستعادة، والبيانات غير الصالحة، والبحث والرفض قبل توصيل النموذج.
-4. **الوكلاء والفحص:** تنفيذ وكلاء LangGraph والأدوات والذاكرة القابلة للاستئناف، ومطابقة rubric والأدلة على نص منقح. لا يُسمح للوكلاء باتخاذ قرار توظيف بدل المراجع؛ اختبر الحقن وتغيير الهوية والـcounterfactual.
-5. **التجربة والجدولة:** إكمال واجهات المرشح والموظف وHR وadmin والمقارنة واللوحة، ثم توصيل موفرَي التقويم والبريد في بيئة اختبار مصرح بها. اختبر الوصول المتقاطع، والتكرار، وتعطل المزود، وعدم إرسال دعوات دون إجراء مصرح به.
-6. **التقييم والتسليم:** اختبارات متكاملة من الواجهة للبيانات، وقياس الاسترجاع والإجابة والـranking على مجموعة لم تُستخدم للضبط، وتوثيق حدود التحيز، وتجربة وقت فحص يدوي مع بشر إن توفرت. وثّق ما لم يُقَس صراحة، ثم راجع Docker والتشغيل النظيفة وسجل الأدلة.
+1. **Establish a baseline:** Review both documents and the current repository, run its checks, and confirm synthetic data is tracked while secrets, databases, and environments remain excluded.
+2. **Contracts and data:** Define roles, ownership, candidate states, and safe migrations; prepare synthetic samples and an independently reviewed evaluation reference. Do not describe draft labels as human approval.
+3. **Backend and retrieval:** Configure and test PostgreSQL, vector storage, migrations, ingestion, access-filtered retrieval, and accurate citations. Exercise recovery and invalid data before connecting a model.
+4. **Agents and screening:** Implement and test LangGraph agents, tools, resumable memory, the rubric, and source evidence. Keep hiring decisions with a reviewer; test injection, identity changes, and counterfactual examples.
+5. **Experience and scheduling:** Complete the candidate, employee, HR, and admin journeys, comparison, and dashboards. Test ownership boundaries, duplication, provider failure, and authorized calendar and email integration.
+6. **Evaluation and delivery:** Verify end-to-end flows and assess retrieval, answers, and ranking on data held out from tuning. Document bias limitations and perform an actual human baseline study if available. Verify clean Docker setup and record evidence and unmeasured outcomes.
 
-لا تحتاج الأجزاء المستقلة عن حسابات التقويم أو البريد إلى انتظارها. عند الحاجة لتجربة حقيقية، حدد الحساب والصلاحية ونوع البيانات وعدم وجود تكاليف غير مقصودة قبل تشغيل الاتصال.
+Work that does not depend on Calendar or Gmail can proceed independently. For a real integration test, identify the account, permissions, data, and potential costs before connecting.
