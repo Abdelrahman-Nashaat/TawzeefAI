@@ -77,6 +77,27 @@ def _has_explicit_negation(text: str) -> bool:
     return bool(_qualifier_words(text) & _NEGATION_WORDS or _NEGATED_CONTRACTION.search(text))
 
 
+def _arabic_inflection_leads(question: str, terms: set[str], lexical: list[tuple[float, Source]]) -> list[Source]:
+    """Find bounded spelling leads, not semantic matches or answer evidence."""
+    if _has_explicit_negation(question):
+        return []
+    leads = []
+    for _, source in lexical:
+        evidence = _tokens(source.title + ' ' + source.text)
+        missing = terms - evidence
+        if len(terms & evidence) < 2 or len(missing) != 1 or not _qualifiers_match(question, source):
+            continue
+        word = next(iter(missing))
+        if not re.fullmatch(r'[ايتن][\u0621-\u064a]{3,}', word):
+            continue
+        if any(re.fullmatch(r'[ايتن][\u0621-\u064a]{3,}', candidate) and
+               word != candidate and word[1:] == candidate[1:] for candidate in evidence):
+            leads.append(source)
+            if len(leads) == 3:
+                break
+    return leads
+
+
 def authorized_policy_sources(db, role: str) -> list[Source]:
     """Load only currently authorized handbook and sample policy passages."""
     if role not in ROLE_AUDIENCES:
@@ -440,6 +461,16 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
                 raise PermissionError('Policy source authorization changed')
         if not hybrid_suggestions:
             suggested = []
+        existing = {source.id for source in suggested}
+        lexical_leads = [source for source in _arabic_inflection_leads(question, terms, lexical)
+                         if source.id not in existing]
+        if lexical_leads:
+            suggested = (suggested + lexical_leads)[:3]
+            current = {source.id: source for source in _current(path, user, authorize)}
+            if any(current.get(source.id) != source for source in suggested):
+                raise PermissionError('Policy source authorization changed')
+            notice = ' '.join(filter(None, (notice, ('Similar Arabic spelling is only a search hint; '
+                'it may refer to a different word or meaning.'))))
         if suggested:
             notice = ' '.join(filter(None, (notice,
                 'Experimental search suggestions are unverified and may not answer this question.')))

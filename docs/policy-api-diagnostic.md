@@ -7,6 +7,20 @@ independently reviewed by HR. The corpus was already available during project
 development and is not a held-out benchmark. Retrieval of the expected source
 does not establish that an answer is correct, grounded, fair, or safe.
 
+## Later run with Arabic spelling leads
+
+On 2 November 2026 the same command returned a draft-expected source in the
+first three for 17 of 30 questions. Fourteen responses were extractive and 16
+abstained. Among 15 Arabic questions, six returned the expected source in an
+extractive response and three more returned it only as an explicitly
+unverified lead while abstaining; six missed it. The three lead cases were
+`cap-qa-12`, `cap-qa-16`, and `cap-qa-22`. All four negative cases abstained
+without their listed forbidden source, and one revoked source was hidden.
+Those small checks do not prove general access control or answer quality.
+The earlier run below predates both the negation guard and spelling leads, so
+the two runs are not a controlled comparison of the spelling change alone.
+The labels are development drafts rather than an independent evaluation.
+
 The runner imports each logical handbook section as one text document, rather
 than a PDF, so it does not measure PDF parsing or real pagination. It disables
 Groq and hybrid search; the result describes the local lexical policy path only.
