@@ -3,7 +3,7 @@
 The presentation proposes Streamlit for chat and the HR dashboard. This optional
 interface uses the existing FastAPI server and covers saved knowledge
 conversations, HR metrics, and candidate application submission, status,
-screening previews, shared assessments, and interview booking. Use the main local
+screening previews, shared assessments, interview booking, and reviewing and responding to job offers. Use the main local
 interface for HR résumé review and administrative controls. Booking is local and
 does not send an email or create a Google Calendar event.
 

@@ -409,7 +409,8 @@ async function loadProvisionalQueue(target, jobId, after = null) {
     if (!target.isConnected) return;
     if (!Array.isArray(data.items) || !Number.isSafeInteger(data.version)) throw new Error("Invalid queue response");
     target.replaceChildren(element("h4", "", "Provisional upload screening"), element("p", "subtle-note", data.notice));
-    target.append(element("p", "subtle-note", "Pending means no provisional score exists; it is not a negative result. Refresh computes a local score only for resumes up to 4,000 characters and jobs with at most 20 required and preferred skills combined, each up to 80 characters. Larger inputs require manual review. Review the resume mask before relying on a result. Automatic masking may leave identifiers. A changed resume, mask, or job makes the result stale."));
+    target.append(element("p", "subtle-note", data.worker?.recent_heartbeat ? "Local automatic worker: recent heartbeat." : "No recent automatic worker heartbeat; pending cases need manual review or an enabled worker."));
+    target.append(element("p", "subtle-note", "Pending means no provisional score exists; it is not a negative result. Refresh computes a local score only for resumes up to 4,000 characters and jobs with at most 20 required and preferred skills combined, each up to 80 characters. Larger inputs require manual review. Review the resume mask before relying on a result. Automatic masking may leave identifiers. After a resume, mask, job or assignment changes, or if the worker shows superseded or failed, use Refresh or review manually; no new automatic score is scheduled."));
     const thresholdLabel = element("label", "", "Keyword mention threshold (0–100)");
     const threshold = element("input"); threshold.type = "number"; threshold.min = "0"; threshold.max = "100"; threshold.step = "1";
     threshold.value = data.threshold === null ? "" : String(data.threshold); thresholdLabel.append(threshold);
@@ -434,7 +435,8 @@ async function loadProvisionalQueue(target, jobId, after = null) {
       row.append(element("h5", "", `Application #${item.application_id}`),
         element("p", "", `${labels[item.recommendation] || "Review required"} · application ${item.application_status}`),
         element("p", "subtle-note", `Source review: ${item.source_review_status}. Automatic masking ${item.automatic_masked === null ? "unavailable" : item.automatic_masked ? "applied" : "did not identify text to mask"}.`));
-      if (item.current && item.score !== null) row.append(element("p", "result-badge", `Provisional required-skill mentions: ${item.score} / 100`));
+      if (item.automatic_state) row.append(element("p", "subtle-note", `Automatic worker: ${item.automatic_state}.`));
+      if (item.current && item.score !== null) row.append(element("p", "result-badge", `Provisional required-skill mentions: ${item.score} / 100 (${item.origin === "system_worker" ? "system worker" : "HR refresh"})`));
       if (item.recommendation !== "finalized") {
         const refresh = element("button", "outline-button", "Refresh provisional result"); refresh.type = "button";
         refresh.addEventListener("click", async () => {

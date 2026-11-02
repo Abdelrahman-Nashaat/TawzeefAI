@@ -29,6 +29,7 @@ from app.auth import (
     token_digest,
     verify_password,
 )
+from app.auto_provisional import AutoScreenWorker, initialize_auto_screen
 from app.candidate_screening import router as candidate_screening_router
 from app.conversations import _authorized_sources, initialize_conversations
 from app.conversations import router as conversations_router
@@ -107,6 +108,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         initialize_rubric_admin(path)
         initialize_resume_masks(path)
         initialize_provisional_queue(path)
+        initialize_auto_screen(path)
         initialize_rubric_triage(path)
         initialize_resume_field_reviews(path)
         initialize_conversations(path)
@@ -125,7 +127,14 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
                             "INSERT INTO users (username, display_name, role, password_hash) VALUES (?, ?, ?, ?)",
                             (username, display_name, role, hash_password(password)),
                         )
-        yield
+        worker = AutoScreenWorker(path) if os.environ.get('TAWZEEF_AUTO_PROVISIONAL') == '1' else None
+        if worker:
+            worker.start()
+        try:
+            yield
+        finally:
+            if worker:
+                worker.stop()
 
     application = FastAPI(title="TawzeefAI Local API", lifespan=lifespan)
     application.add_middleware(

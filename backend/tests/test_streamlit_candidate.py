@@ -117,3 +117,66 @@ def test_uncertain_upload_is_not_retried(monkeypatch, error):
     assert submit_application(UnavailableApi(), "job", "resume.docx", b"synthetic", False, "eng") is None
     assert calls == [("POST", "/api/applications")]
     assert "before trying again" in messages[0]
+
+
+@pytest.mark.parametrize("outcome", ["accepted", "declined", "withdrawn", "uncertain", "expired"])
+def test_candidate_offer_response_uses_owner_api_and_handles_conflicts(tmp_path, outcome):
+    from app.db import connect
+
+    database = tmp_path / "offer-ui.sqlite3"
+    with TestClient(create_app(database, seed_demo=True)) as server:
+        calls = []
+        hr = None
+
+        def forward(request):
+            nonlocal hr
+            path = request.url.path
+            if path.endswith("/respond"):
+                calls.append(path)
+                if outcome == "withdrawn":
+                    hr.request("POST", path.replace("/respond", "/withdraw"))
+                if outcome == "uncertain":
+                    return httpx.Response(503, json={"detail": "unavailable"})
+                if outcome == "expired":
+                    return httpx.Response(401, json={"detail": "expired"})
+            server.cookies.clear()
+            response = server.request(request.method, request.url.raw_path.decode(),
+                                      headers=dict(request.headers), content=request.content)
+            return httpx.Response(response.status_code, headers=response.headers, content=response.content)
+
+        candidate = LocalApi(8000, transport=httpx.MockTransport(forward))
+        hr = LocalApi(8000, transport=httpx.MockTransport(forward))
+        try:
+            user = candidate.request("POST", "/api/auth/login", json={"username": "candidate", "password": "candidate-demo-only"})
+            hr_user = hr.request("POST", "/api/auth/login", json={"username": "hr", "password": "hr-demo-only"})
+            with connect(database) as db:
+                app_id = db.execute("INSERT INTO applications(candidate_id,job_id,filename,resume_text,status) VALUES (?,'job-backend-python','fictional.docx','Python','offered')", (user['id'],)).lastrowid
+                offer_id = db.execute("INSERT INTO job_offers(application_id,details,status,created_by) VALUES (?,?,'presented',?)", (app_id, 'Fictional offer details', hr_user['id'])).lastrowid
+            ui = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "streamlit_app.py"), default_timeout=30)
+            ui.session_state["local_api"] = candidate
+            ui.session_state["current_user"] = user
+            ui.run()
+            assert not ui.exception
+            assert any('Fictional offer details' in item.value for item in ui.text)
+            next(radio for radio in ui.radio if radio.label == 'Your response').set_value('Decline' if outcome == 'declined' else 'Accept')
+            next(button for button in ui.button if button.label == 'Submit offer response').click().run()
+            assert not ui.exception
+            assert calls == [f'/api/offers/{offer_id}/respond']
+            if outcome in ('accepted', 'declined'):
+                assert any('response was recorded' in message.value for message in ui.success)
+                assert candidate.request('GET', f'/api/applications/{app_id}/offers')[0]['status'] == outcome
+                assert not any(button.label == 'Submit offer response' for button in ui.button)
+            elif outcome == 'withdrawn':
+                assert any('no longer awaiting' in message.value for message in ui.error)
+                ui.run()
+                assert any('withdrawn' in item.value for item in ui.text)
+                assert not any(button.label == 'Submit offer response' for button in ui.button)
+            elif outcome == 'uncertain':
+                assert any('could not be confirmed' in message.value for message in ui.warning)
+            else:
+                assert any('Sign in again' in message.value for message in ui.error)
+                assert 'current_user' not in ui.session_state
+                assert not any('Knowledge conversation' in item.value for item in ui.header)
+        finally:
+            candidate.close()
+            hr.close()

@@ -1,6 +1,7 @@
 """Local, provisional keyword screening snapshots for human review."""
 
 import json
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -216,7 +217,13 @@ def history(application_id: int, request: Request, user: HR):
         rows = db.execute('''SELECT id,job_id,job_revision,assignment_revision,source_review_status,snapshot_kind,automatic_masked,
             additional_masked,score,required_mentioned,required_total,created_by,created_at
             FROM provisional_snapshots WHERE application_id=? ORDER BY id DESC LIMIT 100''', (application_id,))
-        return {'items': [dict(row) for row in rows]}
+        automatic = db.execute('''SELECT j.snapshot_id,j.state,j.job_id,j.job_revision,j.assignment_revision,
+            j.source_review_status,j.automatic_masked,j.additional_masked,j.score,j.required_mentioned,
+            j.required_total,j.completed_at FROM auto_provisional_jobs j
+            JOIN provisional_snapshots s ON s.id=j.snapshot_id WHERE s.application_id=?
+            ORDER BY j.snapshot_id DESC LIMIT 100''', (application_id,)).fetchall()
+        return {'items': [dict(row) for row in rows],
+                'automatic_results': [dict(row) | {'actor': 'system_worker'} for row in automatic]}
 
 
 @router.get('/jobs/{job_id}/provisional-queue')
@@ -235,6 +242,15 @@ def queue(job_id: str, request: Request, user: HR,
         applications = applications[:limit]
         for application in applications:
             latest = _latest(db, application['id'])
+            snapshot_id = latest['id'] if latest else None
+            auto_state = None
+            origin = 'hr' if latest and latest['snapshot_kind'] == 'scored' else None
+            if latest and latest['snapshot_kind'] == 'pending':
+                automatic = db.execute('SELECT * FROM auto_provisional_jobs WHERE snapshot_id=?', (latest['id'],)).fetchone()
+                auto_state = automatic['state'] if automatic else None
+                if automatic and auto_state == 'done':
+                    latest = dict(automatic) | {'id': snapshot_id, 'snapshot_kind': 'scored'}
+                    origin = 'system_worker'
             current = bool(latest and latest['snapshot_kind'] == 'scored' and latest['job_id'] == job_id
                            and latest['job_revision'] == revision
                            and latest['assignment_revision'] == _assignment_revision(db, application['id'])
@@ -258,16 +274,19 @@ def queue(job_id: str, request: Request, user: HR,
             else:
                 recommendation = 'needs_review'
             items.append({'application_id': application['id'], 'application_status': application['status'],
-                          'snapshot_id': latest['id'] if latest else None, 'current': current,
+                          'snapshot_id': snapshot_id, 'current': current, 'origin': origin, 'automatic_state': auto_state,
                           'score': latest['score'] if current else None,
                           'source_review_status': latest['source_review_status'] if current else 'unreviewed' if latest and latest['snapshot_kind'] == 'pending' else 'stale',
                           'automatic_masked': bool(latest['automatic_masked']) if current else None,
                           'additional_masked': bool(latest['additional_masked']) if current else None,
                           'recommendation': recommendation})
         _require_current_role(db, request, user, 'hr')
+        heartbeat = db.execute('SELECT MAX(last_heartbeat) FROM auto_provisional_workers').fetchone()[0]
         return {'job_id': job_id, **setting, 'items': items,
+                'worker': {'recent_heartbeat': bool(heartbeat is not None and heartbeat >= time.time()-15),
+                           'note': 'A recent heartbeat is evidence of a running local worker, not a delivery guarantee.'},
                 'next_after': applications[-1]['id'] if has_more else None,
-                'notice': 'Pending means no provisional score exists; it is not a negative result. '
+                'notice': 'Pending means no provisional score exists; it is not a negative result. Automatic results are created by a local system worker and do not replace HR review. '
                           'Refresh supports resumes up to 4,000 characters and at most 20 total required and preferred '
                           'skills of up to 80 characters each; review larger inputs manually. '
                           'Local provisional keyword mentions are not verified ability or a hiring decision. '

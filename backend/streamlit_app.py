@@ -86,7 +86,7 @@ if st.sidebar.button("Sign out"):
     st.rerun()
 
 if user["role"] == "candidate":
-    render_candidate(call, local_api)
+    render_candidate(call, local_api, clear_session)
 
 if user["role"] == "hr":
     st.header("Recruitment dashboard")

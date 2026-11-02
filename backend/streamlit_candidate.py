@@ -7,32 +7,36 @@ from streamlit_client import ApiError, ApiUnavailable
 MAX_RESUME_BYTES = 5 * 1024 * 1024
 
 
-def _write(api, path, **kwargs):
+def _write(api, path, *, conflict_message=None, uncertain_message=None, on_auth_failure=None, **kwargs):
     """Submit once; never repeat an uncertain write automatically."""
     try:
         return api.request("POST", path, **kwargs)
     except ApiError as exc:
         if exc.status >= 500:
-            st.warning("The result could not be confirmed. Refresh and check your applications or interviews before trying again.")
+            st.warning(uncertain_message or "The result could not be confirmed. Refresh and check your applications or interviews before trying again.")
         elif exc.status == 409:
-            st.error("The application or slot changed. Refresh the page and review its current state.")
+            st.error(conflict_message or "The application or slot changed. Refresh the page and review its current state.")
         elif exc.status in (401, 403):
+            if on_auth_failure is not None:
+                on_auth_failure()
+                st.error("Your session or access has changed. Sign in again.")
+                st.stop()
             st.error("Your session or access has changed. Sign out and sign in again.")
         else:
             st.error(f"The request was rejected ({exc.status}). Check your input and try again.")
     except ApiUnavailable:
-        st.warning("The result could not be confirmed. Refresh and check your applications or interviews before trying again.")
+        st.warning(uncertain_message or "The result could not be confirmed. Refresh and check your applications or interviews before trying again.")
     return None
 
 
-def submit_application(api, job_id, filename, content, ocr, ocr_language):
-    return _write(api, "/api/applications",
+def submit_application(api, job_id, filename, content, ocr, ocr_language, on_auth_failure=None):
+    return _write(api, "/api/applications", on_auth_failure=on_auth_failure,
                   params={"job_id": job_id, "filename": filename,
                           "ocr": str(ocr).lower(), "ocr_language": ocr_language},
                   content=content, headers={"Content-Type": "application/octet-stream"})
 
 
-def render_candidate(call, local_api):
+def render_candidate(call, local_api, clear_session):
     st.header("Candidate applications")
     message = st.session_state.pop("candidate_message", None)
     if message:
@@ -55,7 +59,7 @@ def render_candidate(call, local_api):
             elif ocr and not resume.name.lower().endswith(".pdf"):
                 st.error("OCR is available only for PDF files.")
             else:
-                result = submit_application(local_api(), job_id, resume.name, resume.getvalue(), ocr, ocr_language)
+                result = submit_application(local_api(), job_id, resume.name, resume.getvalue(), ocr, ocr_language, clear_session)
                 if result is not None:
                     st.session_state["candidate_message"] = "Application submitted."
                     st.rerun()
@@ -101,6 +105,8 @@ def render_candidate(call, local_api):
                 for excerpt in item["evidence"]:
                     st.text(excerpt)
 
+    render_offers(call, local_api, clear_session, selected)
+
     st.subheader("Interviews")
     interviews = call("GET", "/api/interviews")
     own_interviews = [item for item in interviews if item["application_id"] == selected]
@@ -118,7 +124,7 @@ def render_candidate(call, local_api):
                     format_func=lambda value: f"{choices[value]['start_at']} – {choices[value]['end_at']} | {choices[value]['interviewer']}")
                 book = st.form_submit_button("Book selected interview")
             if book:
-                result = _write(local_api(), f"/api/slots/{slot_id}/book", json={"application_id": selected})
+                result = _write(local_api(), f"/api/slots/{slot_id}/book", on_auth_failure=clear_session, json={"application_id": selected})
                 if result is not None:
                     st.session_state["candidate_message"] = "Interview booked in the local system."
                     st.rerun()
@@ -126,3 +132,38 @@ def render_candidate(call, local_api):
             st.info("There are no available interview times for this application right now.")
     else:
         st.caption("Interview booking becomes available if HR advances your application.")
+
+
+def render_offers(call, local_api, clear_session, application_id):
+    """Display only the selected application's offers and submit one explicit response."""
+    st.subheader("Job offers")
+    offers = call("GET", f"/api/applications/{application_id}/offers", optional=True)
+    if offers is None:
+        return
+    if not isinstance(offers, list) or any(offer.get("application_id") != application_id for offer in offers):
+        st.error("The offer list could not be verified. Refresh and try again.")
+        return
+    if not offers:
+        st.info("No offer has been presented for this application.")
+        return
+    for offer in offers:
+        st.text(f"Offer #{offer['id']} | Status: {offer['status']}")
+        st.text(offer['details'])
+        st.caption(f"Presented: {offer['created_at']}")
+        if offer['status'] == "presented":
+            with st.form(f"offer_response_{offer['id']}"):
+                decision = st.radio("Your response", ["Accept", "Decline"], index=None,
+                                    key=f"offer_decision_{offer['id']}")
+                submit = st.form_submit_button("Submit offer response")
+            if submit:
+                if decision is None:
+                    st.error("Select a response before submitting.")
+                    continue
+                result = _write(local_api(), f"/api/offers/{offer['id']}/respond",
+                    on_auth_failure=clear_session,
+                    conflict_message="This offer is no longer awaiting a response. Refresh and review its current status.",
+                    uncertain_message="The response could not be confirmed. Refresh and check the offer status before trying again.",
+                    json={"decision": "accepted" if decision == "Accept" else "declined"})
+                if result is not None:
+                    st.session_state["candidate_message"] = "Your response was recorded in the local system."
+                    st.rerun()
