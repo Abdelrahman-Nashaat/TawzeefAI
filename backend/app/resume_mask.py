@@ -145,7 +145,8 @@ def masked_source(db, application_id: int) -> dict:
     source_sha = _digest(text)
     return {'text': text, 'source_sha256': source_sha, 'source_revision': source_revision,
             'mask_revision': revision, 'context_sha256': _context_sha256(source_sha, source_revision, revision),
-            'status': status, 'automatic_masked': redact_resume(raw).masked, 'notice': NOTICE}
+            'status': status, 'automatic_masked': redact_resume(raw).masked,
+            'additional_masked': text != base, 'notice': NOTICE}
 
 
 @router.get('/applications/{application_id}/resume/mask')

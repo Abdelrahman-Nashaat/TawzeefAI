@@ -113,7 +113,7 @@ def score_resume(job: dict, text: str) -> dict:
 
 def score_masked_resume(job: dict, source: dict) -> dict:
     """Score the selected source without applying redaction a second time."""
-    blind = BlindText(text=source['text'], masked=source['automatic_masked'] or source['mask_revision'] > 0)
+    blind = BlindText(text=source['text'], masked=source['automatic_masked'] or source['additional_masked'])
     result = _score_blind(job, blind)
     if source['source_revision'] or source['mask_revision']:
         result['blind_screening']['review_status'] = source['status']
