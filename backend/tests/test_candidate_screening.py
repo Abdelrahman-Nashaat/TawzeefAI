@@ -75,3 +75,33 @@ def test_expired_session_before_response_is_rejected(preview, monkeypatch):
 
     monkeypatch.setattr(candidate_screening, '_require_current_role', authorize)
     assert client.get(f'/api/applications/{app_id}/candidate-screening').status_code == 401
+
+
+def test_large_or_embedded_nul_resume_is_rejected_without_scoring(preview, monkeypatch):
+    from app import candidate_screening
+
+    client, path, app_id, _ = preview
+    login(client, 'candidate', 'candidate-demo-only')
+    def unexpected(*args):
+        raise AssertionError('oversized source must not be scored')
+    monkeypatch.setattr(candidate_screening, 'score_masked_resume', unexpected)
+    for text in ('x' * 4001, '\x00' + 'x' * 20000):
+        with connect(path) as db:
+            db.execute('UPDATE applications SET resume_text=? WHERE id=?', (text, app_id))
+        assert client.get(f'/api/applications/{app_id}/candidate-screening').status_code == 422
+
+
+def test_preview_rejects_changed_and_reverted_inputs_during_scoring(preview, monkeypatch):
+    from app import candidate_screening
+
+    client, path, app_id, _ = preview
+    login(client, 'candidate', 'candidate-demo-only')
+    original = candidate_screening.score_masked_resume
+    def changing(job, source):
+        with connect(path) as db:
+            before = db.execute('SELECT required_skills FROM jobs WHERE id=?', ('job-backend-python',)).fetchone()[0]
+            db.execute('UPDATE jobs SET required_skills=? WHERE id=?', ('["Changed"]', 'job-backend-python'))
+            db.execute('UPDATE jobs SET required_skills=? WHERE id=?', (before, 'job-backend-python'))
+        return original(job, source)
+    monkeypatch.setattr(candidate_screening, 'score_masked_resume', changing)
+    assert client.get(f'/api/applications/{app_id}/candidate-screening').status_code == 409

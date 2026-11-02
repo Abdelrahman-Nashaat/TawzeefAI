@@ -1,10 +1,10 @@
 """HR metrics computed from persisted application and audit records."""
 
 import json
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.auth import User, require_roles
 from app.db import connect
@@ -12,6 +12,39 @@ from app.recruitment import _require_current_role
 
 router = APIRouter(prefix="/api")
 HR = Annotated[User, Depends(require_roles("hr"))]
+
+
+@router.get('/dashboard/screenings/daily')
+def daily_screenings(request: Request, user: HR,
+                     days: Annotated[int, Query(ge=1, le=90)] = 30,
+                     end_date: date | None = None):
+    """Count retained applications and screening events by UTC calendar day."""
+    end = end_date or datetime.now(UTC).date()
+    try:
+        start = end - timedelta(days=days - 1)
+    except OverflowError:
+        raise HTTPException(status_code=422, detail='Date range is outside the supported calendar.') from None
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_role(db, request, user, 'hr')
+        rows = db.execute("""SELECT date(e.created_at) AS day, COUNT(*) AS events,
+                   COUNT(DISTINCT e.application_id) AS applications
+            FROM audit_events e JOIN applications a ON a.id=e.application_id
+            WHERE e.action='screened' AND date(e.created_at) BETWEEN ? AND ?
+            GROUP BY date(e.created_at) ORDER BY day""",
+                          (start.isoformat(), end.isoformat())).fetchall()
+        _require_current_role(db, request, user, 'hr')
+    counts = {row['day']: (row['events'], row['applications']) for row in rows}
+    result = []
+    for offset in range(days):
+        day = (start + timedelta(days=offset)).isoformat()
+        events, applications = counts.get(day, (0, 0))
+        result.append({'date': day, 'screening_events': events, 'applications_screened': applications})
+    return {'timezone': 'UTC', 'start_date': start.isoformat(), 'end_date': end.isoformat(),
+            'definition': ('Recorded screened audit events for retained applications, by UTC day. '
+                           'Repeated screenings count as separate events, but each application counts once per day. '
+                           'This is screening activity, not a measure of HR decisions or applicant quality.'),
+            'days': result}
 
 
 def _milestone_counts(applications, events):

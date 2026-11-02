@@ -49,6 +49,8 @@ from app.knowledge import answer_question
 from app.knowledge_documents import initialize_knowledge_documents
 from app.knowledge_documents import router as knowledge_documents_router
 from app.model_evidence_proposal import router as model_evidence_proposal_router
+from app.provisional_queue import initialize_provisional_queue
+from app.provisional_queue import router as provisional_queue_router
 from app.recruitment import router as recruitment_router
 from app.recruitment import seed_jobs
 from app.resume_field_review import initialize_resume_field_reviews
@@ -104,6 +106,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         initialize_jobs_admin(path)
         initialize_rubric_admin(path)
         initialize_resume_masks(path)
+        initialize_provisional_queue(path)
         initialize_rubric_triage(path)
         initialize_resume_field_reviews(path)
         initialize_conversations(path)
@@ -142,6 +145,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
     application.include_router(resume_fields_router)
     application.include_router(resume_field_review_router)
     application.include_router(resume_mask_router)
+    application.include_router(provisional_queue_router)
     application.include_router(scheduling_router)
     application.include_router(slots_router)
     application.include_router(dashboard_router)

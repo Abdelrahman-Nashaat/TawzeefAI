@@ -385,12 +385,76 @@ function renderJobs(jobs, role) {
         finally { triage.disabled = false; }
       });
       card.append(triage, triagePanel);
+      const provisional = element("button", "outline-button", "Provisional upload screening"); provisional.type = "button";
+      const provisionalPanel = element("div", "application-detail"); provisionalPanel.hidden = true;
+      provisional.addEventListener("click", async () => {
+        provisional.disabled = true; provisionalPanel.hidden = false;
+        try { await loadProvisionalQueue(provisionalPanel, job.id); }
+        finally { provisional.disabled = false; }
+      });
+      card.append(provisional, provisionalPanel);
     }
     list.append(card);
   }
   box.append(list);
   if (role === "hr") box.append(createJobForm(role));
   target.replaceChildren(box);
+}
+
+async function loadProvisionalQueue(target, jobId, after = null) {
+  const base = `/api/jobs/${encodeURIComponent(jobId)}`;
+  target.replaceChildren(element("p", "subtle-note", "Loading provisional screenings..."));
+  try {
+    const data = await api(`${base}/provisional-queue${after === null ? "" : `?after=${encodeURIComponent(after)}`}`);
+    if (!target.isConnected) return;
+    if (!Array.isArray(data.items) || !Number.isSafeInteger(data.version)) throw new Error("Invalid queue response");
+    target.replaceChildren(element("h4", "", "Provisional upload screening"), element("p", "subtle-note", data.notice));
+    target.append(element("p", "subtle-note", "Pending means no provisional score exists; it is not a negative result. Refresh computes a local score only for resumes up to 4,000 characters and jobs with at most 20 required and preferred skills combined, each up to 80 characters. Larger inputs require manual review. Review the resume mask before relying on a result. Automatic masking may leave identifiers. A changed resume, mask, or job makes the result stale."));
+    const thresholdLabel = element("label", "", "Keyword mention threshold (0–100)");
+    const threshold = element("input"); threshold.type = "number"; threshold.min = "0"; threshold.max = "100"; threshold.step = "1";
+    threshold.value = data.threshold === null ? "" : String(data.threshold); thresholdLabel.append(threshold);
+    const save = element("button", "small-button", "Save threshold"); save.type = "button";
+    const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
+    save.addEventListener("click", async () => {
+      const value = Number(threshold.value);
+      if (!threshold.value.trim() || !Number.isInteger(value) || value < 0 || value > 100) { message.textContent = "Enter a whole number from 0 to 100."; return; }
+      save.disabled = true;
+      try {
+        await api(`${base}/provisional-threshold`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({threshold: value, expected_version: data.version})});
+        if (target.isConnected) await loadProvisionalQueue(target, jobId);
+      } catch (error) { if (!isStale(error) && target.isConnected) { message.textContent = "Could not save. Reload the queue before retrying."; save.disabled = false; } }
+    });
+    const reload = element("button", "outline-button", "Reload queue"); reload.type = "button";
+    reload.addEventListener("click", () => loadProvisionalQueue(target, jobId));
+    target.append(thresholdLabel, save, reload, message);
+    const labels = {finalized: "Finalized", pending: "Pending: refresh or review manually", not_screened: "No provisional screening", stale: "Stale: refresh after review", mask_review_required: "Mask review required", no_required_skills: "No required skills to compare", threshold_not_configured: "Threshold not configured", priority_review: "Priority review", needs_review: "Needs review"};
+    if (!data.items.length) target.append(element("p", "subtle-note", "No applications for this job."));
+    for (const item of data.items) {
+      const row = element("section", "application-detail");
+      row.append(element("h5", "", `Application #${item.application_id}`),
+        element("p", "", `${labels[item.recommendation] || "Review required"} · application ${item.application_status}`),
+        element("p", "subtle-note", `Source review: ${item.source_review_status}. Automatic masking ${item.automatic_masked === null ? "unavailable" : item.automatic_masked ? "applied" : "did not identify text to mask"}.`));
+      if (item.current && item.score !== null) row.append(element("p", "result-badge", `Provisional required-skill mentions: ${item.score} / 100`));
+      if (item.recommendation !== "finalized") {
+        const refresh = element("button", "outline-button", "Refresh provisional result"); refresh.type = "button";
+        refresh.addEventListener("click", async () => {
+          refresh.disabled = true;
+          try {
+            await api(`/api/applications/${encodeURIComponent(item.application_id)}/provisional-screening`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({expected_snapshot_id: item.snapshot_id})});
+            if (target.isConnected) await loadProvisionalQueue(target, jobId, after);
+          } catch (error) { if (!isStale(error) && target.isConnected) { message.textContent = "Refresh failed. The source or job may exceed the work limit or need mask review; review manually, or reload to retry."; refresh.disabled = false; } }
+        });
+        row.append(refresh);
+      }
+      target.append(row);
+    }
+    if (data.next_after !== null) {
+      const next = element("button", "outline-button", "Next page"); next.type = "button";
+      next.addEventListener("click", () => loadProvisionalQueue(target, jobId, data.next_after)); target.append(next);
+    }
+  } catch (error) {
+    if (!isStale(error) && target.isConnected) target.replaceChildren(element("p", "form-error", "Could not load provisional screenings."));
+  }
 }
 
 async function loadRubricTriage(target, jobId) {
@@ -1710,7 +1774,7 @@ async function loadCandidateScreening(target, applicationId) {
       target.append(element("h5", "", label), list);
     }
   } catch (error) {
-    if (!isStale(error) && target.isConnected) target.replaceChildren(element("h4", "", "Current screening preview"), element("p", "form-error", "Unable to load the screening preview."));
+    if (!isStale(error) && target.isConnected) target.replaceChildren(element("h4", "", "Current screening preview"), element("p", "form-error", "Unable to load the screening preview. The preview supports resumes up to 4,000 characters and jobs with up to 20 skills of 80 characters each; ask HR to review larger inputs."));
   }
 }
 
@@ -2579,6 +2643,29 @@ function renderDashboard(data) {
   }
   box.append(grid, element("p", "subtle-note", `متوسط الأيام من وقت التقديم حتى آخر قرار توظيف للطلبات المعينة حاليًا؛ عدد الحالات: ${data.time_to_hire?.count ?? 0}.`));
   box.append(renderRecordedMilestones(data));
+  const daily = element("details", "application-detail");
+  daily.append(element("summary", "", "Daily screening activity (UTC)"));
+  const dailyResult = element("div");
+  dailyResult.append(element("p", "subtle-note", "Loading..."));
+  daily.append(dailyResult); box.append(daily);
+  api("/api/dashboard/screenings/daily").then((result) => {
+    if (!dailyResult.isConnected) return;
+    dailyResult.replaceChildren(element("p", "subtle-note", result.definition));
+    const table = element("table");
+    const head = element("thead");
+    const header = element("tr");
+    for (const label of ["UTC date", "Screening events", "Applications screened"]) header.append(element("th", "", label));
+    head.append(header); table.append(head);
+    const body = element("tbody");
+    for (const day of result.days || []) {
+      const row = element("tr");
+      for (const value of [day.date, day.screening_events, day.applications_screened]) row.append(element("td", "", String(value)));
+      body.append(row);
+    }
+    table.append(body); dailyResult.append(table);
+  }).catch(() => {
+    if (dailyResult.isConnected) dailyResult.replaceChildren(element("p", "form-error", "Daily screening activity is unavailable. Reload to try again."));
+  });
   const pipeline = element("ul", "evidence-list");
   for (const item of data.pipeline || []) pipeline.append(element("li", "", `${statusLabels[item.status] || item.status}: ${item.count}`));
   if (pipeline.childNodes.length) box.append(element("h3", "", "الطلبات حسب المرحلة"), pipeline);

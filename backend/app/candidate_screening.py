@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from threading import BoundedSemaphore
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -10,12 +11,43 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.auth import User, require_roles
 from app.db import connect
 from app.matching_specialist import matching_snapshot
-from app.recruitment import _require_current_role, job_data, score_masked_resume
+from app.recruitment import _require_current_role, score_masked_resume
 from app.resume_mask import masked_source
 
 router = APIRouter(prefix='/api')
 Candidate = Annotated[User, Depends(require_roles('candidate'))]
 HR = Annotated[User, Depends(require_roles('hr'))]
+MAX_PREVIEW_CHARS = 4000
+MAX_PREVIEW_BYTES = MAX_PREVIEW_CHARS * 4
+MAX_PREVIEW_SKILLS = 20
+MAX_PREVIEW_SKILL_CHARS = 80
+MAX_PREVIEW_SKILL_JSON_CHARS = 10000
+_preview_workers = BoundedSemaphore(2)
+
+
+def _preview_revision(db, application_id: int) -> int:
+    row = db.execute('SELECT revision FROM rubric_publication_revisions WHERE application_id=?',
+                     (application_id,)).fetchone()
+    return row['revision'] if row else 0
+
+
+def _preview_job(db, job_id: str) -> dict:
+    row = db.execute('SELECT required_skills,preferred_skills FROM jobs WHERE id=?', (job_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=409, detail='Job requirements unavailable')
+    if any(len(row[field]) > MAX_PREVIEW_SKILL_JSON_CHARS for field in ('required_skills', 'preferred_skills')):
+        raise HTTPException(status_code=422, detail='Job requirements exceed the preview work limit.')
+    try:
+        job = {field: json.loads(row[field]) for field in ('required_skills', 'preferred_skills')}
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail='Job requirements cannot be previewed.') from None
+    values = list(job.values())
+    if (any(not isinstance(value, list) for value in values)
+            or sum(len(value) for value in values) > MAX_PREVIEW_SKILLS
+            or any(not isinstance(skill, str) or len(skill) > MAX_PREVIEW_SKILL_CHARS
+                   for value in values for skill in value)):
+        raise HTTPException(status_code=422, detail='Job requirements exceed the preview work limit.')
+    return job
 
 
 class PublicationRequest(BaseModel):
@@ -138,23 +170,40 @@ def candidate_assessment(application_id: int, request: Request, user: Candidate)
 def candidate_screening(application_id: int, request: Request, user: Candidate):
     """Compute a fresh lexical preview without storing an HR assessment."""
     with connect(request.app.state.database_path) as db:
-        # A single write lock binds the source, role and job snapshot until the
-        # final authentication check. No network calls or writes occur here.
-        db.execute('BEGIN IMMEDIATE')
+        db.execute('BEGIN')
         _require_current_role(db, request, user, 'candidate')
-        application = db.execute('''SELECT job_id,resume_text FROM applications
+        application = db.execute('''SELECT job_id,length(CAST(resume_text AS BLOB)) AS source_bytes FROM applications
                                     WHERE id=? AND candidate_id=?''',
                                  (application_id, user.id)).fetchone()
         if application is None:
             raise HTTPException(status_code=404, detail='Application not found')
-        job = db.execute('SELECT * FROM jobs WHERE id=?', (application['job_id'],)).fetchone()
-        if job is None:
-            raise HTTPException(status_code=409, detail='Job requirements unavailable')
-        result = score_masked_resume(job_data(job), masked_source(db, application_id))
+        if application['source_bytes'] > MAX_PREVIEW_BYTES:
+            raise HTTPException(status_code=422, detail='Resume exceeds the preview work limit of 4,000 characters.')
+        raw = db.execute('SELECT resume_text FROM applications WHERE id=?', (application_id,)).fetchone()[0]
+        if len(raw) > MAX_PREVIEW_CHARS:
+            raise HTTPException(status_code=422, detail='Resume exceeds the preview work limit of 4,000 characters.')
+        job_id = application['job_id']
+        job = _preview_job(db, job_id)
+        source = masked_source(db, application_id)
+        revision = _preview_revision(db, application_id)
+
+    if not _preview_workers.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail='Preview is busy; retry shortly.')
+    try:
+        result = score_masked_resume(job, source)
+    finally:
+        _preview_workers.release()
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
         _require_current_role(db, request, user, 'candidate')
+        current = db.execute('SELECT job_id FROM applications WHERE id=? AND candidate_id=?',
+                             (application_id, user.id)).fetchone()
+        if current is None or current['job_id'] != job_id or _preview_revision(db, application_id) != revision:
+            raise HTTPException(status_code=409, detail='Preview inputs changed; retry with current information.')
         return {'application_id': application_id, 'mode': 'current_preview',
                 'score': result['score'], 'required': result['required'],
                 'preferred': result['preferred'], 'evidence_status': result['evidence_status'],
                 'notice': 'Current keyword-mention preview, not the saved HR screening, '
                           'a verification of experience, or a hiring decision. '
-                          'Negation and personal-data redaction are imperfect.'}
+                          'Negation and personal-data redaction are imperfect. '
+                          'Preview limits: 4,000 resume characters and 20 job skills of up to 80 characters each.'}

@@ -6,6 +6,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from streamlit_candidate import render_candidate
 from streamlit_client import ApiError, ApiUnavailable, LocalApi
 
 st.set_page_config(page_title="TawzeefAI local demo", layout="wide")
@@ -17,7 +18,7 @@ def clear_session():
     client = st.session_state.pop("local_api", None)
     if client:
         client.close()
-    for key in ("conversation_id", "question", "current_user"):
+    for key in ("conversation_id", "question", "current_user", "candidate_message"):
         st.session_state.pop(key, None)
 
 
@@ -32,7 +33,7 @@ def local_api():
     return st.session_state["local_api"]
 
 
-def call(method, path, **kwargs):
+def call(method, path, *, optional=False, **kwargs):
     try:
         return local_api().request(method, path, **kwargs)
     except ApiError as exc:
@@ -40,9 +41,15 @@ def call(method, path, **kwargs):
             clear_session()
             st.error("Your session is unavailable or access has changed. Sign in again.")
             st.stop()
+        if optional:
+            st.warning("This panel is unavailable. Refresh and try again.")
+            return None
         st.error(f"The local API rejected the request ({exc.status}). Reload and try again.")
         st.stop()
     except ApiUnavailable:
+        if optional:
+            st.warning("This panel is unavailable. Refresh and try again.")
+            return None
         st.error("Cannot reach the local API. Start the FastAPI demo and try again.")
         st.stop()
 
@@ -77,6 +84,9 @@ if st.sidebar.button("Sign out"):
         st.session_state["logout_uncertain"] = True
     clear_session()
     st.rerun()
+
+if user["role"] == "candidate":
+    render_candidate(call, local_api)
 
 if user["role"] == "hr":
     st.header("Recruitment dashboard")
@@ -140,4 +150,4 @@ if ids:
 else:
     st.info("Create a conversation to ask a question.")
 
-st.caption("This interface covers chat and HR metrics. Use the main local interface for applications, review, and scheduling.")
+st.caption("Use the main local interface for HR review and administrative controls.")

@@ -252,6 +252,9 @@ async def apply(request: Request, user: Candidate, job_id: str, filename: str,
         application_id = cursor.lastrowid
         db.execute("INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",
                    (application_id, user.id, "submitted", "{}"))
+        from app.provisional_queue import create_pending_snapshot
+
+        create_pending_snapshot(db, application_id, job_id, user.id)
         return application_view(get_application(db, application_id), user)
 
 
