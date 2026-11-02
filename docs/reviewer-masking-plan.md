@@ -1,6 +1,6 @@
 # Reviewer-selected résumé masking: integration plan
 
-**Status: infrastructure only.** `app/resume_mask.py` and its tests are not wired into `app.main`; no upload, screening, assessment, graph, or existing API uses the new mask. The application still uses its existing incomplete rule-based redaction. Do not describe screening as reviewer-masked or blind until the integration and verification below are complete.
+**Status: local demo integration.** HR can review the rule-redacted source, select further spans, and save a versioned mask. Current screening, field review, assessments, semantic suggestions, and graph paths use that source and check its context. Saving a mask archives the previous current keyword score and invalidates the candidate publication; historical audit records remain. This is an assistive review feature, not a guarantee of anonymity or fairness. Applications without a saved review still use incomplete rule-based redaction. The original extracted résumé remains accessible to HR.
 
 A synthetic counterfactual demonstrates the gap: with a job requiring Julia, an unlabelled `Julia Smith` line can be counted as a skill mention, while changing only that name to `Alex Smith` yields no such mention. This example detects one failure, not demographic fairness generally. Guessing and removing the first line could instead erase genuine job evidence.
 
@@ -15,7 +15,7 @@ The proposed HR review starts from the rule-redacted résumé. HR explicitly sel
 
 The save operation checks the displayed source hash and both revisions within an immediate write transaction, validates nonoverlapping ranges, and writes the review and metadata-only audit together. Invalid, stale, or internally inconsistent saved mask state fails closed. The review endpoint may show the current rule-redacted base source to HR to repair a stale selection; this is an editor preview, not evidence that the mask is current. Raw résumé data and historical screening snapshots are not deleted.
 
-## Required atomic integration
+## Integration and review checklist
 
 Initialize the mask schema and trigger after the application and rubric tables exist. Only expose the HR endpoints after all of the following consumers switch together to the same transaction-bound `masked_source()` result. Preserve the existing unreviewed path for applications without a saved mask and label it accurately; never treat an absent or stale selection as reviewed blinding.
 

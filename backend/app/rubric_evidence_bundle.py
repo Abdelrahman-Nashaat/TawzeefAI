@@ -13,9 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from app.auth import User, require_roles
-from app.blind import redact_resume
 from app.db import connect
 from app.recruitment import _require_current_role, get_application
+from app.resume_mask import masked_source
 from app.rubric_admin import public_criterion, public_evidence
 
 router = APIRouter(prefix='/api')
@@ -52,14 +52,15 @@ class EvidenceBundle(BaseModel):
 
 def _snapshot(db, application_id: int):
     application = get_application(db, application_id)
-    source = redact_resume(application['resume_text']).text
+    blind = masked_source(db, application_id)
+    source = blind['text']
     criteria = [public_criterion(row) for row in db.execute(
         'SELECT * FROM rubric_criteria WHERE job_id=? ORDER BY id', (application['job_id'],))]
     revision = db.execute('SELECT revision FROM rubric_publication_revisions WHERE application_id=?',
                           (application_id,)).fetchone()
     source_hash = hashlib.sha256(source.encode('utf-8')).hexdigest()
     values = {'version': 1, 'application_id': application_id, 'candidate_id': application['candidate_id'],
-              'job_id': application['job_id'], 'source_sha256': source_hash, 'criteria': criteria,
+              'job_id': application['job_id'], 'source_sha256': source_hash, 'source_context': blind['context_sha256'], 'criteria': criteria,
               'revision': revision['revision'] if revision else 0}
     encoded = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
     return hashlib.sha256(encoded).hexdigest(), source_hash, source, criteria
@@ -82,6 +83,7 @@ def save_evidence_bundle(application_id: int, payload: EvidenceBundle, request: 
         db.execute('BEGIN IMMEDIATE')
         _require_current_role(db, request, user, 'hr')
         digest, _, source, criteria = _snapshot(db, application_id)
+        source_context = masked_source(db, application_id)['context_sha256']
         if not secrets.compare_digest(digest, payload.snapshot):
             raise HTTPException(status_code=409, detail='Source or criteria changed; review again')
         valid = {criterion['criterion_ref'] for criterion in criteria}
@@ -94,13 +96,13 @@ def save_evidence_bundle(application_id: int, payload: EvidenceBundle, request: 
         results = []
         for item in payload.items:
             row = db.execute('''SELECT * FROM rubric_evidence
-                WHERE application_id=? AND start_offset=? AND end_offset=? AND excerpt=? ORDER BY id LIMIT 1''',
-                (application_id, item.start, item.end, item.excerpt)).fetchone()
+                WHERE application_id=? AND start_offset=? AND end_offset=? AND excerpt=? AND source_context=? ORDER BY id LIMIT 1''',
+                (application_id, item.start, item.end, item.excerpt, source_context)).fetchone()
             created = row is None
             if created:
                 cursor = db.execute('''INSERT INTO rubric_evidence
-                    (application_id,start_offset,end_offset,excerpt,created_by) VALUES (?,?,?,?,?)''',
-                    (application_id, item.start, item.end, item.excerpt, user.id))
+                    (application_id,start_offset,end_offset,excerpt,created_by,source_context) VALUES (?,?,?,?,?,?)''',
+                    (application_id, item.start, item.end, item.excerpt, user.id, source_context))
                 if cursor.lastrowid > 9999:
                     raise HTTPException(status_code=409, detail='Evidence reference limit reached')
                 db.execute('INSERT INTO rubric_audit_events(actor_id,action,application_id,reference_id) VALUES (?,?,?,?)',

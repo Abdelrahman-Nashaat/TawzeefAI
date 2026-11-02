@@ -4,8 +4,8 @@ import hashlib
 import json
 import math
 
-from app.blind import redact_resume
 from app.recruitment import get_application
+from app.resume_mask import masked_source
 from app.rubric_admin import public_criterion
 from app.semantic_screening import _phrase_pattern
 
@@ -19,8 +19,12 @@ def context(db, application_id):
     application = get_application(db, application_id)
     revision = db.execute('SELECT revision FROM rubric_publication_revisions WHERE application_id=?',
                           (application_id,)).fetchone()
-    return {'candidate_id': application['candidate_id'], 'job_id': application['job_id'],
-            'revision': revision['revision'] if revision else 0}
+    result = {'candidate_id': application['candidate_id'], 'job_id': application['job_id'],
+              'revision': revision['revision'] if revision else 0}
+    source = masked_source(db, application_id)
+    if source['context_sha256'] != source['source_sha256']:
+        result['resume_context'] = source['context_sha256']
+    return result
 
 
 def save_references(result, original_context):
@@ -46,7 +50,7 @@ def restore_references(db, application_id, saved):
     unavailable = {'status': 'stale', 'notice': 'Resume or criteria changed; start a new semantic review.'}
     try:
         application = get_application(db, application_id)
-        source = redact_resume(application['resume_text']).text
+        source = masked_source(db, application_id)['text']
         criteria = [public_criterion(row) for row in db.execute(
             'SELECT * FROM rubric_criteria WHERE job_id=? ORDER BY id', (application['job_id'],))]
         if (saved['context'] != context(db, application_id)

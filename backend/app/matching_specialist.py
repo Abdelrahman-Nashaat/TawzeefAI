@@ -10,12 +10,12 @@ import json
 
 from pydantic import ValidationError
 
-from app.blind import redact_resume
 from app.evidence_cautions import evidence_cautions
 from app.recruitment import get_application
 from app.resume_field_review import _latest as latest_field_review
 from app.resume_field_review import _view as field_review_view
 from app.resume_fields import MAX_SOURCE_CHARS
+from app.resume_mask import masked_source
 from app.rubric import (
     WEIGHTS,
     Assessment,
@@ -29,29 +29,30 @@ from app.rubric import (
 def matching_snapshot(db, application_id: int) -> tuple[str, dict]:
     """Return a digest for checkpointing and a report for authorized display."""
     application = get_application(db, application_id)
-    source = redact_resume(application['resume_text']).text
+    blind = masked_source(db, application_id)
+    source = blind['text']
     job = db.execute('SELECT * FROM jobs WHERE id=?', (application['job_id'],)).fetchone()
     if job is None:
         raise ValueError('Application job is unavailable')
     criteria = [dict(row) for row in db.execute(
         'SELECT id,category,label FROM rubric_criteria WHERE job_id=? ORDER BY id',
         (application['job_id'],))]
-    assessment_row = db.execute('''SELECT id,assessment_json,result_json,created_at,criteria_fingerprint,source_fingerprint FROM rubric_assessments
+    assessment_row = db.execute('''SELECT id,assessment_json,result_json,created_at,criteria_fingerprint,source_fingerprint,source_context FROM rubric_assessments
         WHERE application_id=? ORDER BY id DESC LIMIT 1''', (application_id,)).fetchone()
     assessment_data = dict(assessment_row) if assessment_row else None
-    evidence = [dict(row) for row in db.execute('''SELECT id,start_offset,end_offset,excerpt
+    evidence = [dict(row) for row in db.execute('''SELECT id,start_offset,end_offset,excerpt,source_context
         FROM rubric_evidence WHERE application_id=? ORDER BY id''', (application_id,))]
     review_row = latest_field_review(db, application_id)
     field_review = dict(review_row) if review_row else None
     raw = json.dumps({'application_id': application_id, 'job': dict(job),
-                      'source': source, 'criteria': criteria, 'assessment': assessment_data,
+                      'source': source, 'source_context': blind['context_sha256'], 'criteria': criteria, 'assessment': assessment_data,
                       'evidence': evidence, 'field_review': field_review}, ensure_ascii=False,
                      sort_keys=True, separators=(',', ':'))
     digest = hashlib.sha256(raw.encode('utf-8')).hexdigest()
     if len(source) > MAX_SOURCE_CHARS:
         reviewed_fields = {'status': 'limit_exceeded', 'fields': []}
     else:
-        current = field_review_view(review_row, source, hashlib.sha256(source.encode('utf-8')).hexdigest())
+        current = field_review_view(review_row, source, blind['source_sha256'], blind['context_sha256'])
         # Do not return the full source. Values are returned only after the
         # caller has independently authorized access to the current snapshot.
         reviewed_fields = {key: current[key] for key in ('status', 'version', 'fields', 'notice')}
@@ -67,7 +68,7 @@ def matching_snapshot(db, application_id: int) -> tuple[str, dict]:
                 assessment_data['criteria_fingerprint'] != criteria_fingerprint(criteria)):
             raise ValueError('Assessment criterion definitions cannot be verified')
         if (not assessment_data['source_fingerprint'] or assessment_data['source_fingerprint'] !=
-                hashlib.sha256(source.encode('utf-8')).hexdigest()):
+                blind['source_sha256'] or (assessment_data['source_context'] or assessment_data['source_fingerprint']) != blind['context_sha256']):
             raise ValueError('Assessment source cannot be verified')
         assessment = Assessment.model_validate(json.loads(assessment_data['assessment_json']))
         claims = [(category, claim) for category in WEIGHTS for claim in getattr(assessment, category)]
@@ -76,7 +77,7 @@ def matching_snapshot(db, application_id: int) -> tuple[str, dict]:
         }:
             raise ValueError('Assessment criteria have changed')
         available = {f"e-{item['id']}": item for item in evidence}
-        if not evidence_is_current(assessment, source, evidence):
+        if not evidence_is_current(assessment, source, evidence, blind['context_sha256']):
             raise ValueError('Evidence no longer matches its source')
     except (TypeError, ValueError, KeyError, ValidationError):
         return digest, {'status': 'outdated', 'notice': notice + ' A fresh HR assessment is needed.',

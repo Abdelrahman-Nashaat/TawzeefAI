@@ -79,8 +79,13 @@ def test_cue_in_unrelated_clause_does_not_override_model_proposal(case, monkeypa
     source = 'I used Python, but never used Java.'
     with connect(path) as db:
         db.execute('UPDATE applications SET resume_text=? WHERE id=?', (source, app_id))
-        db.execute('UPDATE rubric_evidence SET excerpt=?,end_offset=? WHERE application_id=?',
-                   (source, len(source), app_id))
+    current = client.get(f'/api/applications/{app_id}/rubric/source').json()
+    evidence = client.post(f'/api/applications/{app_id}/rubric/evidence', json={
+        'start': 0, 'end': len(source), 'expected_source_sha256': current['source_sha256'],
+        'expected_source_context': current['source_context'],
+    })
+    assert evidence.status_code == 201
+    payload['selections'][0]['evidence_refs'] = [evidence.json()['evidence_ref']]
     payload['snapshot'] = client.get(f'/api/applications/{app_id}/rubric/evidence-bundle/context').json()['snapshot']
     monkeypatch.setattr(module, '_request_proposal', lambda _: selection(payload, 'supporting', 'explicit_claim'))
     response = client.post(f'/api/applications/{app_id}/rubric/model-evidence-proposal', json=payload)

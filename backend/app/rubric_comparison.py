@@ -3,7 +3,6 @@
 Ranges describe documented evidence, not verified ability or hiring decisions.
 """
 
-import hashlib
 import json
 from itertools import combinations
 from typing import Annotated
@@ -12,8 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 
 from app.auth import User, require_roles
-from app.blind import redact_resume
 from app.db import connect
+from app.resume_mask import masked_source
 from app.rubric import (
     Assessment,
     calculate_rubric,
@@ -43,7 +42,7 @@ def compare_in_snapshot(db, job_id: str) -> dict:
         'SELECT id, category, label FROM rubric_criteria WHERE job_id = ? ORDER BY id', (job_id,))}
     criteria_digest = criteria_fingerprint([{'id': int(ref[2:]), **criterion} for ref, criterion in criteria.items()])
     rows = db.execute('''SELECT a.id AS application_id, a.resume_text, r.id AS assessment_id, r.assessment_json, r.result_json,
-            r.criteria_fingerprint, r.source_fingerprint
+            r.criteria_fingerprint, r.source_fingerprint, r.source_context
         FROM applications a LEFT JOIN rubric_assessments r ON r.id = (
             SELECT MAX(x.id) FROM rubric_assessments x WHERE x.application_id = a.id
         ) WHERE a.job_id = ? ORDER BY a.id LIMIT ?''', (job_id, MAX_APPLICATIONS + 1)).fetchall()
@@ -67,14 +66,15 @@ def compare_in_snapshot(db, job_id: str) -> dict:
                           for claim in getattr(assessment, category)]
                 assessed = {claim.criterion_ref: category for category, claim in claims}
                 current = {ref: criterion['category'] for ref, criterion in criteria.items()}
-                source = redact_resume(row['resume_text']).text
+                blind = masked_source(db, row['application_id'])
+                source = blind['text']
                 outdated = (not criteria or assessed != current or result_requires_absence_review(row['result_json'])
                             or not row['criteria_fingerprint']
                             or row['criteria_fingerprint'] != criteria_digest or not row['source_fingerprint']
-                            or row['source_fingerprint'] != hashlib.sha256(
-                                source.encode('utf-8')).hexdigest()
+                            or row['source_fingerprint'] != blind['source_sha256']
+                            or (row['source_context'] or row['source_fingerprint']) != blind['context_sha256']
                             or not evidence_is_current(assessment, source,
-                                                       evidence_by_application.get(row['application_id'], [])))
+                                                       evidence_by_application.get(row['application_id'], []), blind['context_sha256']))
             except (ValueError, TypeError, ValidationError):
                 outdated = True
             if outdated:

@@ -10,7 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.auth import User, require_roles
 from app.db import connect
 from app.matching_specialist import matching_snapshot
-from app.recruitment import _require_current_role, job_data, score_resume
+from app.recruitment import _require_current_role, job_data, score_masked_resume
+from app.resume_mask import masked_source
 
 router = APIRouter(prefix='/api')
 Candidate = Annotated[User, Depends(require_roles('candidate'))]
@@ -149,7 +150,7 @@ def candidate_screening(application_id: int, request: Request, user: Candidate):
         job = db.execute('SELECT * FROM jobs WHERE id=?', (application['job_id'],)).fetchone()
         if job is None:
             raise HTTPException(status_code=409, detail='Job requirements unavailable')
-        result = score_resume(job_data(job), application['resume_text'])
+        result = score_masked_resume(job_data(job), masked_source(db, application_id))
         _require_current_role(db, request, user, 'candidate')
         return {'application_id': application_id, 'mode': 'current_preview',
                 'score': result['score'], 'required': result['required'],

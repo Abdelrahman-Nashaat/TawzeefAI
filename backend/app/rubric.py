@@ -151,7 +151,7 @@ def calculate_rubric(assessment: Assessment) -> dict:
     }
 
 
-def evidence_is_current(assessment: Assessment, source: str, evidence_rows) -> bool:
+def evidence_is_current(assessment: Assessment, source: str, evidence_rows, source_context: str | None = None) -> bool:
     """Check that every referenced excerpt still points to the current source."""
     evidence = {f"e-{item['id']}": item for item in evidence_rows}
     for category in WEIGHTS:
@@ -162,6 +162,12 @@ def evidence_is_current(assessment: Assessment, source: str, evidence_rows) -> b
                         or item['end_offset'] > len(source)
                         or source[item['start_offset']:item['end_offset']] != item['excerpt']):
                     return False
+                if source_context is not None:
+                    import hashlib
+                    keys = item.keys()
+                    saved_context = item['source_context'] if 'source_context' in keys else None
+                    if (saved_context or hashlib.sha256(source.encode('utf-8')).hexdigest()) != source_context:
+                        return False
     return True
 
 

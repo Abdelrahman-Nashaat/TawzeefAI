@@ -4,7 +4,6 @@ Values are extracted from the current source, never accepted from the client.
 This records human selections, not verified qualifications or hiring decisions.
 """
 
-import hashlib
 import json
 import re
 from pathlib import Path
@@ -14,10 +13,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from app.auth import User, require_roles
-from app.blind import redact_resume
 from app.db import connect
-from app.recruitment import _require_current_role, get_application
+from app.recruitment import _require_current_role
 from app.resume_fields import _FIELDS, MAX_FIELD_CHARS, MAX_SOURCE_CHARS
+from app.resume_mask import masked_source
 
 router = APIRouter(prefix='/api')
 HR = Annotated[User, Depends(require_roles('hr'))]
@@ -36,6 +35,9 @@ def initialize_resume_field_reviews(path: str | Path) -> None:
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             UNIQUE(application_id, version)
         )''')
+        columns = {row['name'] for row in db.execute('PRAGMA table_info(resume_field_reviews)')}
+        if 'source_context' not in columns:
+            db.execute('ALTER TABLE resume_field_reviews ADD COLUMN source_context TEXT')
 
 
 class ReviewedField(BaseModel):
@@ -58,6 +60,7 @@ class ReviewedField(BaseModel):
 class ReviewSave(BaseModel):
     model_config = ConfigDict(extra='forbid')
     source_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    expected_source_context: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
     expected_version: StrictInt = Field(ge=0)
     fields: list[ReviewedField] = Field(max_length=300)
 
@@ -78,16 +81,16 @@ class ReviewSave(BaseModel):
         return self
 
 
-def _source(db, application_id: int) -> tuple[str, str]:
-    application = get_application(db, application_id)
-    source = redact_resume(application['resume_text']).text
+def _source(db, application_id: int) -> tuple[str, str, str]:
+    blind = masked_source(db, application_id)
+    source = blind['text']
     if len(source) > MAX_SOURCE_CHARS:
         raise HTTPException(status_code=422, detail='Redacted resume exceeds the review limit')
-    return source, hashlib.sha256(source.encode('utf-8')).hexdigest()
+    return source, blind['source_sha256'], blind['context_sha256']
 
 
 def _latest(db, application_id: int):
-    return db.execute('''SELECT version, source_sha256, fields_json, created_by, created_at
+    return db.execute('''SELECT version, source_sha256, source_context, fields_json, created_by, created_at
         FROM resume_field_reviews WHERE application_id=? ORDER BY version DESC LIMIT 1''',
         (application_id,)).fetchone()
 
@@ -104,15 +107,16 @@ def _values(fields: list[ReviewedField], source: str) -> list[dict]:
     return result
 
 
-def _view(row, source: str, digest: str) -> dict:
+def _view(row, source: str, digest: str, source_context: str | None = None) -> dict:
+    source_context = source_context or digest
     result = {'source_kind': 'partially_redacted_resume', 'offset_unit': 'unicode_code_points',
-              'source': source, 'source_sha256': digest, 'version': row['version'] if row else 0,
+              'source': source, 'source_sha256': digest, 'source_context': source_context, 'version': row['version'] if row else 0,
               'status': 'not_reviewed', 'fields': [],
               'notice': 'Human-selected spans are not verified facts; redaction may be incomplete.'}
     if row is None:
         return result
     result.update({'reviewed_by': row['created_by'], 'reviewed_at': row['created_at']})
-    if row['source_sha256'] != digest:
+    if row['source_sha256'] != digest or (row['source_context'] or row['source_sha256']) != source_context:
         result['status'] = 'stale'
         return result
     try:
@@ -129,8 +133,8 @@ def read_field_review(application_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN')
         _require_current_role(db, request, user, 'hr')
-        source, digest = _source(db, application_id)
-        result = _view(_latest(db, application_id), source, digest)
+        source, digest, context = _source(db, application_id)
+        result = _view(_latest(db, application_id), source, digest, context)
         _require_current_role(db, request, user, 'hr')
         return result
 
@@ -140,20 +144,21 @@ def save_field_review(application_id: int, payload: ReviewSave, request: Request
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN IMMEDIATE')
         _require_current_role(db, request, user, 'hr')
-        source, digest = _source(db, application_id)
+        source, digest, context = _source(db, application_id)
         previous = _latest(db, application_id)
         version = previous['version'] if previous else 0
-        if payload.source_sha256 != digest or payload.expected_version != version:
+        if (payload.source_sha256 != digest or payload.expected_version != version or
+                (payload.expected_source_context or digest) != context):
             raise HTTPException(status_code=409, detail='Resume or review changed; reload before saving')
         try:
             _values(payload.fields, source)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail='Invalid selection in redacted resume') from exc
         fields_json = json.dumps([item.model_dump() for item in payload.fields], ensure_ascii=False)
-        db.execute('''INSERT INTO resume_field_reviews(application_id,version,source_sha256,fields_json,created_by)
-                      VALUES (?,?,?,?,?)''', (application_id, version + 1, digest, fields_json, user.id))
+        db.execute('''INSERT INTO resume_field_reviews(application_id,version,source_sha256,fields_json,created_by,source_context)
+                      VALUES (?,?,?,?,?,?)''', (application_id, version + 1, digest, fields_json, user.id, context))
         db.execute('''INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,?,?)''',
                    (application_id, user.id, 'resume_fields_reviewed',
                     json.dumps({'version': version + 1, 'field_count': len(payload.fields)})))
         _require_current_role(db, request, user, 'hr')
-        return _view(_latest(db, application_id), source, digest)
+        return _view(_latest(db, application_id), source, digest, context)

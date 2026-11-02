@@ -113,6 +113,25 @@ def test_restored_evidence_does_not_revive_old_approval(case):
         assert db.execute('SELECT status FROM applications WHERE id=?', (application,)).fetchone()[0] == 'submitted'
 
 
+def test_mask_change_and_revert_do_not_revive_advance_approval(case):
+    client, path, application = case
+    review, fingerprint = start(client, application)
+    endpoint = f'/api/applications/{application}/resume/mask'
+    for spans in ([{'start': 0, 'end': 6}], []):
+        view = client.get(endpoint).json()
+        response = client.put(endpoint, json={
+            'source_sha256': view['source_sha256'], 'expected_source_revision': view['source_revision'],
+            'expected_revision': view['revision'], 'spans': spans,
+        })
+        assert response.status_code == 200
+    response = client.post(f'/api/graph-reviews/{review}/resume',
+                           json={'reviewed': True, 'approval_fingerprint': fingerprint})
+    assert response.status_code == 409
+    with connect(path) as db:
+        assert db.execute('SELECT status FROM applications WHERE id=?', (application,)).fetchone()[0] == 'submitted'
+        assert db.execute("SELECT count(*) FROM audit_events WHERE application_id=? AND action='decision'", (application,)).fetchone()[0] == 0
+
+
 def test_auth_revoked_before_commit_rolls_back_transition(case, monkeypatch):
     from app import graph_orchestrator
 

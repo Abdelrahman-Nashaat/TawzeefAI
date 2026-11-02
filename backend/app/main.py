@@ -54,6 +54,8 @@ from app.recruitment import seed_jobs
 from app.resume_field_review import initialize_resume_field_reviews
 from app.resume_field_review import router as resume_field_review_router
 from app.resume_fields_api import router as resume_fields_router
+from app.resume_mask import initialize_resume_masks
+from app.resume_mask import router as resume_mask_router
 from app.rubric_admin import initialize_rubric_admin
 from app.rubric_admin import router as rubric_admin_router
 from app.rubric_audit_timeline import router as rubric_audit_timeline_router
@@ -101,6 +103,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         initialize_knowledge_documents(path, include_samples=seed_demo)
         initialize_jobs_admin(path)
         initialize_rubric_admin(path)
+        initialize_resume_masks(path)
         initialize_rubric_triage(path)
         initialize_resume_field_reviews(path)
         initialize_conversations(path)
@@ -138,6 +141,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
     application.include_router(candidate_screening_router)
     application.include_router(resume_fields_router)
     application.include_router(resume_field_review_router)
+    application.include_router(resume_mask_router)
     application.include_router(scheduling_router)
     application.include_router(slots_router)
     application.include_router(dashboard_router)

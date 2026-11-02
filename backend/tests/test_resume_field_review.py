@@ -24,7 +24,7 @@ def setup(tmp_path):
 
 def payload(view, value, *, section='experience', field='role', record_ref='r-1'):
     start = view['source'].index(value)
-    return {'source_sha256': view['source_sha256'], 'expected_version': view['version'],
+    return {'source_sha256': view['source_sha256'], 'expected_source_context': view['source_context'], 'expected_version': view['version'],
             'fields': [{'record_ref': record_ref, 'section': section, 'field': field,
                         'start': start, 'end': start + len(value)}]}
 

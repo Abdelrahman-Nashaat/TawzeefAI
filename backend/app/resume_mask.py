@@ -43,6 +43,12 @@ def initialize_resume_masks(path: str | Path) -> None:
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 PRIMARY KEY(application_id, revision)
             );
+            CREATE TABLE IF NOT EXISTS resume_mask_prior_scores (
+                application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+                mask_revision INTEGER NOT NULL,
+                score_json TEXT NOT NULL,
+                PRIMARY KEY(application_id, mask_revision)
+            );
             CREATE TRIGGER IF NOT EXISTS resume_mask_source_changed
             AFTER UPDATE OF resume_text ON applications WHEN OLD.resume_text IS NOT NEW.resume_text BEGIN
                 INSERT OR IGNORE INTO resume_mask_state(application_id) VALUES(NEW.id);
@@ -141,7 +147,7 @@ def masked_source(db, application_id: int) -> dict:
     source_sha = _digest(text)
     return {'text': text, 'source_sha256': source_sha, 'source_revision': source_revision,
             'mask_revision': revision, 'context_sha256': _context_sha256(source_sha, source_revision, revision),
-            'status': status, 'notice': NOTICE}
+            'status': status, 'automatic_masked': redact_resume(raw).masked, 'notice': NOTICE}
 
 
 @router.get('/applications/{application_id}/resume/mask')
@@ -195,9 +201,44 @@ def save_mask(application_id: int, payload: MaskSave, request: Request, user: HR
         db.execute('''INSERT INTO resume_masks(application_id,revision,source_revision,source_sha256,raw_sha256,spans_json,created_by)
                       VALUES(?,?,?,?,?,?,?)''', (application_id, revision + 1, source_revision, _digest(base), _digest(raw),
                       json.dumps([span.model_dump() for span in payload.spans]), user.id))
+        # A saved score belongs to the old source. Preserve it separately as a
+        # historical record and prevent later workflows treating it as current.
+        db.execute('''INSERT INTO resume_mask_prior_scores(application_id,mask_revision,score_json)
+                      SELECT id,?,score_json FROM applications WHERE id=? AND score_json IS NOT NULL''',
+                   (revision + 1, application_id))
+        db.execute('UPDATE applications SET score_json=NULL WHERE id=? AND score_json IS NOT NULL', (application_id,))
+        db.execute('INSERT OR IGNORE INTO rubric_publication_revisions(application_id,revision) VALUES(?,0)', (application_id,))
+        db.execute('UPDATE rubric_publication_revisions SET revision=revision+1 WHERE application_id=?', (application_id,))
+        db.execute('DELETE FROM rubric_publications WHERE application_id=?', (application_id,))
         db.execute('INSERT INTO audit_events(application_id,actor_id,action,details) VALUES(?,?,?,?)',
                    (application_id, user.id, 'resume_mask_reviewed',
                     json.dumps({'revision': revision + 1, 'span_count': len(payload.spans)})))
         _require_current_role(db, request, user, 'hr')
         result = masked_source(db, application_id)
         return {key: value for key, value in result.items() if key != 'text'}
+
+
+@router.get('/applications/{application_id}/resume/mask/prior-scores')
+def prior_scores(application_id: int, request: Request, user: HR):
+    """Return old scores archived when a mask review invalidated them."""
+    from app.recruitment import _require_current_role
+
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_role(db, request, user, 'hr')
+        _base(db, application_id)
+        rows = db.execute('''SELECT p.mask_revision,p.score_json,m.created_at FROM resume_mask_prior_scores p
+                             JOIN resume_masks m ON m.application_id=p.application_id AND m.revision=p.mask_revision
+                             WHERE p.application_id=? ORDER BY p.mask_revision DESC LIMIT 100''',
+                          (application_id,)).fetchall()
+        entries = []
+        for row in rows:
+            try:
+                result = json.loads(row['score_json'])
+                if not isinstance(result, dict):
+                    raise TypeError('Invalid archived score')
+            except (TypeError, ValueError):
+                result = None
+            entries.append({'mask_revision': row['mask_revision'], 'archived_at': row['created_at'], 'result': result})
+        _require_current_role(db, request, user, 'hr')
+        return {'entries': entries, 'notice': 'Historical scores predate the selected mask; they are not current.'}

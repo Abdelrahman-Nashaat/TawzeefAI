@@ -4,7 +4,6 @@ Reviewers work against a partially redacted resume; this is not a guarantee of
 anonymity. Neither a score nor an assessment changes an application decision.
 """
 
-import hashlib
 import json
 import time
 from pathlib import Path
@@ -17,6 +16,7 @@ from app.auth import COOKIE_NAME, User, require_roles, token_digest
 from app.blind import redact_resume
 from app.db import connect
 from app.recruitment import get_application
+from app.resume_mask import masked_source
 from app.rubric import (
     WEIGHTS,
     Assessment,
@@ -166,6 +166,11 @@ def initialize_rubric_admin(path: str | Path) -> None:
             db.execute('ALTER TABLE rubric_assessments ADD COLUMN criteria_fingerprint TEXT')
         if 'source_fingerprint' not in columns:
             db.execute('ALTER TABLE rubric_assessments ADD COLUMN source_fingerprint TEXT')
+        if 'source_context' not in columns:
+            db.execute('ALTER TABLE rubric_assessments ADD COLUMN source_context TEXT')
+        evidence_columns = {row['name'] for row in db.execute('PRAGMA table_info(rubric_evidence)')}
+        if 'source_context' not in evidence_columns:
+            db.execute('ALTER TABLE rubric_evidence ADD COLUMN source_context TEXT')
 
 
 class CriterionCreate(BaseModel):
@@ -198,6 +203,7 @@ class EvidenceCreate(BaseModel):
     start: int = Field(ge=0)
     end: int = Field(gt=0)
     expected_source_sha256: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
+    expected_source_context: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
     expected_criterion: ExpectedCriterion | None = None
 
     @model_validator(mode='after')
@@ -238,6 +244,7 @@ class Judgment(BaseModel):
 class AssessmentCreate(BaseModel):
     model_config = ConfigDict(extra='forbid')
     judgments: list[Judgment] = Field(max_length=250)
+    expected_source_context: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
 
     @model_validator(mode='after')
     def no_duplicates(self):
@@ -290,9 +297,10 @@ def create_criterion(job_id: str, payload: CriterionCreate, request: Request, us
 @router.get('/applications/{application_id}/rubric/source')
 def blind_source(application_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
-        application = get_application(db, application_id)
-        blind = redact_resume(application['resume_text'])
-    return {'text': blind.text, 'requires_review': True, 'notice': blind.notice}
+        db.execute('BEGIN')
+        blind = masked_source(db, application_id)
+    return {'text': blind['text'], 'source_sha256': blind['source_sha256'],
+            'source_context': blind['context_sha256'], 'requires_review': True, 'notice': blind['notice']}
 
 
 @router.post('/applications/{application_id}/rubric/suggestions')
@@ -305,18 +313,18 @@ def semantic_suggestions(application_id: int, request: Request, user: HR):
         db.execute('BEGIN')
         application = get_application(db, application_id)
         job_id = application['job_id']
-        source = application['resume_text']
+        blind = masked_source(db, application_id)
+        source = blind['text']
         criteria = [public_criterion(row) for row in db.execute(
             'SELECT * FROM rubric_criteria WHERE job_id = ? ORDER BY id', (job_id,))]
     if not criteria:
         raise HTTPException(status_code=409, detail='No rubric criteria are configured for this job')
-    blind = redact_resume(source)
     from app.resume_structure import structure_resume
 
-    sections = structure_resume(blind.text)['sections']
+    sections = structure_resume(source)['sections']
     recognized = [name for name, section in sections.items() if section['items']]
     truncated = any(section['truncated'] for section in sections.values())
-    candidates = suggest(blind.text, criteria)
+    candidates = suggest(source, criteria)
     with connect(path) as db:
         db.execute('BEGIN')
         token = request.cookies.get(COOKIE_NAME, '')
@@ -328,9 +336,10 @@ def semantic_suggestions(application_id: int, request: Request, user: HR):
         current = get_application(db, application_id)
         current_criteria = [public_criterion(row) for row in db.execute(
             'SELECT * FROM rubric_criteria WHERE job_id = ? ORDER BY id', (job_id,))]
-        if current['job_id'] != job_id or current['resume_text'] != source or current_criteria != criteria:
+        current_blind = masked_source(db, application_id)
+        if current['job_id'] != job_id or current_blind['context_sha256'] != blind['context_sha256'] or current_criteria != criteria:
             raise HTTPException(status_code=409, detail='Source or criteria changed; retry screening')
-    return {'source_sha256': hashlib.sha256(blind.text.encode('utf-8')).hexdigest(),
+    return {'source_sha256': blind['source_sha256'], 'source_context': blind['context_sha256'],
             'offset_unit': 'unicode_code_points', 'criteria': candidates, 'requires_human_review': True,
             'status': 'ok' if recognized else 'no_recognized_sections',
             'recognized_sections': recognized, 'sections_truncated': truncated,
@@ -343,9 +352,13 @@ def semantic_suggestions(application_id: int, request: Request, user: HR):
 @router.get('/applications/{application_id}/rubric/evidence')
 def list_evidence(application_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
-        get_application(db, application_id)
+        db.execute('BEGIN')
+        blind = masked_source(db, application_id)
         return [public_evidence(row) for row in db.execute(
-            'SELECT * FROM rubric_evidence WHERE application_id = ? ORDER BY id', (application_id,))]
+            'SELECT * FROM rubric_evidence WHERE application_id = ? ORDER BY id', (application_id,))
+            if (row['source_context'] or blind['source_sha256']) == blind['context_sha256']
+            and 0 <= row['start_offset'] < row['end_offset'] <= len(blind['text'])
+            and blind['text'][row['start_offset']:row['end_offset']] == row['excerpt']]
 
 
 @router.post('/applications/{application_id}/rubric/evidence', status_code=201)
@@ -353,9 +366,11 @@ def create_evidence(application_id: int, payload: EvidenceCreate, request: Reque
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN IMMEDIATE')
         application = get_application(db, application_id)
-        blind = redact_resume(application['resume_text'])
+        blind = masked_source(db, application_id)
+        if (payload.expected_source_context or blind['source_sha256']) != blind['context_sha256']:
+            raise HTTPException(status_code=409, detail='Source changed; request fresh suggestions')
         if payload.expected_source_sha256 is not None:
-            digest = hashlib.sha256(blind.text.encode('utf-8')).hexdigest()
+            digest = blind['source_sha256']
             if digest != payload.expected_source_sha256:
                 raise HTTPException(status_code=409, detail='Source changed; request fresh suggestions')
         if payload.expected_criterion is not None:
@@ -364,14 +379,14 @@ def create_evidence(application_id: int, payload: EvidenceCreate, request: Reque
                                    (int(expected.criterion_ref[2:]), application['job_id'])).fetchone()
             if criterion is None or criterion['category'] != expected.category or criterion['label'] != expected.label:
                 raise HTTPException(status_code=409, detail='Criterion changed; request fresh suggestions')
-        if payload.end > len(blind.text):
+        if payload.end > len(blind['text']):
             raise HTTPException(status_code=422, detail='Evidence range exceeds the source')
-        excerpt = blind.text[payload.start:payload.end]
+        excerpt = blind['text'][payload.start:payload.end]
         if not excerpt.strip():
             raise HTTPException(status_code=422, detail='Evidence must contain visible text')
         cursor = db.execute('''INSERT INTO rubric_evidence
-            (application_id,start_offset,end_offset,excerpt,created_by) VALUES (?,?,?,?,?)''',
-            (application_id, payload.start, payload.end, excerpt, user.id))
+            (application_id,start_offset,end_offset,excerpt,created_by,source_context) VALUES (?,?,?,?,?,?)''',
+            (application_id, payload.start, payload.end, excerpt, user.id, blind['context_sha256']))
         if cursor.lastrowid > 9999:
             raise HTTPException(status_code=409, detail='Evidence reference limit reached')
         db.execute('INSERT INTO rubric_audit_events (actor_id,action,application_id,reference_id) VALUES (?, ?, ?, ?)',
@@ -384,7 +399,7 @@ def latest_assessment(application_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN')
         application = get_application(db, application_id)
-        row = db.execute('''SELECT id, actor_id, assessment_json, result_json, created_at, criteria_fingerprint, source_fingerprint FROM rubric_assessments
+        row = db.execute('''SELECT id, actor_id, assessment_json, result_json, created_at, criteria_fingerprint, source_fingerprint, source_context FROM rubric_assessments
             WHERE application_id=? ORDER BY id DESC LIMIT 1''', (application_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail='Assessment not found')
@@ -408,13 +423,15 @@ def latest_assessment(application_id: int, request: Request, user: HR):
         current = {f"c-{item['id']}" for item in current_rows}
         criteria_changed = (not row['criteria_fingerprint'] or
                             row['criteria_fingerprint'] != criteria_fingerprint(current_rows))
-        blind_source = redact_resume(application['resume_text']).text
-        source_digest = hashlib.sha256(blind_source.encode('utf-8')).hexdigest()
-        source_changed = not row['source_fingerprint'] or row['source_fingerprint'] != source_digest
+        blind = masked_source(db, application_id)
+        blind_source = blind['text']
+        source_digest = blind['source_sha256']
+        source_changed = (not row['source_fingerprint'] or row['source_fingerprint'] != source_digest or
+                          (row['source_context'] or row['source_fingerprint']) != blind['context_sha256'])
         try:
             stored_assessment = Assessment.model_validate_json(row['assessment_json'])
             evidence = db.execute('SELECT * FROM rubric_evidence WHERE application_id=?', (application_id,)).fetchall()
-            evidence_changed = not evidence_is_current(stored_assessment, blind_source, evidence)
+            evidence_changed = not evidence_is_current(stored_assessment, blind_source, evidence, blind['context_sha256'])
             if not legacy_missing:
                 result = calculate_rubric(stored_assessment)
             assessed = {claim.criterion_ref: category for category in WEIGHTS
@@ -459,15 +476,17 @@ def assess(application_id: int, payload: AssessmentCreate, request: Request, use
                 'evidence_refs': refs, 'reviewed_by_hr': status != 'unknown',
                 'absence_review_attested': judgment.absence_review_attested if judgment else False})
         assessment = Assessment.model_validate(grouped)
-        blind = redact_resume(application['resume_text']).text
+        blind = masked_source(db, application_id)
+        if (payload.expected_source_context or blind['source_sha256']) != blind['context_sha256']:
+            raise HTTPException(status_code=409, detail='Source changed; review again')
         evidence = db.execute('SELECT * FROM rubric_evidence WHERE application_id=?', (application_id,)).fetchall()
-        if not evidence_is_current(assessment, blind, evidence):
+        if not evidence_is_current(assessment, blind['text'], evidence, blind['context_sha256']):
             raise HTTPException(status_code=409, detail='Evidence no longer matches the current resume; review it again')
         result = calculate_rubric(assessment)
         cursor = db.execute('''INSERT INTO rubric_assessments
-            (application_id,actor_id,assessment_json,result_json,criteria_fingerprint,source_fingerprint) VALUES (?,?,?,?,?,?)''',
+            (application_id,actor_id,assessment_json,result_json,criteria_fingerprint,source_fingerprint,source_context) VALUES (?,?,?,?,?,?,?)''',
             (application_id, user.id, assessment.model_dump_json(), json.dumps(result), criteria_fingerprint(criteria),
-             hashlib.sha256(redact_resume(application['resume_text']).text.encode('utf-8')).hexdigest()))
+             blind['source_sha256'], blind['context_sha256']))
         db.execute('INSERT INTO rubric_audit_events (actor_id,action,application_id,reference_id) VALUES (?, ?, ?, ?)',
                    (user.id, 'assessment_created', application_id, cursor.lastrowid))
         return {'id': cursor.lastrowid, 'actor_id': user.id, 'result': result}

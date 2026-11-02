@@ -9,6 +9,7 @@ import urllib.request
 from app.agent import _NoRedirect
 from app.ai_provider import GROQ_MODEL, GROQ_URL
 from app.recruitment import get_application
+from app.resume_mask import masked_source
 
 ALLOWED = frozenset({'parser', 'matching', 'semantic', 'status', 'scheduler'})
 MAX_STEPS = 5
@@ -22,6 +23,11 @@ def context_for(db, application_id: int) -> tuple[dict, str]:
         raise ValueError('Application job is unavailable')
     facts = {'status': application['status'], 'has_screening': bool(application['score_json'])}
     protected = {'application': dict(application), 'job': dict(job)}
+    source = masked_source(db, application_id)
+    # Preserve existing checkpoint digests for untouched legacy applications.
+    # Once either revision changes, bind its monotonic context, including ABA.
+    if source['context_sha256'] != source['source_sha256']:
+        protected['resume_context'] = source['context_sha256']
     raw = json.dumps(protected, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
     return facts, hashlib.sha256(raw).hexdigest()
 

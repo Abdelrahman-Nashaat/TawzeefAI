@@ -21,7 +21,7 @@ from app.auth import (
     require_roles,
     token_digest,
 )
-from app.blind import redact_resume
+from app.blind import BlindText, redact_resume
 from app.db import connect
 from app.document_text import (
     MAX_FILE_BYTES,
@@ -32,6 +32,7 @@ from app.document_text import (
     require_ocr_enabled,
 )
 from app.google_outbox import cancellation_block_reason
+from app.resume_mask import masked_source
 from app.resume_structure import structure_resume
 from app.scheduling import utc_text
 
@@ -107,7 +108,18 @@ WORK_CONTEXT = re.compile(
 
 
 def score_resume(job: dict, text: str) -> dict:
-    blind = redact_resume(text)
+    return _score_blind(job, redact_resume(text))
+
+
+def score_masked_resume(job: dict, source: dict) -> dict:
+    """Score the selected source without applying redaction a second time."""
+    blind = BlindText(text=source['text'], masked=source['automatic_masked'] or source['mask_revision'] > 0)
+    result = _score_blind(job, blind)
+    result['blind_screening']['review_status'] = source['status']
+    return result
+
+
+def _score_blind(job: dict, blind: BlindText) -> dict:
     # Keep semicolon-separated lists together so a preceding negation applies
     # conservatively to every item. A dot inside Node.js or .NET is not a
     # sentence boundary; split dots only when followed by whitespace or EOF.
@@ -265,8 +277,9 @@ def application_detail(application_id: int, request: Request, user: Authenticate
 @router.get("/applications/{application_id}/resume/structured")
 def structured_resume(application_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
-        row = get_application(db, application_id)
-        source = redact_resume(row['resume_text']).text
+        db.execute('BEGIN')
+        get_application(db, application_id)
+        source = masked_source(db, application_id)['text']
     return structure_resume(source)
 
 
@@ -308,7 +321,7 @@ def screen(application_id: int, request: Request, user: HR):
         _require_current_role(db, request, user, 'hr')
         row = get_application(db, application_id)
         job = job_data(db.execute("SELECT * FROM jobs WHERE id = ?", (row["job_id"],)).fetchone())
-        score = score_resume(job, row["resume_text"])
+        score = score_masked_resume(job, masked_source(db, application_id))
         store_screening(db, application_id, user.id, score)
         _require_current_role(db, request, user, 'hr')
         return score

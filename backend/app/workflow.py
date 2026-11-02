@@ -16,9 +16,10 @@ from app.recruitment import (
     _require_current_role,
     get_application,
     job_data,
-    score_resume,
+    score_masked_resume,
     store_screening,
 )
+from app.resume_mask import masked_source
 
 router = APIRouter(prefix="/api/workflows")
 HR = Annotated[User, Depends(require_roles("hr"))]
@@ -145,7 +146,7 @@ def run_workflow(application_id: int, request: Request, user: HR):
             job_row = db.execute("SELECT * FROM jobs WHERE id = ?", (application["job_id"],)).fetchone()
             if job_row is None:
                 raise HTTPException(status_code=404, detail="Job not found")
-            score = score_resume(job_data(job_row), application["resume_text"])
+            score = score_masked_resume(job_data(job_row), masked_source(db, application_id))
             store_screening(db, application_id, user.id, score)
         db.execute(
             """INSERT INTO recruitment_workflows (application_id, last_step) VALUES (?, ?)

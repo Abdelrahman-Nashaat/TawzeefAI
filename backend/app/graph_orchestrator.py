@@ -34,7 +34,6 @@ from pydantic import BaseModel, Field, StrictBool, model_validator
 from app.adaptive_planner import context_for, make_plan
 from app.agent import AgentError, run_agent
 from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_digest
-from app.blind import redact_resume
 from app.conversations import _authorized_sources, _digest
 from app.db import connect
 from app.graph_semantic import context as semantic_context
@@ -42,8 +41,9 @@ from app.graph_semantic import restore_references, save_references
 from app.interview_guide import guide_from_matching
 from app.matching_specialist import matching_snapshot
 from app.policy_agent import authorized_policy_sources, run_policy_agent
-from app.recruitment import get_application, job_data, score_resume, store_screening
+from app.recruitment import get_application, job_data, score_masked_resume, store_screening
 from app.resume_fields import resume_fields_for_display
+from app.resume_mask import masked_source
 from app.resume_structure import structure_resume
 from app.scheduling import utc_text
 from app.slot_reservations import private_slot_conflict
@@ -100,6 +100,7 @@ class ReviewState(TypedDict, total=False):
     plan: list[str]
     parsed: dict
     parser_source_ref: str
+    parser_context_ref: str
     matching: dict
     matching_specialist_ref: str
     policy: dict
@@ -131,7 +132,7 @@ def _screen_snapshot(db, application_id: int):
     row = db.execute('SELECT revision FROM rubric_publication_revisions WHERE application_id=?', (application_id,)).fetchone()
     state_row = db.execute('SELECT revision FROM graph_screen_revisions WHERE application_id=?', (application_id,)).fetchone()
     revision = f"{row['revision'] if row else 0}:{state_row['revision'] if state_row else 0}"
-    score = score_resume(job_data(job), application['resume_text'])
+    score = score_masked_resume(job_data(job), masked_source(db, application_id))
     encoded = json.dumps(score, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
     score_digest = hashlib.sha256(encoded).hexdigest()
     return application, score, context_digest, revision, score_digest
@@ -276,22 +277,22 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
 
     def parser(state: ReviewState):
         with connect(path) as db:
-            row = get_application(db, state["application_id"])
-            text = row["resume_text"]
-        blind_source = redact_resume(text).text
+            db.execute('BEGIN')
+            source = masked_source(db, state['application_id'])
+        blind_source = source['text']
         result = structure_resume(blind_source)
-        return {"parsed": {"text_available": bool(text.strip()),
+        return {"parsed": {"text_available": bool(blind_source.strip()),
                            "sections": {name: section["status"] for name, section in result["sections"].items()},
                            "notice": "Section mentions are unverified; redaction is incomplete. "
                                      "The structured résumé endpoint exposes text for HR review."},
-                "parser_source_ref": hashlib.sha256(blind_source.encode('utf-8')).hexdigest()}
+                "parser_source_ref": source['source_sha256'], "parser_context_ref": source['context_sha256']}
 
     def matching(state: ReviewState):
         with connect(path) as db:
             db.execute('BEGIN')
             row = get_application(db, state["application_id"])
             job = db.execute("SELECT * FROM jobs WHERE id = ?", (row["job_id"],)).fetchone()
-            score = score_resume(job_data(job), row["resume_text"])
+            score = score_masked_resume(job_data(job), masked_source(db, state['application_id']))
             # Evidence excerpts can include identifying data even after masking.
             for group in ("required", "preferred"):
                 score[group] = [{"skill": item["skill"], "mentioned": item["mentioned"]}
@@ -330,6 +331,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             matching_digest, _ = matching_snapshot(db, state['application_id'])
             if (semantic_context(db, state['application_id']) != original_context
                     or result['source_sha256'] != state.get('parser_source_ref')
+                    or masked_source(db, state['application_id'])['context_sha256'] != state.get('parser_context_ref', state.get('parser_source_ref'))
                     or matching_digest != state.get('matching_specialist_ref')):
                 raise HTTPException(status_code=409, detail='Application changed; start a new semantic review')
         return {'semantic_refs': save_references(result, original_context)}
@@ -412,14 +414,15 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         with connect(path) as db:
             db.execute('BEGIN')
             application, score, context_digest, revision, score_digest = _screen_snapshot(db, state['application_id'])
-            parser_digest = hashlib.sha256(redact_resume(application['resume_text']).text.encode('utf-8')).hexdigest()
+            parser_source = masked_source(db, state['application_id'])
             matching_digest, _ = matching_snapshot(db, state['application_id'])
             projected = dict(score)
             for group in ('required', 'preferred'):
                 projected[group] = [{'skill': item['skill'], 'mentioned': item['mentioned']} for item in score[group]]
             if (application['status'] != 'submitted' or application['score_json'] or
                     state.get('status', {}).get('application_status') != 'submitted' or
-                    state.get('parser_source_ref') != parser_digest or
+                    state.get('parser_source_ref') != parser_source['source_sha256'] or
+                    state.get('parser_context_ref', state.get('parser_source_ref')) != parser_source['context_sha256'] or
                     state.get('matching_specialist_ref') != matching_digest or state.get('matching') != projected):
                 raise HTTPException(status_code=409, detail='A current, unscreened submitted application is required')
             proposal = {'type': 'screen_application', 'application_id': state['application_id'],
@@ -452,10 +455,11 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             revision_row = db.execute('SELECT revision FROM rubric_publication_revisions WHERE application_id=?',
                                       (state['application_id'],)).fetchone()
             revision = revision_row['revision'] if revision_row else 0
-            parser_digest = hashlib.sha256(redact_resume(application['resume_text']).text.encode('utf-8')).hexdigest()
+            parser_source = masked_source(db, state['application_id'])
             if (application['status'] != 'submitted' or assessment['status'] != 'current' or
                     state.get('matching_specialist_ref') != matching_digest or
-                    state.get('parser_source_ref') != parser_digest or
+                    state.get('parser_source_ref') != parser_source['source_sha256'] or
+                    state.get('parser_context_ref', state.get('parser_source_ref')) != parser_source['context_sha256'] or
                     state.get('status', {}).get('application_status') != 'submitted'):
                 raise HTTPException(status_code=409, detail='A current reviewed assessment and submitted application are required')
             proposal = {'type': 'advance_application', 'application_id': state['application_id'],
@@ -626,6 +630,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     state = dict(snapshot.values)
     specialist_ref = state.pop('matching_specialist_ref', None)
     parser_ref = state.pop('parser_source_ref', None)
+    parser_context_ref = state.pop('parser_context_ref', parser_ref)
     semantic_refs = state.pop('semantic_refs', None)
     # Old checkpoints lack intent and retain the historical full-review view.
     # Never expose stale stage data outside an explicitly selected scope.
@@ -685,11 +690,11 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                 if selected in ('semantic_review', 'semantic_advance_and_reserve_slot') or (selected == 'adaptive' and 'semantic' in state.get('plan', [])):
                     state['semantic_suggestions'] = restore_references(db, state['application_id'], semantic_refs)
                 if 'parsed' in state:
-                    application = get_application(db, state['application_id'])
-                    source = redact_resume(application['resume_text']).text
-                    digest = hashlib.sha256(source.encode('utf-8')).hexdigest()
-                    if isinstance(parser_ref, str) and secrets.compare_digest(digest.encode(), parser_ref.encode()):
-                        state['resume_fields'] = resume_fields_for_display(source)
+                    source = masked_source(db, state['application_id'])
+                    if (isinstance(parser_ref, str) and isinstance(parser_context_ref, str)
+                            and secrets.compare_digest(source['source_sha256'], parser_ref)
+                            and secrets.compare_digest(source['context_sha256'], parser_context_ref)):
+                        state['resume_fields'] = resume_fields_for_display(source['text'])
                     else:
                         state.pop('parsed', None)
                         state['resume_fields'] = {'status': 'stale', 'notice': 'Resume changed or cannot be verified; start a new review.'}

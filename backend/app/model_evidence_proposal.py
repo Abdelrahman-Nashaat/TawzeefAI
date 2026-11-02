@@ -20,6 +20,7 @@ from app.auth import User, require_roles
 from app.db import connect
 from app.evidence_cautions import evidence_cautions
 from app.recruitment import _require_current_role
+from app.resume_mask import masked_source
 from app.rubric_evidence_bundle import _snapshot
 
 router = APIRouter(prefix='/api')
@@ -102,6 +103,7 @@ def _request_proposal(items: list[dict]) -> str:
 
 def _selected(db, application_id: int, payload: RequestProposal) -> list[dict]:
     digest, _, source, criteria = _snapshot(db, application_id)
+    blind = masked_source(db, application_id)
     if not secrets.compare_digest(digest, payload.snapshot):
         raise HTTPException(status_code=409, detail='Source or criteria changed; review again')
     by_ref = {item['criterion_ref']: item for item in criteria}
@@ -111,11 +113,12 @@ def _selected(db, application_id: int, payload: RequestProposal) -> list[dict]:
         if criterion is None:
             raise HTTPException(status_code=409, detail='Criterion changed; review again')
         for ref in selection.evidence_refs:
-            row = db.execute('SELECT start_offset,end_offset,excerpt FROM rubric_evidence WHERE application_id=? AND id=?',
+            row = db.execute('SELECT start_offset,end_offset,excerpt,source_context FROM rubric_evidence WHERE application_id=? AND id=?',
                              (application_id, int(ref[2:]))).fetchone()
             if (row is None or not 0 <= row['start_offset'] < row['end_offset'] <= len(source)
                     or row['end_offset'] - row['start_offset'] > 500
-                    or source[row['start_offset']:row['end_offset']] != row['excerpt']):
+                    or source[row['start_offset']:row['end_offset']] != row['excerpt']
+                    or (row['source_context'] or blind['source_sha256']) != blind['context_sha256']):
                 raise HTTPException(status_code=409, detail='Evidence changed; review again')
             items.append({'criterion_ref': selection.criterion_ref, 'criterion': criterion['label'],
                           'evidence_ref': ref, 'excerpt': row['excerpt']})

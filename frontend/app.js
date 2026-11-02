@@ -759,7 +759,7 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
         suggestions.replaceChildren(element("p", "form-error", "تغيرت المعايير أثناء البحث؛ اطلب الاقتراحات مجددًا."));
         return;
       }
-      if (response.offset_unit !== "unicode_code_points" || !Array.isArray(response.criteria) || !/^[a-f0-9]{64}$/.test(response.source_sha256 || "") || bundleContext.source_sha256 !== response.source_sha256 || !/^[a-f0-9]{64}$/.test(bundleContext.snapshot || "")) {
+      if (response.offset_unit !== "unicode_code_points" || !Array.isArray(response.criteria) || !/^[a-f0-9]{64}$/.test(response.source_sha256 || "") || source.source_sha256 !== response.source_sha256 || source.source_context !== response.source_context || bundleContext.source_sha256 !== response.source_sha256 || !/^[a-f0-9]{64}$/.test(bundleContext.snapshot || "")) {
         throw new Error("تعذّر قراءة الاقتراحات؛ حاول مرة أخرى.");
       }
       const sourcePoints = Array.from(source.text);
@@ -803,7 +803,7 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
             }
             accept.disabled = true;
             try {
-              const saved = await api(`${base}/evidence`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ start, end, expected_source_sha256: response.source_sha256,
+              const saved = await api(`${base}/evidence`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ start, end, expected_source_sha256: response.source_sha256, expected_source_context: response.source_context,
                 expected_criterion: { criterion_ref: criterion.criterion_ref, category: criterion.category, label: criterion.label } }) });
               if (!target.isConnected) return;
               rememberDrafts(); evidence.push(saved); renderEvidence(); renderJudgments();
@@ -861,7 +861,7 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
     if (start === null || end === null || end <= start || end - start > 500 || !sourceText.value.slice(sourceText.selectionStart, sourceText.selectionEnd).trim()) { setMessage("حدد نصًا ظاهرًا من السيرة بطول من 1 إلى 500 حرف.", true); return; }
     addEvidence.disabled = true;
     try {
-      const item = await api(`${base}/evidence`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ start, end }) });
+      const item = await api(`${base}/evidence`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ start, end, expected_source_sha256: source.source_sha256, expected_source_context: source.source_context }) });
       if (!target.isConnected) return;
       rememberDrafts(); evidence.push(item); renderEvidence(); renderJudgments(); setMessage("تم حفظ الدليل؛ يمكنك ربطه بالمعايير المناسبة.");
     } catch (error) { if (!isStale(error) && target.isConnected) setMessage(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
@@ -879,7 +879,7 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
     for (const item of judgments) if (item.status === "unknown") item.evidence_refs = [];
     save.disabled = true;
     try {
-      assessment = await api(`${base}/assessment`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ judgments }) });
+      assessment = await api(`${base}/assessment`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ judgments, expected_source_context: source.source_context }) });
       if (!target.isConnected) return;
       renderResult(assessment); setMessage("تم حفظ التقييم البشري دون تغيير قرار الطلب.");
     } catch (error) { if (!isStale(error) && target.isConnected) setMessage(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
@@ -1207,6 +1207,114 @@ async function loadStructuredResume(target, applicationId) {
   }
 }
 
+function setupResumeMaskReview(target, applicationId, onSaved = () => {}) {
+  const endpoint = `/api/applications/${encodeURIComponent(applicationId)}/resume/mask`;
+  let generation = 0;
+  async function load() {
+    const current = ++generation;
+    target.replaceChildren(element("h4", "", "Review résumé masking"), element("p", "subtle-note", "Loading review..."));
+    try {
+      const review = await api(endpoint);
+      if (current !== generation || !target.isConnected) return;
+      const points = Array.from(review.source || "");
+      if (typeof review.source !== "string" || review.offset_unit !== "unicode_code_points" ||
+          !/^[a-f0-9]{64}$/.test(review.source_sha256 || "") || !Number.isSafeInteger(review.source_revision) || review.source_revision < 0 ||
+          !Number.isSafeInteger(review.revision) || review.revision < 0 || !["unreviewed", "reviewed", "stale"].includes(review.status) || !Array.isArray(review.spans)) throw new Error("Invalid review response; reload the application.");
+      let previousEnd = 0;
+      const draft = review.spans.map(({start, end}) => {
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < previousEnd || end <= start || end > points.length || !points.slice(start, end).join("").trim()) throw new Error("Invalid saved selections; reload the application.");
+        previousEnd = end;
+        return {start, end};
+      });
+      const heading = element("h4", "", "Review résumé masking");
+      const notice = element("p", "subtle-note", "Select identifying text that the automatic rules missed. Masking can miss identifying information and is not anonymization or proof of fairness. Review the entire source and verify the resulting text. Saving a mask clears the current keyword screening; run screening again. Earlier results remain historical.");
+      const state = element("p", review.status === "stale" ? "form-error" : "subtle-note", review.status === "stale" ? "The previous review is stale. Select the information to mask again before saving." : review.status === "reviewed" ? "A review was saved for this source. Changes are not saved until you confirm them." : "This source has not been reviewed for additional masking.");
+      const message = element("p", "subtle-note"); message.setAttribute("aria-live", "polite");
+      const label = element("label", "", "Rule-redacted source: select text to hide");
+      const source = element("textarea", "resume-preview rubric-source"); source.readOnly = true; source.rows = 10; source.value = review.source; label.append(source);
+      const add = element("button", "outline-button", "Add selected text to mask"); add.type = "button";
+      const list = element("ol", "evidence-list");
+      const previewLabel = element("label", "", "Preview after additional masking");
+      const preview = element("textarea", "resume-preview rubric-source"); preview.readOnly = true; preview.rows = 10; previewLabel.append(preview);
+      const save = element("button", "small-button", "Save reviewed mask"); save.type = "button";
+      const reload = element("button", "outline-button", "Reload mask review"); reload.type = "button";
+      const history = element("details", "application-detail"); history.append(element("summary", "", "Historical screenings before mask changes"));
+      const historyBody = element("div"); history.append(historyBody);
+      history.addEventListener("toggle", async () => {
+        if (!history.open) return;
+        historyBody.replaceChildren(element("p", "subtle-note", "Loading historical screenings..."));
+        try {
+          const records = await api(`${endpoint}/prior-scores`);
+          if (!target.isConnected || !history.open || current !== generation) return;
+          if (!Array.isArray(records.entries)) throw new Error("Invalid historical screening response.");
+          historyBody.replaceChildren(element("p", "subtle-note", "These are historical results from before a mask change. They are not current screenings and may contain identifying excerpts."));
+          if (!records.entries.length) historyBody.append(element("p", "subtle-note", "No prior screenings are recorded here."));
+          for (const record of records.entries) {
+            const item = element("details");
+            item.append(element("summary", "", `Archived ${record.archived_at || "at an unknown time"} · mask revision ${record.mask_revision}`));
+            item.append(element("pre", "resume-preview", JSON.stringify(record.result, null, 2))); historyBody.append(item);
+          }
+        } catch (error) { if (!isStale(error) && target.isConnected && current === generation) historyBody.replaceChildren(element("p", "form-error", "Could not load historical screenings. Close and reopen to retry.")); }
+      });
+      let locked = false;
+      function report(text, error = false) { message.textContent = text; message.className = error ? "form-error" : "subtle-note"; }
+      function renderDraft() {
+        list.replaceChildren();
+        const masked = points.slice();
+        draft.forEach(({start, end}, index) => {
+          for (let i = start; i < end; i++) if (masked[i] !== "\r" && masked[i] !== "\n") masked[i] = " ";
+          const item = element("li", "", `Selection ${index + 1}: characters ${start}–${end}`);
+          const remove = element("button", "outline-button", "Remove selection"); remove.type = "button"; remove.disabled = locked;
+          remove.addEventListener("click", () => { if (!locked) { draft.splice(index, 1); renderDraft(); } });
+          item.append(remove); list.append(item);
+        });
+        preview.value = masked.join("");
+      }
+      // Textarea selections use UTF-16 offsets and normalize CR/CRLF to LF.
+      function sourceOffset(offset) {
+        let visible = 0, index = 0;
+        while (index < points.length) {
+          if (visible === offset) return index;
+          if (points[index] === "\r" && points[index + 1] === "\n") { visible++; index += 2; }
+          else { visible += points[index] === "\r" ? 1 : points[index].length; index++; }
+          if (visible > offset) return null;
+        }
+        return visible === offset ? index : null;
+      }
+      add.addEventListener("click", () => {
+        if (locked) return;
+        const start = sourceOffset(source.selectionStart), end = sourceOffset(source.selectionEnd);
+        if (start === null || end === null || end <= start || !points.slice(start, end).join("").trim()) { report("Select nonempty text without splitting a Unicode character.", true); return; }
+        if (draft.length >= 200 || draft.some((span) => start < span.end && end > span.start)) { report("Selections must not overlap; at most 200 selections are allowed.", true); return; }
+        draft.push({start, end}); draft.sort((a, b) => a.start - b.start); renderDraft(); report("Selection added. Review the preview before saving.");
+      });
+      save.addEventListener("click", async () => {
+        if (locked) return;
+        locked = true; add.disabled = true; save.disabled = true; reload.disabled = true; renderDraft();
+        try {
+          await api(endpoint, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({source_sha256: review.source_sha256, expected_source_revision: review.source_revision, expected_revision: review.revision, spans: draft})}, {errorMessages: {409: "The résumé or mask changed. Reload this review before saving."}});
+          if (current !== generation || !target.isConnected) return;
+          report("Mask review saved. The previous screening is historical; reload the application and screen again before continuing.");
+          reload.disabled = false;
+          onSaved();
+        } catch (error) {
+          if (!isStale(error) && target.isConnected) report(error instanceof TypeError ? "The save could not be confirmed. Reload the review before continuing." : `${error.message} Reload the review before continuing.`, true);
+          reload.disabled = false;
+        }
+      });
+      reload.addEventListener("click", load);
+      target.replaceChildren(heading, notice, state, message, label, add, list, previewLabel, save, reload, history);
+      renderDraft();
+    } catch (error) {
+      if (!isStale(error) && current === generation && target.isConnected) {
+        const retry = element("button", "outline-button", "Reload mask review"); retry.type = "button"; retry.addEventListener("click", load);
+        target.replaceChildren(element("h4", "", "Review résumé masking"), element("p", "form-error", error instanceof TypeError ? "Unable to connect. Reload the review before continuing." : error.message), retry);
+      }
+    }
+  }
+  load();
+}
+
 function renderApplicationDetail(target, application, role) {
   const panel = element("div", "application-detail");
   panel.append(element("h4", "", `تفاصيل الطلب #${application.id}`));
@@ -1240,13 +1348,27 @@ function renderApplicationDetail(target, application, role) {
     loadApplicationOffers(offersPanel, application, role);
   }
   if (role === "hr") {
+    const maskPanel = element("section", "application-detail");
+    maskPanel.setAttribute("aria-label", "Review résumé masking");
+    panel.append(maskPanel);
+    setupResumeMaskReview(maskPanel, application.id, () => {
+      if (!target.isConnected) return;
+      target.replaceChildren(element("p", "subtle-note", "Reloading the application after the mask change..."));
+      api(`/api/applications/${encodeURIComponent(application.id)}`).then((updated) => {
+        if (target.isConnected) renderApplicationDetail(target, updated, role);
+      }).catch((error) => {
+        if (!isStale(error) && target.isConnected) target.replaceChildren(element("p", "form-error", "The mask was saved, but the application could not be reloaded. Close and reopen it."));
+      });
+    });
     const publicationPanel = element("section", "application-detail");
     publicationPanel.setAttribute("aria-label", "Candidate assessment publication");
     panel.append(publicationPanel);
     loadAssessmentPublication(publicationPanel, application.id);
     panel.append(element("p", "", `الملف: ${application.filename}`));
     if (application.extraction?.ocr_pages?.length) panel.append(element("p", "form-error", `OCR was used on pages ${application.extraction.ocr_pages.join(", ")}. Extracted text may be inaccurate; review the original document.`));
-    panel.append(element("h4", "", "النص المستخرج من السيرة"), element("pre", "resume-preview", application.resume_text));
+    const original = element("details", "application-detail");
+    original.append(element("summary", "", "Show original extracted résumé text"), element("p", "subtle-note", "The original text can contain identifying information. Review it only when needed."), element("pre", "resume-preview", application.resume_text));
+    panel.append(original);
     const duplicatesPanel = element("section", "application-detail");
     duplicatesPanel.append(element("h4", "", "السير ذات النص المتطابق"), element("p", "subtle-note", "مطابقة النص المستخرج لا تثبت التزوير ولا تتخذ قرارًا؛ راجع الطلبات يدويًا."));
     const duplicatesResult = element("div"); duplicatesResult.setAttribute("aria-live", "polite");
@@ -1394,7 +1516,7 @@ async function loadResumeFieldReview(target, applicationId) {
       draftLocked = true; renderDraft(); save.disabled = true; add.disabled = true; reload.disabled = true;
       let uncertain = false;
       try {
-        await api(`/api/applications/${encodeURIComponent(applicationId)}/resume/field-review`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_sha256: review.source_sha256, expected_version: review.version, fields: draft }) });
+        await api(`/api/applications/${encodeURIComponent(applicationId)}/resume/field-review`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_sha256: review.source_sha256, expected_source_context: review.source_context, expected_version: review.version, fields: draft }) });
         if (target.isConnected) await loadResumeFieldReview(target, applicationId);
       } catch (error) { uncertain = error instanceof TypeError; if (!isStale(error) && target.isConnected) { message.className = "form-error"; message.textContent = uncertain ? "تعذّر الاتصال؛ أعد التحميل للتحقق قبل المحاولة." : error.message; } }
       finally { draftLocked = uncertain; renderDraft(); save.disabled = uncertain; add.disabled = uncertain; reload.disabled = false; }

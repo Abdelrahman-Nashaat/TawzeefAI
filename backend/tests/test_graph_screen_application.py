@@ -67,6 +67,36 @@ def test_approval_stores_exact_preview_once_without_checkpointing_evidence(case)
         assert counts(db, application) == (1, 1, 0)
 
 
+def test_mask_changes_and_reverts_stale_pending_screening(case):
+    client, path, application = case
+    endpoint = f'/api/applications/{application}/resume/mask'
+
+    def save(spans):
+        current = client.get(endpoint).json()
+        response = client.put(endpoint, json={
+            'source_sha256': current['source_sha256'], 'expected_source_revision': current['source_revision'],
+            'expected_revision': current['revision'], 'spans': spans,
+        })
+        assert response.status_code == 200, response.text
+
+    original = start(client, application)
+    selection = [{'start': 0, 'end': len('Python')}]
+    save(selection)
+    original_state = client.get(f"/api/graph-reviews/{original['id']}").json()['state']
+    assert original_state['screening_preview']['status'] == 'stale'
+    masked = start(client, application)
+    assert masked['state']['screening_preview']['score']['score'] == 0
+    assert 'private-marker-xqz123' not in json.dumps(masked['state']['screening_preview']['score'])
+    save([])
+    save(selection)
+    assert client.get(f"/api/graph-reviews/{masked['id']}").json()['state']['screening_preview']['status'] == 'stale'
+    response = client.post(f"/api/graph-reviews/{masked['id']}/resume", json={
+        'reviewed': True, 'approval_fingerprint': masked['state']['action_proposal']['approval_fingerprint']})
+    assert response.status_code == 409
+    with connect(path) as db:
+        assert counts(db, application) == (0, 0, 0)
+
+
 @pytest.mark.parametrize('mutation', ['resume', 'restored_resume', 'job', 'restored_job', 'candidate', 'status', 'restored_status', 'screened', 'restored_screened'])
 def test_changed_inputs_invalidate_review(case, mutation):
     client, path, application = case
@@ -121,12 +151,12 @@ def test_screening_algorithm_change_invalidates_approval(case, monkeypatch):
 
     client, path, application = case
     data = start(client, application)
-    original = graph_orchestrator.score_resume
+    original = graph_orchestrator.score_masked_resume
 
     def changed_score(job, text):
         return {**original(job, text), 'score': 99}
 
-    monkeypatch.setattr(graph_orchestrator, 'score_resume', changed_score)
+    monkeypatch.setattr(graph_orchestrator, 'score_masked_resume', changed_score)
     assert client.get(f"/api/graph-reviews/{data['id']}").json()['state']['screening_preview']['status'] == 'stale'
     response = client.post(f"/api/graph-reviews/{data['id']}/resume", json={
         'reviewed': True, 'approval_fingerprint': data['state']['action_proposal']['approval_fingerprint']})

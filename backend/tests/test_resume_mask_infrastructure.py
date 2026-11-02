@@ -9,15 +9,13 @@ from fastapi.testclient import TestClient
 from app.db import connect
 from app.main import create_app
 from app.recruitment import score_resume
-from app.resume_mask import initialize_resume_masks, masked_source, router
+from app.resume_mask import initialize_resume_masks, masked_source
 
 
 @pytest.fixture
 def setup(tmp_path):
     path = tmp_path / 'mask.sqlite3'
     app = create_app(path, seed_demo=True)
-    # Explicitly opt into this infrastructure until all consumers are switched.
-    app.include_router(router)
     with TestClient(app, raise_server_exceptions=False) as client:
         initialize_resume_masks(path)
         initialize_resume_masks(path)
@@ -35,9 +33,10 @@ def payload(view, spans):
             'expected_revision': view['revision'], 'spans': spans}
 
 
-def test_infrastructure_is_not_exposed_by_default(tmp_path):
-    app = create_app(tmp_path / 'unwired.sqlite3', seed_demo=True)
-    assert not any(getattr(route, 'path', '').endswith('/resume/mask') for route in app.routes)
+def test_review_endpoint_requires_authentication(tmp_path):
+    app = create_app(tmp_path / 'authentication.sqlite3', seed_demo=True)
+    with TestClient(app) as client:
+        assert client.get('/api/applications/1/resume/mask').status_code == 401
 
 
 def test_masked_source_preserves_offsets_and_changes_name_based_mention(setup):
@@ -133,9 +132,30 @@ def test_audit_failure_rolls_back_mask_and_revision(setup):
     endpoint = f'/api/applications/{app_id}/resume/mask'
     item = payload(client.get(endpoint).json(), [{'start': 0, 'end': 5}])
     with connect(path) as db:
+        db.execute("UPDATE applications SET score_json=? WHERE id=?", ('{\"score\":42}', app_id))
         db.execute("""CREATE TRIGGER abort_mask BEFORE INSERT ON audit_events
             WHEN NEW.action='resume_mask_reviewed' BEGIN SELECT RAISE(ABORT, 'failure'); END""")
     assert client.put(endpoint, json=item).status_code == 500
     with connect(path) as db:
         assert db.execute('SELECT COUNT(*) FROM resume_masks').fetchone()[0] == 0
         assert db.execute('SELECT COUNT(*) FROM resume_mask_state').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM resume_mask_prior_scores').fetchone()[0] == 0
+        assert db.execute('SELECT score_json FROM applications WHERE id=?', (app_id,)).fetchone()[0] == '{"score":42}'
+
+
+def test_mask_review_archives_score_and_invalidates_publication_atomically(setup):
+    path, client, app_id = setup
+    endpoint = f'/api/applications/{app_id}/resume/mask'
+    view = client.get(endpoint).json()
+    with connect(path) as db:
+        db.execute("UPDATE applications SET score_json=? WHERE id=?", ('{\"score\":42}', app_id))
+        before = db.execute('SELECT revision FROM rubric_publication_revisions WHERE application_id=?', (app_id,)).fetchone()
+        previous_revision = before[0] if before else 0
+    assert client.put(endpoint, json=payload(view, [{'start': 0, 'end': 5}])).status_code == 200
+    with connect(path) as db:
+        assert db.execute('SELECT score_json FROM applications WHERE id=?', (app_id,)).fetchone()[0] is None
+        assert db.execute('SELECT revision FROM rubric_publication_revisions WHERE application_id=?', (app_id,)).fetchone()[0] == previous_revision + 1
+    archived = client.get(endpoint + '/prior-scores')
+    assert archived.status_code == 200 and archived.json()['entries'][0]['result'] == {'score': 42}
+    assert client.post('/api/auth/login', json={'username': 'candidate', 'password': 'candidate-demo-only'}).status_code == 200
+    assert client.get(endpoint + '/prior-scores').status_code == 403
