@@ -44,10 +44,26 @@ def matching_snapshot(db, application_id: int) -> tuple[str, dict]:
         FROM rubric_evidence WHERE application_id=? ORDER BY id''', (application_id,))]
     review_row = latest_field_review(db, application_id)
     field_review = dict(review_row) if review_row else None
-    raw = json.dumps({'application_id': application_id, 'job': dict(job),
-                      'source': source, 'source_context': blind['context_sha256'], 'criteria': criteria, 'assessment': assessment_data,
-                      'evidence': evidence, 'field_review': field_review}, ensure_ascii=False,
-                     sort_keys=True, separators=(',', ':'))
+    # Preserve the prior checkpoint digest only while the source was never
+    # edited or masked and all stored records still use the old schema shape.
+    # A new review or any mask/source revision binds the new context, so a
+    # change followed by a revert cannot revive a historical checkpoint.
+    legacy = (blind['source_revision'] == 0 and blind['mask_revision'] == 0
+              and (assessment_data is None or assessment_data['source_context'] is None)
+              and all(item['source_context'] is None for item in evidence)
+              and (field_review is None or field_review['source_context'] is None))
+    snapshot = {'application_id': application_id, 'job': dict(job), 'source': source,
+                'criteria': criteria, 'assessment': assessment_data,
+                'evidence': evidence, 'field_review': field_review}
+    if legacy:
+        snapshot['assessment'] = ({k: v for k, v in assessment_data.items() if k != 'source_context'}
+                                  if assessment_data else None)
+        snapshot['evidence'] = [{k: v for k, v in row.items() if k != 'source_context'} for row in evidence]
+        snapshot['field_review'] = ({k: v for k, v in field_review.items() if k != 'source_context'}
+                                    if field_review else None)
+    else:
+        snapshot['source_context'] = blind['context_sha256']
+    raw = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     digest = hashlib.sha256(raw.encode('utf-8')).hexdigest()
     if len(source) > MAX_SOURCE_CHARS:
         reviewed_fields = {'status': 'limit_exceeded', 'fields': []}

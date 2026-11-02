@@ -87,8 +87,6 @@ def _base(db, application_id: int):
         raise HTTPException(status_code=404, detail='Application not found')
     raw = row['resume_text']
     source = redact_resume(raw).text
-    if len(source) > MAX_SOURCE_CHARS:
-        raise HTTPException(status_code=422, detail='Redacted resume exceeds the review limit')
     state = db.execute('SELECT source_revision,mask_revision FROM resume_mask_state WHERE application_id=?',
                        (application_id,)).fetchone()
     revision = state['mask_revision'] if state else 0
@@ -159,6 +157,8 @@ def read_mask(application_id: int, request: Request, user: HR):
         db.execute('BEGIN')
         _require_current_role(db, request, user, 'hr')
         raw, base, source_revision, revision = _base(db, application_id)
+        if len(base) > MAX_SOURCE_CHARS:
+            raise HTTPException(status_code=422, detail='Redacted resume exceeds the review limit')
         saved = db.execute('SELECT source_revision,source_sha256,raw_sha256,spans_json FROM resume_masks '
                            'WHERE application_id=? AND revision=?', (application_id, revision)).fetchone() if revision else None
         status, spans = 'unreviewed', []
@@ -189,6 +189,8 @@ def save_mask(application_id: int, payload: MaskSave, request: Request, user: HR
         db.execute('BEGIN IMMEDIATE')
         _require_current_role(db, request, user, 'hr')
         raw, base, source_revision, revision = _base(db, application_id)
+        if len(base) > MAX_SOURCE_CHARS:
+            raise HTTPException(status_code=422, detail='Redacted resume exceeds the review limit')
         if (payload.source_sha256 != _digest(base) or payload.expected_source_revision != source_revision
                 or payload.expected_revision != revision):
             raise HTTPException(status_code=409, detail='Resume or mask changed; reload before saving')

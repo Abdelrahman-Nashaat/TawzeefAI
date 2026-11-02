@@ -49,7 +49,7 @@ def test_extract_headings_preserves_exact_text_tables_and_v1_fallback():
 
 def test_invalid_sections_fail_closed_and_legacy_digest_is_unchanged():
     source = Source('old', 'Title', 'Text')
-    old = {k: v for k, v in asdict(source).items() if k not in ('page', 'section')}
+    old = {k: v for k, v in asdict(source).items() if k not in ('page', 'section', 'extraction', 'extraction_notice')}
     expected = hashlib.sha256(json.dumps(old, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     assert _digest(source) == expected
     assert _digest(Source('old', 'Title', 'Text', section='Section')) != expected

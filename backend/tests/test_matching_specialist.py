@@ -100,7 +100,8 @@ def test_assessment_fingerprint_detects_changed_labels_and_unversioned_history(t
             'category': 'mandatory', 'label': 'Python',
         }).json()
         endpoint = f'/api/applications/{app_id}/rubric/assessment'
-        assert client.post(endpoint, json={'judgments': []}).status_code == 201
+        source = client.get(f'/api/applications/{app_id}/rubric/source').json()
+        assert client.post(endpoint, json={'judgments': [], 'expected_source_context': source['source_context']}).status_code == 201
         assert client.get(endpoint).json()['outdated'] is False
         with connect(path) as db:
             db.execute('UPDATE rubric_criteria SET label=? WHERE id=?', ('Rust', int(criterion['criterion_ref'][2:])))
@@ -118,7 +119,8 @@ def test_assessment_fingerprint_detects_changed_labels_and_unversioned_history(t
         assert client.get(endpoint).json()['outdated'] is True
         review = client.post('/api/graph-reviews', json={'application_id': app_id}).json()
         assert review['state']['matching_specialist']['status'] == 'outdated'
-        assert client.post(endpoint, json={'judgments': []}).status_code == 201
+        source = client.get(f'/api/applications/{app_id}/rubric/source').json()
+        assert client.post(endpoint, json={'judgments': [], 'expected_source_context': source['source_context']}).status_code == 201
         assert client.get(endpoint).json()['outdated'] is False
         with connect(path) as db:
             db.execute('UPDATE rubric_assessments SET criteria_fingerprint=NULL WHERE application_id=?', (app_id,))

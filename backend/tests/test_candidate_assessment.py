@@ -144,8 +144,12 @@ def test_changed_then_reverted_input_requires_a_new_preview(scenario, mutation):
             db.execute('UPDATE rubric_evidence SET excerpt=? WHERE id=?', (row['excerpt'], row['id']))
     assert client.put(publication_path, json=payload).status_code == 409
     refreshed = client.get(publication_path).json()
-    assert refreshed['status'] == 'current'
-    assert refreshed['snapshot_digest'] != payload['snapshot_digest']
+    if mutation == 'resume':
+        assert refreshed['status'] == 'outdated'
+        assert refreshed['snapshot_digest'] is None
+    else:
+        assert refreshed['status'] == 'current'
+        assert refreshed['snapshot_digest'] != payload['snapshot_digest']
     login(client, 'candidate')
     assert client.get(f'/api/applications/{app_id}/candidate-assessment').json() == {'status': 'unavailable'}
 

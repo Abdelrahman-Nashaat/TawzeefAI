@@ -77,6 +77,11 @@ def _has_explicit_negation(text: str) -> bool:
     return bool(_qualifier_words(text) & _NEGATION_WORDS or _NEGATED_CONTRACTION.search(text))
 
 
+def _title_only_match(terms: set[str], source: Source) -> bool:
+    """Identify matches supported entirely by the title, not the passage."""
+    return bool(terms and terms <= _tokens(source.title) and not terms.intersection(_tokens(source.text)))
+
+
 def _arabic_inflection_leads(question: str, terms: set[str], lexical: list[tuple[float, Source]]) -> list[Source]:
     """Find bounded spelling leads, not semantic matches or answer evidence."""
     if _has_explicit_negation(question):
@@ -346,7 +351,8 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
     lexical = _rank_lexical(terms, initial)
     ranked = [(score, source) for score, source in lexical
               if not negated_question and not _has_explicit_negation(source.title + ' ' + source.text)
-              and terms <= _tokens(source.title + ' ' + source.text) and _qualifiers_match(question, source)]
+              and terms <= _tokens(source.title + ' ' + source.text) and terms.intersection(_tokens(source.text))
+              and _qualifiers_match(question, source)]
     if negated_question or any(_has_explicit_negation(source.title + ' ' + source.text) for _, source in lexical):
         notice = ' '.join(filter(None, (notice, ('Negation was detected in the question or a matching source; '
             'its scope requires manual review and relevant passages may have been omitted.'))))
@@ -433,8 +439,9 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
         current = {source.id: source for source in _current(path, user, authorize)}
         if any(current.get(source.id) != source for source in suggested):
             raise PermissionError('Policy source authorization changed')
-        answerable = [source for source in suggested if not _has_explicit_negation(source.title + ' ' + source.text)]
-        if hybrid_answers and len(answerable) != len(suggested):
+        answerable = [source for source in suggested if not _has_explicit_negation(source.title + ' ' + source.text)
+                      and not _title_only_match(terms, source)]
+        if hybrid_answers and any(_has_explicit_negation(source.title + ' ' + source.text) for source in suggested):
             notice = ' '.join(filter(None, (notice, ('A possible source contains negation and was omitted from the '
                 'experimental answer; review source material manually.'))))
         if hybrid_answers and answerable:
@@ -461,6 +468,16 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
                 raise PermissionError('Policy source authorization changed')
         if not hybrid_suggestions:
             suggested = []
+        existing = {source.id for source in suggested}
+        title_leads = [source for _, source in lexical if not negated_question and source.id not in existing
+                       and _title_only_match(terms, source) and _qualifiers_match(question, source)]
+        if title_leads:
+            suggested = (suggested + title_leads)[:3]
+            current = {source.id: source for source in _current(path, user, authorize)}
+            if any(current.get(source.id) != source for source in suggested):
+                raise PermissionError('Policy source authorization changed')
+            notice = ' '.join(filter(None, (notice, ('The query matched a title, not its passage; '
+                'the passage may be unrelated.'))))
         existing = {source.id for source in suggested}
         lexical_leads = [source for source in _arabic_inflection_leads(question, terms, lexical)
                          if source.id not in existing]
