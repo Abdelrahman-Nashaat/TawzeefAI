@@ -2117,30 +2117,92 @@ function setupKnowledgeDocuments() {
   const fileOcr = element("select");
   for (const [value, labelText] of [["", "No OCR"], ["eng", "English"], ["eng+ara", "English and Arabic"]]) { const option = element("option", "", labelText); option.value = value; fileOcr.append(option); }
   fileOcrLabel.append(fileOcr);
+  const sectionHelp = element("p", "subtle-note", "Optional: preview a PDF and select heading lines to keep policy sections separate. Verify extraction and reading order against the original.");
+  const previewButton = element("button", "outline-button", "Preview PDF headings"); previewButton.type = "button";
+  const previewResult = element("div", "application-detail"); previewResult.setAttribute("aria-live", "polite");
+  let previewState = null;
+  let previewGeneration = 0;
+  function clearSectionPreview() { previewGeneration++; previewState = null; previewResult.replaceChildren(); }
+  fileInput.addEventListener("change", clearSectionPreview);
+  fileOcr.addEventListener("change", clearSectionPreview);
   const fileButton = element("button", "small-button", "رفع المستند"); fileButton.type = "submit";
-  fileForm.append(fileLabel, fileOcrLabel, fileButton);
+  fileForm.append(fileLabel, fileOcrLabel, sectionHelp, previewButton, previewResult, fileButton);
+  previewButton.addEventListener("click", async () => {
+    const file = fileInput.files?.[0];
+    if (!file || !file.name.toLowerCase().endsWith(".pdf")) { report("Choose a PDF before previewing headings.", true); return; }
+    if (file.size > 5 * 1024 * 1024) { report("The file exceeds 5 MiB.", true); return; }
+    clearSectionPreview();
+    const generation = previewGeneration;
+    const language = fileOcr.value;
+    previewButton.disabled = true; fileButton.disabled = true; fileInput.disabled = true; fileOcr.disabled = true;
+    previewResult.replaceChildren(element("p", "subtle-note", "Extracting a preview. This does not save the document."));
+    try {
+      const params = new URLSearchParams({filename: file.name});
+      if (language) { params.set("ocr", "true"); params.set("ocr_language", language); }
+      const preview = await api(`/api/knowledge/pdf-section-preview?${params}`, {method: "POST", headers: {"Content-Type": "application/octet-stream"}, body: file});
+      if (generation !== previewGeneration || !previewResult.isConnected) return;
+      if (!/^[a-f0-9]{64}$/.test(preview.source_sha256 || "") || !Array.isArray(preview.pages) ||
+          preview.pages.some((page, index) => page.page !== index + 1 || !Array.isArray(page.lines) || page.lines.some((line) => typeof line !== "string")) ||
+          preview.pages.reduce((count, page) => count + page.lines.length, 0) > 2000) {
+        throw new Error("This preview cannot be displayed safely. Upload without selected headings or use a smaller PDF.");
+      }
+      const controls = [];
+      const wrapper = element("div");
+      wrapper.append(element("p", "subtle-note", "Select up to 100 heading lines. A selected section continues across pages until the next heading. Similar or repeated headings can be selected separately."));
+      for (const page of preview.pages) {
+        const group = element("details");
+        group.append(element("summary", "", `Page ${page.page}${preview.ocr_pages?.includes(page.page) ? " · OCR text; verify original" : ""}`));
+        const rows = element("div");
+        page.lines.forEach((line, index) => {
+          const label = element("label", "", `Line ${index + 1}: ${line}`);
+          const checkbox = element("input"); checkbox.type = "checkbox";
+          checkbox.disabled = !line.trim() || line.trim().length > 200 || /[\u0000-\u001f]/.test(line.trim());
+          label.prepend(checkbox); rows.append(label);
+          controls.push({checkbox, page: page.page, line: index});
+        });
+        group.append(rows); wrapper.append(group);
+      }
+      previewState = {fingerprint: preview.source_sha256, file, language, controls};
+      previewResult.replaceChildren(wrapper);
+      report("Preview ready. Select heading lines or upload normally without selections.");
+    } catch (error) {
+      if (!isStale(error) && previewResult.isConnected && generation === previewGeneration) {
+        previewState = null;
+        previewResult.replaceChildren(element("p", "form-error", error instanceof TypeError ? "Could not connect to the server." : error.message));
+      }
+    } finally {
+      previewButton.disabled = false; fileButton.disabled = false; fileInput.disabled = false; fileOcr.disabled = false;
+    }
+  });
   fileForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const file = fileInput.files?.[0];
     const documentTitle = fileFields.titleInput.value.trim();
     if (!file || !documentTitle || !fileFields.audience.value) { report("أكمل العنوان والملف والصلاحية.", true); return; }
     if (file.size > 5 * 1024 * 1024) { report("حجم الملف أكبر من 5 ميجابايت.", true); return; }
-    fileButton.disabled = true;
+    const marks = previewState?.controls.filter((item) => item.checkbox.checked).map(({page, line}) => ({page, line})) || [];
+    if (marks.length > 100) { report("Select at most 100 heading lines.", true); return; }
+    if (marks.length && (previewState.file !== file || previewState.language !== fileOcr.value)) {
+      clearSectionPreview(); report("The file or OCR option changed. Preview again.", true); return;
+    }
+    fileButton.disabled = true; previewButton.disabled = true; fileInput.disabled = true; fileOcr.disabled = true;
     try {
       const params = new URLSearchParams({ title: documentTitle, audience: fileFields.audience.value, collection: fileFields.collection.value, filename: file.name });
       if (fileFields.job.value) params.set("job_id", fileFields.job.value);
       if (fileOcr.value) { params.set("ocr", "true"); params.set("ocr_language", fileOcr.value); }
-      const uploaded = await api(`/api/knowledge/documents?${params}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
+      if (marks.length) { params.set("pdf_selected_headings", JSON.stringify(marks)); params.set("pdf_preview_sha256", previewState.fingerprint); }
+      const uploaded = await api(`/api/knowledge/documents?${params}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file }, {errorMessages: {409: "The file or extracted text changed. Preview and select headings again."}});
       fileForm.reset();
+      clearSectionPreview();
       fileFields.collection.dispatchEvent(new Event("change"));
       fileFields.audience.value = "";
       const pages = Number.isInteger(uploaded.page_count)
         ? ` Extracted text from ${uploaded.pages_with_text} of ${uploaded.page_count} pages.${uploaded.ocr_pages?.length ? ` OCR used on pages ${uploaded.ocr_pages.join(", ")}; review the text for errors.` : ""}` : "";
-      report(`رُفع المستند وحُفظ نصه.${pages}`);
+      report(`رُفع المستند وحُفظ نصه.${pages}${uploaded.section_notice ? ` ${uploaded.section_notice}` : ""}`);
       try { await refresh(); }
       catch (error) { if (!isStale(error)) report("رُفع المستند، لكن تعذّر تحديث القائمة. أعد تحميل الصفحة.", true); }
     } catch (error) { if (!isStale(error)) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
-    finally { fileButton.disabled = false; }
+    finally { fileButton.disabled = false; previewButton.disabled = false; fileInput.disabled = false; fileOcr.disabled = false; }
   });
 
   panel.append(message, textForm, fileForm, element("h3", "", "المستندات المضافة"), list);

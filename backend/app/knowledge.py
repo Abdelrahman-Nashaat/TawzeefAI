@@ -18,7 +18,11 @@ from pathlib import Path
 from app.ai_provider import ProviderUnavailable, generate_with_groq
 from app.db import connect
 from app.document_text import OCR_NOTICE
-from app.knowledge_documents import fetch_authorized_documents
+from app.knowledge_documents import (
+    annotate_pdf_markdown_pages,
+    annotate_pdf_selected_pages,
+    fetch_authorized_documents,
+)
 from app.knowledge_documents import include_sample_policies as are_samples_enabled
 
 DEFAULT_FIXTURES = Path(__file__).resolve().parents[2] / 'data' / 'fixtures'
@@ -188,6 +192,35 @@ def _document_passages(document: dict) -> list[Source]:
                 return []
             if ocr_pages is not None and any(p > len(pages) for p in ocr_pages):
                 return []
+            marked = ['markdown_sections_v1' in page for page in pages]
+            selected = ['selected_headings_v1' in page or 'selected_sections_v1' in page for page in pages]
+            if any(marked) and any(selected):
+                return []
+            if any(selected):
+                if not all(selected):
+                    return []
+                base = [{'page': page['page'], 'text': page['text']} for page in pages]
+                marks = []
+                for page in pages:
+                    if not isinstance(page.get('selected_headings_v1'), list):
+                        return []
+                    marks.extend({'page': page['page'], 'line': line} for line in page['selected_headings_v1'])
+                expected = annotate_pdf_selected_pages(base, marks)
+                if json.dumps(pages, ensure_ascii=False, sort_keys=True) != json.dumps(expected, ensure_ascii=False, sort_keys=True):
+                    return []
+                pages = [{'page': page['page'], 'section': span['section'],
+                          'text': page['text'][span['start']:span['end']]}
+                         for page in pages for span in page['selected_sections_v1']]
+            elif any(marked):
+                if not all(marked):
+                    return []
+                base = [{'page': page['page'], 'text': page['text']} for page in pages]
+                expected = annotate_pdf_markdown_pages(base)
+                if json.dumps(pages, ensure_ascii=False, sort_keys=True) != json.dumps(expected, ensure_ascii=False, sort_keys=True):
+                    return []
+                pages = [{'page': page['page'], 'section': span['section'],
+                          'text': page['text'][span['start']:span['end']]}
+                         for page in pages for span in page['markdown_sections_v1']]
         except (TypeError, ValueError):
             return []
     elif stored_sections is not None:

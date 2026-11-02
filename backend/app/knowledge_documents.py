@@ -1,6 +1,9 @@
 """Local HR-managed knowledge documents; content is always untrusted data."""
 
+import asyncio
+import hashlib
 import json
+import re
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 
@@ -25,6 +28,87 @@ router = APIRouter(prefix="/api/knowledge")
 HR = Annotated[User, Depends(require_roles("hr"))]
 Audience = Literal["public", "staff", "hr"]
 Collection = Literal["legacy_unclassified", "handbook", "job_description", "past_hire_patterns"]
+
+_PDF_MARKDOWN_HEADING = re.compile(r'^[ \t]{0,3}#{1,6}[ \t]+([^\r\n]{1,200}?)[ \t]*$')
+_MAX_PDF_HEADINGS = 1000
+_MAX_SELECTED_HEADINGS = 100
+
+
+def pdf_preview_digest(pages: list[dict], ocr_pages: list[int] | None, content: bytes,
+                       language: str | None) -> str:
+    raw = json.dumps({'pages': pages, 'ocr_pages': ocr_pages, 'language': language,
+                      'file_sha256': hashlib.sha256(content).hexdigest()}, sort_keys=True,
+                     ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def annotate_pdf_selected_pages(pages: list[dict], marks: list[dict]) -> list[dict]:
+    """Split only at reviewer-selected page/line coordinates in extracted text."""
+    if not isinstance(marks, list) or not 1 <= len(marks) <= _MAX_SELECTED_HEADINGS:
+        raise ValueError('Select between 1 and 100 heading lines.')
+    selected = set()
+    for mark in marks:
+        if (not isinstance(mark, dict) or set(mark) != {'page', 'line'}
+                or type(mark['page']) is not int or type(mark['line']) is not int
+                or not 1 <= mark['page'] <= len(pages) or mark['line'] < 0):
+            raise ValueError('Invalid heading selection.')
+        key = (mark['page'], mark['line'])
+        if key in selected:
+            raise ValueError('A heading line cannot be selected twice.')
+        selected.add(key)
+    result, current, found = [], None, set()
+    for page in pages:
+        text, spans, positions = page['text'], [], []
+        start = position = 0
+        for line_index, line in enumerate(text.splitlines(keepends=True)):
+            key = (page['page'], line_index)
+            if key in selected:
+                label = line.strip()
+                if not label or len(label) > 200 or any(ord(c) < 32 for c in label):
+                    raise ValueError('Selected headings must contain 1–200 printable characters.')
+                found.add(key)
+                positions.append(line_index)
+                if position > start:
+                    spans.append({'start': start, 'end': position, 'section': current})
+                current, start = label, position
+            position += len(line)
+        if start < len(text):
+            spans.append({'start': start, 'end': len(text), 'section': current})
+        result.append({'page': page['page'], 'text': text,
+                       'selected_headings_v1': positions, 'selected_sections_v1': spans})
+    if found != selected:
+        raise ValueError('A selected heading line does not exist.')
+    return result
+
+
+def annotate_pdf_markdown_pages(pages: list[dict]) -> list[dict]:
+    """Preserve text and mark only literal Markdown heading lines across PDF pages.
+
+    A section carries to the next physical page until a new explicit heading.
+    These hints do not infer typography, reading order, or document semantics.
+    """
+    result = []
+    current = None
+    headings = 0
+    for page in pages:
+        text = page['text']
+        spans = []
+        start = position = 0
+        for line in text.splitlines(keepends=True):
+            match = _PDF_MARKDOWN_HEADING.fullmatch(line.rstrip('\r\n'))
+            title = match.group(1).strip() if match else ''
+            if title:
+                headings += 1
+                if headings > _MAX_PDF_HEADINGS:
+                    raise ValueError('PDF contains too many explicit headings')
+                if position > start:
+                    spans.append({'start': start, 'end': position, 'section': current})
+                current, start = title, position
+            position += len(line)
+        if start < len(text):
+            spans.append({'start': start, 'end': len(text), 'section': current})
+        result.append({'page': page['page'], 'text': text, 'markdown_sections_v1': spans})
+    return result
 
 
 def initialize_knowledge_documents(path: str | Path, *, include_samples: bool = False) -> None:
@@ -117,7 +201,7 @@ class TextDocument(BaseModel):
 def store_document(path: str | Path, user: User, title: str, audience: str, text: str, filename: str | None,
                    pages: list[dict] | None = None, collection: Collection = 'legacy_unclassified',
                    job_id: str | None = None, sections: list[dict] | None = None,
-                   ocr_pages: list[int] | None = None) -> dict:
+                   ocr_pages: list[int] | None = None, authorize=None) -> dict:
     if collection not in ('legacy_unclassified', 'handbook', 'job_description', 'past_hire_patterns'):
         raise ValueError('Unsupported knowledge collection')
     # Historical hire patterns must never become public through their audience.
@@ -125,6 +209,8 @@ def store_document(path: str | Path, user: User, title: str, audience: str, text
         audience = 'hr'
     with connect(path) as db:
         db.execute('BEGIN IMMEDIATE')
+        if authorize is not None:
+            authorize(db)
         if job_id is not None and not db.execute('SELECT 1 FROM jobs WHERE id = ?', (job_id,)).fetchone():
             raise HTTPException(status_code=422, detail='Unknown job identifier')
         cursor = db.execute(
@@ -143,6 +229,8 @@ def store_document(path: str | Path, user: User, title: str, audience: str, text
             result.update(page_count=len(pages), pages_with_text=sum(bool(page['text']) for page in pages),
                           notice=OCR_NOTICE if ocr_pages is not None else 'Only extractable text is indexed; blank or scanned pages are not processed with OCR.')
         result['ocr_pages'] = ocr_pages
+        if authorize is not None:
+            authorize(db)
         return result
 
 
@@ -202,6 +290,63 @@ def include_sample_policies(path: str | Path) -> bool:
         return bool(row['include_sample_policies']) if row is not None else False
 
 
+async def _extract_upload(request: Request, filename: str, ocr: bool, language: str):
+    """Bound concurrent knowledge uploads, body buffering and local extraction."""
+    if not hasattr(request.app.state, 'knowledge_extract_limiter'):
+        request.app.state.knowledge_extract_limiter = asyncio.Semaphore(2)
+    limiter = request.app.state.knowledge_extract_limiter
+    try:
+        await asyncio.wait_for(limiter.acquire(), timeout=15)
+    except TimeoutError:
+        raise HTTPException(status_code=503, detail='Document extraction is busy; retry shortly.') from None
+    try:
+        chunks = bytearray()
+        async for chunk in request.stream():
+            if len(chunks) + len(chunk) > MAX_FILE_BYTES:
+                raise HTTPException(status_code=413, detail='File exceeds 5 MiB limit')
+            chunks.extend(chunk)
+        content = bytes(chunks)
+        try:
+            if ocr:
+                require_ocr_enabled()
+                pages, ocr_pages = await run_in_threadpool(extract_pdf_pages_with_ocr, filename, content, language)
+                text, sections = '\n'.join(page['text'] for page in pages if page['text']), None
+            elif filename.lower().endswith('.pdf'):
+                pages = await run_in_threadpool(extract_pdf_pages, filename, content)
+                ocr_pages, sections = None, None
+                text = '\n'.join(page['text'] for page in pages if page['text'])
+            else:
+                pages, ocr_pages = None, None
+                text, sections = await run_in_threadpool(extract_docx_sections, filename, content)
+        except DocumentTextError as exc:
+            raise HTTPException(status_code=422, detail={'code': exc.code, 'message': str(exc)}) from exc
+        return content, text, pages, sections, ocr_pages
+    finally:
+        limiter.release()
+
+
+@router.post('/pdf-section-preview')
+async def preview_pdf_sections(request: Request, user: HR, filename: str,
+                               ocr: bool = False, ocr_language: Literal['eng', 'eng+ara'] = 'eng'):
+    """Preview untrusted PDF text for explicit heading selection without storing it."""
+    from app.recruitment import _require_current_role
+
+    try:
+        filename = clean_filename(filename)
+        if not filename.lower().endswith('.pdf'):
+            raise ValueError('Only PDF documents support heading preview.')
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    content, _, pages, _, ocr_pages = await _extract_upload(request, filename, ocr, ocr_language)
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_role(db, request, user, 'hr')
+    display_pages = [{**page, 'lines': page['text'].splitlines()} for page in pages]
+    return {'pages': display_pages, 'ocr_pages': ocr_pages,
+            'source_sha256': pdf_preview_digest(pages, ocr_pages, content, ocr_language if ocr else None),
+            'notice': 'Select headings by page and zero-based line index; extracted text and OCR can be inaccurate.'}
+
+
 class KnowledgeSettings(BaseModel):
     include_sample_policies: bool = Field(strict=True)
 
@@ -232,32 +377,51 @@ def add_text_document(payload: TextDocument, request: Request, user: HR):
 async def add_document(request: Request, user: HR, title: str, audience: Audience, filename: str,
                        collection: Collection = 'legacy_unclassified',
                        job_id: Annotated[str | None, Query(min_length=1, max_length=64, pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$')] = None,
-                       ocr: bool = False, ocr_language: Literal['eng', 'eng+ara'] = 'eng'):
+                       ocr: bool = False, ocr_language: Literal['eng', 'eng+ara'] = 'eng',
+                       pdf_markdown_sections: bool = False,
+                       pdf_selected_headings: Annotated[str | None, Query(max_length=8000)] = None,
+                       pdf_preview_sha256: Annotated[str | None, Query(pattern=r'^[a-f0-9]{64}$')] = None):
     try:
         title = clean_title(title)
         filename = clean_filename(filename)
+        if pdf_markdown_sections and not filename.lower().endswith('.pdf'):
+            raise ValueError('Explicit PDF sections are available only for PDF uploads')
+        if bool(pdf_selected_headings) != bool(pdf_preview_sha256):
+            raise ValueError('Selected headings and preview fingerprint must be provided together.')
+        if pdf_selected_headings and (pdf_markdown_sections or not filename.lower().endswith('.pdf')):
+            raise ValueError('Selected headings require a PDF and cannot be combined with Markdown detection.')
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    chunks = bytearray()
-    async for chunk in request.stream():
-        if len(chunks) + len(chunk) > MAX_FILE_BYTES:
-            raise HTTPException(status_code=413, detail="File exceeds 5 MiB limit")
-        chunks.extend(chunk)
+    content, text, pages, sections, ocr_pages = await _extract_upload(request, filename, ocr, ocr_language)
     try:
-        ocr_pages = None
-        if ocr:
-            require_ocr_enabled()
-            pages, ocr_pages = await run_in_threadpool(extract_pdf_pages_with_ocr, filename, bytes(chunks), ocr_language)
-            text = '\n'.join(page['text'] for page in pages if page['text'])
-            sections = None
-        elif filename.lower().endswith('.pdf'):
-            pages = await run_in_threadpool(extract_pdf_pages, filename, bytes(chunks))
-            text = '\n'.join(page['text'] for page in pages if page['text'])
-            sections = None
-        else:
-            pages = None
-            text, sections = await run_in_threadpool(extract_docx_sections, filename, bytes(chunks))
+        if pdf_selected_headings:
+            if pdf_preview_sha256 != pdf_preview_digest(pages, ocr_pages, content, ocr_language if ocr else None):
+                raise HTTPException(status_code=409, detail='PDF extraction differs from the preview; select headings again.')
+            try:
+                marks = json.loads(pdf_selected_headings)
+                pages = annotate_pdf_selected_pages(pages, marks)
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(status_code=422, detail='Invalid PDF heading selection.') from exc
+        elif pdf_markdown_sections:
+            try:
+                pages = annotate_pdf_markdown_pages(pages)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
     except DocumentTextError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
-    return store_document(request.app.state.database_path, user, title, audience, text, filename, pages,
-                          collection=collection, job_id=job_id, sections=sections, ocr_pages=ocr_pages)
+    from app.recruitment import _require_current_role
+
+    result = store_document(request.app.state.database_path, user, title, audience, text, filename, pages,
+                            collection=collection, job_id=job_id, sections=sections, ocr_pages=ocr_pages,
+                            authorize=lambda db: _require_current_role(db, request, user, 'hr'))
+    if pdf_markdown_sections:
+        count = sum(1 for page in pages for line in page['text'].splitlines()
+                    if (match := _PDF_MARKDOWN_HEADING.fullmatch(line)) and match.group(1).strip())
+        result.update(pdf_markdown_headings=count,
+                      section_notice='Only literal Markdown headings were recognized. Section labels carry across '
+                                     'pages until another marked heading; unmarked headings are not detected. '
+                                     'Check the source and reading order.')
+    if pdf_selected_headings:
+        result.update(pdf_selected_heading_count=len(marks),
+                      section_notice='Headings were selected by HR from extracted text; review source pages and reading order.')
+    return result
