@@ -203,22 +203,31 @@ def test_abandoned_process_releases_lock_but_requires_external_review(setup):
     notice = send(client, interview, preview(client, interview)['fingerprint']).json()
     with connect(path) as db:
         db.execute("UPDATE cancellation_notices SET state='sending' WHERE id=?", (notice['id'],))
-    script = ("import sys,time; from app.google_cancellation import _notice_lock; "
-              "lock=_notice_lock(sys.argv[1]); lock.__enter__(); print('locked',flush=True); time.sleep(120)")
-    child = subprocess.Popen([sys.executable, '-c', script, str(path)], stdout=subprocess.PIPE, text=True)
+    # On Windows a virtual-environment executable can be a redirector that
+    # spawns the actual Python process. Trigger the crash inside the process
+    # holding the lock rather than terminating only its parent wrapper.
+    script = ("import os,sys; from app.google_cancellation import _notice_lock; "
+              "lock=_notice_lock(sys.argv[1]); lock.__enter__(); print('locked',flush=True); "
+              "sys.stdin.buffer.read(1); os._exit(73)")
+    child = subprocess.Popen([sys.executable, '-c', script, str(path)],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     try:
         assert child.stdout.readline().strip() == 'locked'
         resolve = f"/api/google/cancellation-notices/{notice['id']}/resolve"
         assert client.post(resolve, json={'confirmed': True, 'outcome': 'not_sent'}).status_code == 409
-        child.terminate()
-        child.wait(timeout=15)
+        child.stdin.write('x')
+        child.stdin.flush()
+        assert child.wait(timeout=15) == 73
         assert not preview(client, interview)['can_send']
-        assert client.post(resolve, json={'confirmed': True, 'outcome': 'not_sent'}).json()['state'] == 'verified_not_sent'
+        response = client.post(resolve, json={'confirmed': True, 'outcome': 'not_sent'})
+        assert response.status_code == 200, response.text
+        assert response.json()['state'] == 'verified_not_sent'
         assert preview(client, interview)['can_send']
     finally:
         if child.poll() is None:
             child.terminate()
             child.wait(timeout=15)
+        child.stdin.close()
         child.stdout.close()
 
 

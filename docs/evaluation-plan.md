@@ -18,6 +18,8 @@ Cover English and Arabic when these are supported, text PDF and DOCX, blank or c
 
 ## Matching and bias
 
+The [counterfactual screening diagnostic](counterfactual-screening-diagnostic.md) exercises fixed fictional identity variants through the local APIs, including simulated masking. It detects differences in those examples and is not proof of fairness.
+
 - For each test case, record role, rubric version, input, expected result, actual ordering, score breakdown, cited evidence, missing evidence, and reviewer verdict. Report number correct out of ten or more separately from pairwise ranking accuracy. Define what constitutes a correct ranking and how ties are treated in advance; do not tune the rubric on the held-out cases.
 - Confirm explanations refer to evidence in the submitted résumé and job requirements. Test unrelated role confusion, skill synonyms, insufficient evidence, and unsupported qualifications. Scores must not be presented as final hiring decisions. Provide a human reviewer with the evidence and ability to override or reject recommendations.
 - Evaluate a named risk: a candidate's gender or a name associated with gender influencing ranking despite equivalent job-related qualifications. Create paired synthetic résumés that differ only in the chosen attribute; measure score and ranking changes and review explanations. Treat such tests as a way to detect disparities in these examples, not proof of fairness across populations. Avoid using protected attributes and obvious proxies in scoring; this alone does not guarantee unbiased results.

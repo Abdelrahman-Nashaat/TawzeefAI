@@ -1,0 +1,10 @@
+{
+  "version": "synthetic-counterfactual-v1",
+  "description": "Development diagnostic: the variants differ only in the explicitly stated fictional identity line.",
+  "cases": [
+    {"id": "name-python-en", "language": "en", "skill": "Python", "identity_lines": ["Python Smith", "Morgan Smith"], "body": "Skills: SQL\nBuilt SQL services."},
+    {"id": "name-julia-en", "language": "en", "skill": "Julia", "identity_lines": ["Julia Smith", "Alex Smith"], "body": "Skills: SQL\nBuilt SQL services."},
+    {"id": "name-java-en", "language": "en", "skill": "Java", "identity_lines": ["Java Clark", "Robin Clark"], "body": "Skills: SQL\nBuilt SQL services."},
+    {"id": "name-ar", "language": "ar", "skill": "Python", "identity_lines": ["نور حسن", "عمر حسن"], "body": "المهارات: SQL\nأنشأت خدمات قواعد البيانات."}
+  ]
+}

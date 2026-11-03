@@ -226,6 +226,59 @@ def history(application_id: int, request: Request, user: HR):
                 'automatic_results': [dict(row) | {'actor': 'system_worker'} for row in automatic]}
 
 
+def provisional_application_state(db, application_id: int) -> dict:
+    """Return current provisional facts without reading resume text or changing state.
+
+    Caller owns the transaction and is responsible for HR authorization.
+    """
+    application = db.execute('SELECT id,status,job_id FROM applications WHERE id=?', (application_id,)).fetchone()
+    if application is None:
+        raise HTTPException(status_code=404, detail='Application not found')
+    job_id = application['job_id']
+    setting = _setting(db, job_id)
+    revision = _job_revision(db, job_id)
+    latest = _latest(db, application['id'])
+    snapshot_id = latest['id'] if latest else None
+    auto_state = None
+    origin = 'hr' if latest and latest['snapshot_kind'] == 'scored' else None
+    if latest and latest['snapshot_kind'] == 'pending':
+        automatic = db.execute('SELECT * FROM auto_provisional_jobs WHERE snapshot_id=?', (latest['id'],)).fetchone()
+        auto_state = automatic['state'] if automatic else None
+        if automatic and auto_state == 'done':
+            latest = dict(automatic) | {'id': snapshot_id, 'snapshot_kind': 'scored'}
+            origin = 'system_worker'
+    current = bool(latest and latest['snapshot_kind'] == 'scored' and latest['job_id'] == job_id
+                   and latest['job_revision'] == revision
+                   and latest['assignment_revision'] == _assignment_revision(db, application['id'])
+                   and (latest['source_revision'], latest['mask_revision']) == _source_revisions(db, application['id']))
+    if application['status'] in ('hired', 'rejected'):
+        recommendation = 'finalized'
+    elif not latest:
+        recommendation = 'not_screened'
+    elif latest['snapshot_kind'] == 'pending':
+        recommendation = 'pending'
+    elif not current:
+        recommendation = 'stale'
+    elif latest['source_review_status'] != 'reviewed':
+        recommendation = 'mask_review_required'
+    elif latest['required_total'] == 0:
+        recommendation = 'no_required_skills'
+    elif setting['threshold'] is None:
+        recommendation = 'threshold_not_configured'
+    elif latest['score'] >= setting['threshold']:
+        recommendation = 'priority_review'
+    else:
+        recommendation = 'needs_review'
+    return {'application_id': application['id'], 'application_status': application['status'],
+                  'snapshot_id': snapshot_id, 'current': current, 'origin': origin, 'automatic_state': auto_state,
+                  'score': latest['score'] if current else None,
+                  'source_review_status': latest['source_review_status'] if current else 'unreviewed' if latest and latest['snapshot_kind'] == 'pending' else 'stale',
+                  'automatic_masked': bool(latest['automatic_masked']) if current else None,
+                  'additional_masked': bool(latest['additional_masked']) if current else None,
+                  'recommendation': recommendation, 'threshold': setting['threshold'],
+            'threshold_version': setting['version']}
+
+
 @router.get('/jobs/{job_id}/provisional-queue')
 def queue(job_id: str, request: Request, user: HR,
           after: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=50)):
@@ -234,52 +287,13 @@ def queue(job_id: str, request: Request, user: HR,
         _require_current_role(db, request, user, 'hr')
         require_job(db, job_id)
         setting = _setting(db, job_id)
-        revision = _job_revision(db, job_id)
         items = []
         applications = db.execute('SELECT id,status FROM applications WHERE job_id=? AND id>? ORDER BY id LIMIT ?',
                                   (job_id, after, limit + 1)).fetchall()
         has_more = len(applications) > limit
         applications = applications[:limit]
         for application in applications:
-            latest = _latest(db, application['id'])
-            snapshot_id = latest['id'] if latest else None
-            auto_state = None
-            origin = 'hr' if latest and latest['snapshot_kind'] == 'scored' else None
-            if latest and latest['snapshot_kind'] == 'pending':
-                automatic = db.execute('SELECT * FROM auto_provisional_jobs WHERE snapshot_id=?', (latest['id'],)).fetchone()
-                auto_state = automatic['state'] if automatic else None
-                if automatic and auto_state == 'done':
-                    latest = dict(automatic) | {'id': snapshot_id, 'snapshot_kind': 'scored'}
-                    origin = 'system_worker'
-            current = bool(latest and latest['snapshot_kind'] == 'scored' and latest['job_id'] == job_id
-                           and latest['job_revision'] == revision
-                           and latest['assignment_revision'] == _assignment_revision(db, application['id'])
-                           and (latest['source_revision'], latest['mask_revision']) == _source_revisions(db, application['id']))
-            if application['status'] in ('hired', 'rejected'):
-                recommendation = 'finalized'
-            elif not latest:
-                recommendation = 'not_screened'
-            elif latest['snapshot_kind'] == 'pending':
-                recommendation = 'pending'
-            elif not current:
-                recommendation = 'stale'
-            elif latest['source_review_status'] != 'reviewed':
-                recommendation = 'mask_review_required'
-            elif latest['required_total'] == 0:
-                recommendation = 'no_required_skills'
-            elif setting['threshold'] is None:
-                recommendation = 'threshold_not_configured'
-            elif latest['score'] >= setting['threshold']:
-                recommendation = 'priority_review'
-            else:
-                recommendation = 'needs_review'
-            items.append({'application_id': application['id'], 'application_status': application['status'],
-                          'snapshot_id': snapshot_id, 'current': current, 'origin': origin, 'automatic_state': auto_state,
-                          'score': latest['score'] if current else None,
-                          'source_review_status': latest['source_review_status'] if current else 'unreviewed' if latest and latest['snapshot_kind'] == 'pending' else 'stale',
-                          'automatic_masked': bool(latest['automatic_masked']) if current else None,
-                          'additional_masked': bool(latest['additional_masked']) if current else None,
-                          'recommendation': recommendation})
+            items.append(provisional_application_state(db, application['id']))
         _require_current_role(db, request, user, 'hr')
         heartbeat = db.execute('SELECT MAX(last_heartbeat) FROM auto_provisional_workers').fetchone()[0]
         return {'job_id': job_id, **setting, 'items': items,

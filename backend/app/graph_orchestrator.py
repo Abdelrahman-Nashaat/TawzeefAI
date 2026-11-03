@@ -49,6 +49,7 @@ from app.provisional_queue import (
     _bounded_job,
     _job_revision,
     _source_revisions,
+    provisional_application_state,
 )
 from app.recruitment import get_application, score_masked_resume, store_screening
 from app.resume_fields import resume_fields_for_display
@@ -114,6 +115,7 @@ class ReviewState(TypedDict, total=False):
     matching: dict
     matching_specialist_ref: str
     matching_unavailable_ref: dict
+    provisional_queue_ref: int
     policy: dict
     scheduling: dict
     status: dict
@@ -412,7 +414,10 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
     def status(state: ReviewState):
         with connect(path) as db:
             row = get_application(db, state["application_id"])
-            return {"status": {"application_status": row["status"]}}
+            result = {"status": {"application_status": row["status"]}}
+            if state.get("intent", "full") == "full":
+                result["provisional_queue_ref"] = state["application_id"]
+            return result
 
     def agent_review(state: ReviewState):
         if not enable_agent or user is None:
@@ -700,6 +705,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     state = dict(snapshot.values)
     specialist_ref = state.pop('matching_specialist_ref', None)
     unavailable_ref = state.pop('matching_unavailable_ref', None)
+    provisional_ref = state.pop('provisional_queue_ref', None)
     parser_ref = state.pop('parser_source_ref', None)
     parser_context_ref = state.pop('parser_context_ref', parser_ref)
     semantic_refs = state.pop('semantic_refs', None)
@@ -751,6 +757,13 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     raise HTTPException(status_code=401, detail='Authentication required')
                 if actor['role'] != 'hr':
                     raise HTTPException(status_code=403, detail='HR access required')
+                if (selected == 'full' and type(provisional_ref) is int
+                        and provisional_ref == state['application_id']):
+                    state['provisional_screening'] = provisional_application_state(db, provisional_ref)
+                    state['provisional_screening']['notice'] = (
+                        'Live queue information, not part of the reviewed graph snapshot. '
+                        'A provisional keyword score is not verified ability or an HR decision. '
+                        'The current threshold and source review status determine prioritization.')
                 if selected == 'screen_application' and snapshot.next:
                     application, score, context_digest, revision, score_digest = _screen_snapshot(db, state['application_id'])
                     if _screen_is_current(state, application, context_digest, revision, score_digest):

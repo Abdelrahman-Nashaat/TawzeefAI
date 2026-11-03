@@ -1060,6 +1060,14 @@ function setupGraphReview(target, application) {
         }
       }
     }
+    if (review.state.provisional_screening) {
+      const provisional = review.state.provisional_screening;
+      output.append(element("h4", "", "Live provisional screening"),
+        element("p", "subtle-note", provisional.notice),
+        element("p", "", `Review state: ${provisional.recommendation}; source review: ${provisional.source_review_status}.`),
+        element("p", "subtle-note", `Origin: ${provisional.origin || "not yet scored"}; threshold: ${provisional.threshold === null ? "not configured" : provisional.threshold}.`));
+      if (provisional.current && provisional.score !== null) output.append(element("p", "result-badge", `Provisional skill mentions: ${provisional.score} / 100`));
+    }
     if (review.state.matching) { const score = element("div"); renderScore(score, review.state.matching); output.append(score); }
     if (review.state.matching_unavailable) output.append(element("p", "form-error", review.state.matching_unavailable.notice));
     const specialist = review.state.matching_specialist;
