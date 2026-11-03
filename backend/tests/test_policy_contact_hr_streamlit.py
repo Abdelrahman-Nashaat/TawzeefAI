@@ -3,7 +3,10 @@
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
+
+pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest
 
 from app.main import create_app
