@@ -35,6 +35,8 @@ from app.knowledge import (
 )
 from app.knowledge_documents import authorized_documents_in_db
 
+POLICY_CONTACT_HR = "Contact HR for help with this policy question."
+
 
 @dataclass(frozen=True)
 class PolicyAgentResult:

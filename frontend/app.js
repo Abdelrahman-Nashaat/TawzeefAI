@@ -1164,7 +1164,10 @@ function setupGraphReview(target, application) {
       const sources = element("ul", "evidence-list");
       for (const source of policy.sources) { const item = element("li"); item.append(element("strong", "", knowledgeSourceLabel(source)), element("p", "", source.text)); sources.append(item); }
       output.append(sources);
-    } else if (policy?.status === "abstain") output.append(element("p", "", "لم يُعثر على مصدر مناسب لسؤال السياسة."));
+    } else if (policy?.status === "abstain") {
+      output.append(element("p", "", "لم يُعثر على مصدر مناسب لسؤال السياسة."));
+      if (policy.next_step) output.append(element("p", "subtle-note", policy.next_step));
+    }
     else if (policy?.status === "not_requested") output.append(element("p", "", "لم يُطلب بحث في السياسات."));
     else if (policy?.status === "searched_without_retaining_results") output.append(element("p", "", "أُجري بحث سابق دون حفظ نتائجه؛ استخدم قسم المعرفة للبحث مجددًا."));
     else if (policy) output.append(element("p", "", "لم تعد مصادر السياسة متاحة أو تغيرت؛ أعد البحث بعد التحقق من الصلاحيات."));
@@ -1570,7 +1573,7 @@ function renderApplicationDetail(target, application, role) {
     const screen = element("button", "outline-button", "فحص المهارات المذكورة"); screen.type = "button";
     screen.addEventListener("click", async () => {
       screen.disabled = true;
-      try { renderScore(result, await api(`/api/applications/${encodeURIComponent(application.id)}/screen`, { method: "POST" })); announce("تم تسجيل الفحص."); await loadWorkflow(workflowPanel, application.id, target, role); await loadOperations(role); }
+      try { renderScore(result, await api(`/api/applications/${encodeURIComponent(application.id)}/screen`, { method: "POST" }, { errorMessages: { 422: "Screening exceeds its work limit or the job requirements are invalid. Review this application manually." } })); announce("تم تسجيل الفحص."); await loadWorkflow(workflowPanel, application.id, target, role); await loadOperations(role); }
       catch (error) { if (!isStale(error)) announce(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
       finally { screen.disabled = false; }
     });
@@ -2487,6 +2490,7 @@ function setupConversations(role) {
       if (entry.mode === "unavailable") item.append(element("p", "form-error", "هذه الإجابة لم تعد متاحة لحسابك أو تغيرت البيانات التي تعتمد عليها."));
       else {
         item.append(element("p", "", entry.answer));
+        if (entry.next_step) item.append(element("p", "subtle-note", entry.next_step));
         const mode = entry.mode === "application_status" ? "مرحلة الطلب الحالية؛ تُحدّث عند تحميل المحادثة." : entry.mode === "groq" ? "إجابة مولدة بالذكاء الاصطناعي؛ تحقق من المصادر." : entry.mode === "abstain" ? "لم يُعثر على دليل مناسب." : "مقتطفات مسترجعة من المصادر.";
         item.append(element("p", "subtle-note", mode));
         if (entry.notice) item.append(element("p", "subtle-note", entry.notice));

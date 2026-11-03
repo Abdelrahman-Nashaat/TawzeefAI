@@ -164,6 +164,10 @@ def _visible_message(row, available: dict, policy_available: dict | None = None)
     if safe:
         result.update({'answer': row['answer'], 'sources': [asdict(available[item['id']]) for item in stored],
                        'mode': row['mode'], 'notice': row['notice']})
+        if row['source_scope'] == 'policy' and row['mode'] == 'abstain':
+            from app.policy_agent import POLICY_CONTACT_HR
+
+            result['next_step'] = POLICY_CONTACT_HR
     else:
         result.update({'answer': 'This answer is unavailable because its sources are no longer accessible.',
                        'sources': [], 'mode': 'unavailable', 'notice': None})

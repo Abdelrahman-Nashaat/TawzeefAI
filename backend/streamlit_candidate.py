@@ -89,6 +89,9 @@ def render_candidate(call, local_api, clear_session):
                     st.text(label)
                     for item in preview[field]:
                         st.text(f"  {item['skill']}: {'mentioned' if item['mentioned'] else 'not detected'}")
+                        for excerpt in item.get("evidence", []):
+                            st.text(f"    Matching text: {excerpt}")
+                st.caption("Matching text is normalized and may be shortened. A mention is not verified ability; a missing mention does not prove a lack of skill. Negation detection can miss context.")
 
     with st.expander("Assessment shared by HR"):
         assessment = call("GET", f"/api/applications/{selected}/candidate-assessment", optional=True)

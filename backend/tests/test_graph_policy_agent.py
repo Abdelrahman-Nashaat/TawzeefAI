@@ -97,7 +97,7 @@ def test_abstention_with_suggested_passages_is_not_presented_as_an_answer(tmp_pa
             'application_id': application, 'intent': 'policy', 'policy_question': 'Unanswered question',
         })
         assert response.status_code == 201, response.text
-        assert response.json()['state']['policy'] == {'status': 'abstain'}
+        assert response.json()['state']['policy'] == {'status': 'abstain', 'next_step': 'Contact HR for help with this policy question.'}
         assert 'Unverified suggestion' not in response.text
         assert calls and all(call['allow_hybrid_answers'] is False for call in calls)
 

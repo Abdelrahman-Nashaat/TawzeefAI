@@ -4,9 +4,12 @@ import json
 import re
 import time
 import unicodedata
+from bisect import bisect_right
 from datetime import UTC, datetime
 from hashlib import sha256
+from itertools import islice
 from pathlib import Path, PurePath
+from threading import BoundedSemaphore
 from typing import Annotated, Literal
 from uuid import uuid4
 
@@ -42,6 +45,10 @@ Candidate = Annotated[User, Depends(require_roles("candidate"))]
 HR = Annotated[User, Depends(require_roles("hr"))]
 Authenticated = Annotated[User, Depends(get_current_user)]
 FIXTURE_FILE = Path(__file__).resolve().parents[2] / "data" / "fixtures" / "jobs.json"
+_SCREEN_WORKERS = BoundedSemaphore(2)
+MAX_DIRECT_SCREEN_CHARS = 200_000
+MAX_DIRECT_SCREEN_WORK = 25_000_000
+MAX_DIRECT_JOB_JSON_CHARS = 21_000
 
 
 def seed_jobs(path: Path) -> None:
@@ -128,16 +135,50 @@ def _score_blind(job: dict, blind: BlindText) -> dict:
     segments = [normalize(part) for part in re.split(r"[\n!?]+|\.+(?=\s|$)", blind.text) if part.strip()]
     usable = [segment for segment in segments if not UNSAFE_CONTEXT.search(segment)]
 
+    # Normalization collapses all whitespace, so a newline cannot occur in a
+    # segment or term. It is therefore a safe non-word segment separator for
+    # the same boundary patterns used by contains().
+    joined = "\n".join(usable)
+    starts = []
+    position = 0
+    for segment in usable:
+        starts.append(position)
+        position += len(segment) + 1
+    matches_by_term = {}
+
+    def matching_segments(term: str) -> tuple[int, ...]:
+        if term in matches_by_term:
+            return matches_by_term[term]
+        if not term:
+            # Preserve the legacy zero-width behavior on each actual segment;
+            # separators must not create additional matches for an empty term.
+            result = tuple(islice((index for index, segment in enumerate(usable) if contains(segment, term)), 2))
+        else:
+            boundary = r"[a-z0-9_]" if term.isascii() else r"\w"
+            pattern = re.compile(rf"(?<!{boundary})" + re.escape(term) + rf"(?!{boundary})")
+            found_indices = []
+            offset = 0
+            while len(found_indices) < 2:
+                match = pattern.search(joined, offset)
+                if match is None:
+                    break
+                index = bisect_right(starts, match.start()) - 1
+                found_indices.append(index)
+                if index + 1 >= len(starts):
+                    break
+                offset = starts[index + 1]
+            result = tuple(found_indices)
+        matches_by_term[term] = result
+        return result
+
     def assess(skill: str) -> dict:
         key = normalize(skill)
         alternatives = ALIASES.get(key, [key])
+        matches = [matching_segments(term) for term in alternatives]
         # Both HTML and CSS must be present for the combined requirement.
-        present = lambda term: any(contains(segment, term) for segment in usable)
-        found = all(present(term) for term in alternatives) if key == "html and css" else any(
-            present(term) for term in alternatives
-        )
-        evidence = [segment[:240] for segment in usable if any(contains(segment, term) for term in alternatives)] if found else []
-        return {"skill": skill, "mentioned": found, "evidence": evidence[:2]}
+        found = all(matches) if key == "html and css" else any(matches)
+        indices = sorted({index for group in matches for index in group})[:2] if found else []
+        return {"skill": skill, "mentioned": found, "evidence": [usable[index][:240] for index in indices]}
 
     required = [assess(skill) for skill in job["required_skills"]]
     preferred = [assess(skill) for skill in job["preferred_skills"]]
@@ -333,17 +374,67 @@ def duplicate_resume_candidates(application_id: int, request: Request, user: HR)
                 'notice': 'Exact normalized extracted text only. Similarity does not prove fraud; HR must review.'}
 
 
+def _screen_input_revision(db, application_id: int) -> tuple[int, int, int]:
+    """Version source, job, status and recorded screenings without requiring graph setup."""
+    revision = db.execute('SELECT revision FROM rubric_publication_revisions WHERE application_id=?',
+                          (application_id,)).fetchone()
+    status = db.execute('SELECT revision FROM hr_review_status_revisions WHERE application_id=?',
+                        (application_id,)).fetchone()
+    screening = db.execute("SELECT COALESCE(MAX(id),0) FROM audit_events WHERE application_id=? AND action='screened'",
+                           (application_id,)).fetchone()[0]
+    return revision['revision'] if revision else 0, status['revision'] if status else 0, screening
+
+
+def _direct_screen_job(db, job_id: str) -> dict:
+    row = db.execute('SELECT required_skills,preferred_skills FROM jobs WHERE id=?', (job_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=409, detail='Job requirements unavailable')
+    if any(len(row[field]) > MAX_DIRECT_JOB_JSON_CHARS for field in ('required_skills', 'preferred_skills')):
+        raise HTTPException(status_code=422, detail='Job requirements exceed the screening work limit; review manually')
+    try:
+        job = {field: json.loads(row[field]) for field in ('required_skills', 'preferred_skills')}
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail='Job requirements are invalid; review manually') from None
+    if (any(not isinstance(value, list) or len(value) > 50 for value in job.values()) or
+            any(not isinstance(skill, str) or len(skill) > 200 for values in job.values() for skill in values)):
+        raise HTTPException(status_code=422, detail='Job requirements exceed the screening work limit; review manually')
+    return job
+
+
 @router.post("/applications/{application_id}/screen")
 def screen(application_id: int, request: Request, user: HR):
-    with connect(request.app.state.database_path) as db:
-        db.execute('BEGIN IMMEDIATE')
-        _require_current_role(db, request, user, 'hr')
-        row = get_application(db, application_id)
-        job = job_data(db.execute("SELECT * FROM jobs WHERE id = ?", (row["job_id"],)).fetchone())
-        score = score_masked_resume(job, masked_source(db, application_id))
-        store_screening(db, application_id, user.id, score)
-        _require_current_role(db, request, user, 'hr')
-        return score
+    if not _SCREEN_WORKERS.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail='Screening is busy; retry after checking the application')
+    try:
+        with connect(request.app.state.database_path) as db:
+            db.execute('BEGIN')
+            _require_current_role(db, request, user, 'hr')
+            row = get_application(db, application_id)
+            if len(row['resume_text']) > MAX_DIRECT_SCREEN_CHARS:
+                raise HTTPException(status_code=422, detail='Resume exceeds the screening work limit; review manually')
+            job_id, owner, status = row['job_id'], row['candidate_id'], row['status']
+            job = _direct_screen_job(db, job_id)
+            source = masked_source(db, application_id)
+            revisions = _screen_input_revision(db, application_id)
+        # Bound whole normalized source times distinct search alternatives. Masking
+        # may expand a source, so raw file length alone is not a safe work bound.
+        terms = {term for skill in job['required_skills'] + job['preferred_skills']
+                 for term in ALIASES.get(normalize(skill), [normalize(skill)])}
+        if len(normalize(source['text'])) * max(1, len(terms)) > MAX_DIRECT_SCREEN_WORK:
+            raise HTTPException(status_code=422, detail='Screening work limit exceeded; review manually')
+        score = score_masked_resume(job, source)
+        with connect(request.app.state.database_path) as db:
+            db.execute('BEGIN IMMEDIATE')
+            _require_current_role(db, request, user, 'hr')
+            current = get_application(db, application_id)
+            if (current['job_id'] != job_id or current['candidate_id'] != owner or current['status'] != status or
+                    _screen_input_revision(db, application_id) != revisions):
+                raise HTTPException(status_code=409, detail='Screening inputs changed; reload and screen again')
+            store_screening(db, application_id, user.id, score)
+            _require_current_role(db, request, user, 'hr')
+            return score
+    finally:
+        _SCREEN_WORKERS.release()
 
 
 @router.get('/applications/{application_id}/screening-history')

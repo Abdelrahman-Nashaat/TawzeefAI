@@ -57,6 +57,26 @@ def test_candidate_can_view_and_book_an_interview_through_streamlit(tmp_path):
             assert any("No current assessment has been shared" in value.value for value in ui.info)
             assert any("No interviews have been recorded" in value.value for value in ui.info)
 
+            next(button for button in ui.button if button.label == "Load current keyword preview").click().run()
+            assert not ui.exception
+            assert any("Matching text:" in item.value and "python" in item.value for item in ui.text)
+            assert any("not detected" in item.value for item in ui.text)
+            assert any("not verified ability" in item.value for item in ui.caption)
+            ui.run()
+            assert not any("Matching text:" in item.value for item in ui.text)
+
+            mask = hr.request("GET", f"/api/applications/{app_id}/resume/mask")
+            start = mask["source"].index("Python")
+            hr.request("PUT", f"/api/applications/{app_id}/resume/mask", json={
+                "source_sha256": mask["source_sha256"], "expected_source_revision": mask["source_revision"],
+                "expected_revision": mask["revision"], "spans": [{"start": start, "end": start + len("Python")}],
+            })
+            next(button for button in ui.button if button.label == "Load current keyword preview").click().run()
+            assert any("Python: not detected" in item.value for item in ui.text)
+            assert not any("Matching text:" in item.value and "python" in item.value for item in ui.text)
+            ui.run()
+            assert not any("Matching text:" in item.value for item in ui.text)
+
             hr.request("POST", f"/api/applications/{app_id}/decision", json={"decision": "advance"})
             start = datetime.now(UTC) + timedelta(days=2)
             slot = hr.request("POST", "/api/slots", json={"start_at": start.isoformat(),

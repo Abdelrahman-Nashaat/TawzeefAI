@@ -134,6 +134,8 @@ if ids:
             st.text(message["question"])
         with st.chat_message("assistant"):
             st.text(message["answer"])
+            if message.get("next_step"):
+                st.info(message["next_step"])
             if message.get("notice"):
                 st.caption(message["notice"])
             for source in message.get("sources", []):

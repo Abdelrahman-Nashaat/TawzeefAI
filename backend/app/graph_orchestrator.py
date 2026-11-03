@@ -41,7 +41,7 @@ from app.graph_semantic import context as semantic_context
 from app.graph_semantic import restore_references, save_references
 from app.interview_guide import guide_from_matching
 from app.matching_specialist import matching_snapshot
-from app.policy_agent import authorized_policy_sources, run_policy_agent
+from app.policy_agent import POLICY_CONTACT_HR, authorized_policy_sources, run_policy_agent
 from app.provisional_queue import (
     MAX_SOURCE_BYTES,
     MAX_SOURCE_CHARS,
@@ -833,6 +833,8 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
         state["policy"] = {"status": status if status in {
             "not_requested", "searched_without_retaining_results", "abstain"
         } else "unavailable"}
+        if status == 'abstain':
+            state['policy']['next_step'] = POLICY_CONTACT_HR
     if path is not None and "application_id" in state:
         with connect(path) as db:
             db.execute('BEGIN')

@@ -90,4 +90,5 @@ def test_lead_disappears_from_saved_conversation_after_access_revocation(policy)
         db.execute("UPDATE knowledge_documents SET audience='hr' WHERE id=?", (doc_id,))
     stored = client.get(f'/api/conversations/{conversation}').json()['messages'][0]
     assert stored['mode'] == 'unavailable' and stored['sources'] == []
+    assert 'next_step' not in stored
     assert 'Parking permits' not in stored['answer']
