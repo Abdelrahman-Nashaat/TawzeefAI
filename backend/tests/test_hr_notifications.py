@@ -124,3 +124,40 @@ def test_revoked_session_during_list_does_not_disclose(tmp_path, monkeypatch):
         response = client.get('/api/hr/notifications')
         assert response.status_code == 401
         assert 'application_id' not in response.text
+
+
+def test_list_rechecks_real_session_and_role_revocation_after_snapshot(tmp_path, monkeypatch):
+    import app.hr_notifications as notifications
+    from app.auth import COOKIE_NAME, token_digest
+
+    path = tmp_path / 'wal-notifications.sqlite3'
+    with TestClient(create_app(path, seed_demo=True)) as client:
+        with connect(path) as db:
+            assert db.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() == 'wal'
+        login(client, 'candidate')
+        assert client.post('/api/applications', params={'job_id': 'job-backend-python', 'filename': 'synthetic.docx'}, content=resume()).status_code == 201
+        original = notifications._require_current_role
+        for change, expected in (('session', 401), ('role', 403), ('inactive', 401)):
+            with connect(path) as db:
+                db.execute("UPDATE users SET role='hr',active=1 WHERE username='hr'")
+            login(client, 'hr')
+            token_hash = token_digest(client.cookies.get(COOKIE_NAME))
+            calls = 0
+            def authorize(db, request, user, role, _change=change, _token_hash=token_hash):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    with connect(path) as change_db:
+                        if _change == 'session':
+                            change_db.execute('DELETE FROM sessions WHERE token_hash=?', (_token_hash,))
+                        elif _change == 'role':
+                            change_db.execute("UPDATE users SET role='employee' WHERE username='hr'")
+                        else:
+                            change_db.execute("UPDATE users SET active=0 WHERE username='hr'")
+                return original(db, request, user, role)
+            monkeypatch.setattr(notifications, '_require_current_role', authorize)
+            response = client.get('/api/hr/notifications')
+            assert response.status_code == expected
+            assert 'application_id' not in response.text
+            assert calls == 2
+            monkeypatch.setattr(notifications, '_require_current_role', original)

@@ -1175,6 +1175,11 @@ function setupGraphReview(target, application) {
       }
     }
     if (review.state.status) output.append(element("p", "", `الحالة الحالية للطلب: ${statusLabels[review.state.status.application_status] || review.state.status.application_status}`));
+    if (review.state.candidate_progress) {
+      const progress = review.state.candidate_progress;
+      const labels = {applied: "Applied", screened: "Screened", shortlisted: "Shortlisted", interview_scheduled: "Interview scheduled", interviewed: "Interview completed", offered: "Offer presented", hired: "Hired", rejected: "Rejected"};
+      output.append(element("p", "subtle-note", `Live candidate-visible stage: ${labels[progress.stage] || "Unavailable"}. ${progress.notice}`));
+    }
     const agent = review.state.agent_review;
     if (agent) {
       const agentStatus = { ok: "اكتملت قراءة الأدوات", disabled: "المساعد غير مفعّل", unavailable: "المساعد غير متاح", rejected: "رُفض رد المساعد", limit_reached: "وصل المساعد للحد المسموح" };

@@ -51,13 +51,19 @@ from app.provisional_queue import (
     _source_revisions,
     provisional_application_state,
 )
-from app.recruitment import get_application, score_masked_resume, store_screening
+from app.recruitment import (
+    _require_current_role,
+    get_application,
+    score_masked_resume,
+    store_screening,
+)
 from app.resume_fields import resume_fields_for_display
 from app.resume_mask import masked_source
 from app.resume_structure import structure_resume
 from app.scheduling import utc_text
 from app.slot_reservations import private_slot_conflict
 from app.slots import BatchSlot, SlotCreate, _validate_batch, create_slot_record
+from app.workflow import candidate_stage
 
 router = APIRouter(prefix="/api/graph-reviews")
 HR = Annotated[User, Depends(require_roles("hr"))]
@@ -706,6 +712,10 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     specialist_ref = state.pop('matching_specialist_ref', None)
     unavailable_ref = state.pop('matching_unavailable_ref', None)
     provisional_ref = state.pop('provisional_queue_ref', None)
+    # Lifecycle is always reconstructed from current authorized data, never checkpoint content.
+    state.pop('candidate_progress', None)
+    candidate_progress_owner = None
+    candidate_progress_status = None
     parser_ref = state.pop('parser_source_ref', None)
     parser_context_ref = state.pop('parser_context_ref', parser_ref)
     semantic_refs = state.pop('semantic_refs', None)
@@ -823,6 +833,18 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
             if selected == 'adaptive':
                 state['plan_stale'] = context_for(db, state['application_id'])[1] != state.get('context_digest')
             state["status"] = {"application_status": application["status"]}
+            if (request is not None and user is not None and 'status' in state.get('plan', [])
+                    and selected in ('full', 'status', 'adaptive', 'advance_application',
+                                     'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot',
+                                     'screen_application')):
+                progress = candidate_stage(db, application['id'], application['candidate_id'])
+                candidate_progress_owner = application['candidate_id']
+                candidate_progress_status = application['status']
+                state['candidate_progress'] = {
+                    'stage': progress['stage'],
+                    'notice': 'Live candidate-visible stage, reconstructed from current records. '
+                              'An interview is completed only when HR records completion.',
+                }
         if selected in ('full', 'scheduling', 'adaptive') and 'scheduler' in state.get('plan', []):
             state["scheduling"] = _current_scheduling(path, state["application_id"])
         else:
@@ -834,6 +856,21 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
         state.pop('assessment_revision', None)
         state.pop('screen_revision', None)
         state.pop('screen_score_digest', None)
+    if path is not None and request is not None and user is not None:
+        # A new read transaction sees session revocation committed after the
+        # earlier graph-view snapshot, including when SQLite uses WAL mode.
+        with connect(path) as fresh:
+            fresh.execute('BEGIN')
+            _require_current_role(fresh, request, user, 'hr')
+            if candidate_progress_owner is not None and 'candidate_progress' in state:
+                current = fresh.execute('SELECT candidate_id,status FROM applications WHERE id=?',
+                                        (state['application_id'],)).fetchone()
+                if (current is None or current['candidate_id'] != candidate_progress_owner
+                        or current['status'] != candidate_progress_status):
+                    raise HTTPException(status_code=409, detail='Application changed; reload the review')
+                progress = candidate_stage(fresh, state['application_id'], current['candidate_id'])
+                if progress['stage'] != state['candidate_progress']['stage']:
+                    raise HTTPException(status_code=409, detail='Application stage changed; reload the review')
     return {"state": state, "awaiting_review": bool(snapshot.next)}
 
 

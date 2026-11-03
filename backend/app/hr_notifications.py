@@ -45,10 +45,13 @@ def list_notifications(request: Request, user: HR, before: int | None = Query(de
             (user.id, before, before, limit + 1)).fetchall()
         more = len(rows) > limit
         rows = rows[:limit]
+    # A WAL reader retains its original snapshot even if another connection
+    # revokes the session. Recheck after releasing that snapshot.
+    with connect(request.app.state.database_path) as db:
         _require_current_role(db, request, user, 'hr')
-        return {'items': [dict(row) | {'is_read': bool(row['is_read'])} for row in rows],
-                'next_before': rows[-1]['id'] if more else None,
-                'notice': 'Local submission notifications do not indicate a threshold result or shortlist. Marking read acknowledges an alert only; it does not review or change an application.'}
+    return {'items': [dict(row) | {'is_read': bool(row['is_read'])} for row in rows],
+            'next_before': rows[-1]['id'] if more else None,
+            'notice': 'Local submission notifications do not indicate a threshold result or shortlist. Marking read acknowledges an alert only; it does not review or change an application.'}
 
 
 @router.post('/{notification_id}/read')
