@@ -706,6 +706,23 @@ def _review_lock(path: str | Path, thread_id: str):
                 fcntl.flock(file.fileno(), fcntl.LOCK_UN)
 
 
+def _view_revisions(db, application):
+    """Bind returned view data to mutable inputs without retaining source text."""
+    application_id = application['id']
+    rubric = db.execute('SELECT revision FROM rubric_publication_revisions WHERE application_id=?',
+                        (application_id,)).fetchone()
+    # Legacy views can be restored before graph-specific tables are initialized.
+    has_screen_revisions = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_screen_revisions'"
+    ).fetchone()
+    screening = (db.execute('SELECT revision FROM graph_screen_revisions WHERE application_id=?',
+                            (application_id,)).fetchone() if has_screen_revisions else None)
+    return (application['candidate_id'], application['status'], application['job_id'],
+            _source_revisions(db, application_id), _assignment_revision(db, application_id),
+            _job_revision(db, application['job_id']), rubric['revision'] if rubric else 0,
+            screening['revision'] if screening else 0)
+
+
 def _view(snapshot, path: str | Path | None = None, *, request: Request | None = None,
           user: User | None = None) -> dict:
     state = dict(snapshot.values)
@@ -716,6 +733,8 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     state.pop('candidate_progress', None)
     candidate_progress_owner = None
     candidate_progress_status = None
+    view_revisions = None
+    displayed_policy_refs = None
     parser_ref = state.pop('parser_source_ref', None)
     parser_context_ref = state.pop('parser_context_ref', parser_ref)
     semantic_refs = state.pop('semantic_refs', None)
@@ -825,11 +844,14 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                                 isinstance(ref['id'], str) and ref['id'] in available and
                                 ref['digest'] == _digest(available[ref['id']]) for ref in refs)):
                         sources = [available[ref['id']] for ref in refs]
+                        displayed_policy_refs = (policy['status'], refs)
                         state['policy'] = {'status': 'answer',
                             'answer': '\n\n'.join(f'[{s.id}] {s.text}' for s in sources),
                             'sources': [asdict(source) for source in sources],
                             'notice': 'Extractive excerpts; review the source for relevance.'}
             application = get_application(db, state["application_id"])
+            if request is not None and user is not None:
+                view_revisions = _view_revisions(db, application)
             if selected == 'adaptive':
                 state['plan_stale'] = context_for(db, state['application_id'])[1] != state.get('context_digest')
             state["status"] = {"application_status": application["status"]}
@@ -862,6 +884,18 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
         with connect(path) as fresh:
             fresh.execute('BEGIN')
             _require_current_role(fresh, request, user, 'hr')
+            if view_revisions is not None:
+                current_application = get_application(fresh, state['application_id'])
+                if _view_revisions(fresh, current_application) != view_revisions:
+                    raise HTTPException(status_code=409, detail='Review inputs changed; reload the review')
+            if displayed_policy_refs is not None:
+                ref_version, refs = displayed_policy_refs
+                if ref_version == 'source_refs_v2':
+                    available = {source.id: source for source in authorized_policy_sources(fresh, 'hr')}
+                else:
+                    available = _authorized_sources(fresh, 'hr')
+                if any(ref['id'] not in available or _digest(available[ref['id']]) != ref['digest'] for ref in refs):
+                    raise HTTPException(status_code=409, detail='Policy sources changed; reload the review')
             if candidate_progress_owner is not None and 'candidate_progress' in state:
                 current = fresh.execute('SELECT candidate_id,status FROM applications WHERE id=?',
                                         (state['application_id'],)).fetchone()
