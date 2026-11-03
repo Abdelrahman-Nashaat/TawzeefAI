@@ -631,7 +631,39 @@ function renderApplications(applications, jobs, role) {
     });
     card.append(info, button); container.append(card, detail); list.append(container);
   }
+  if (role === "hr") {
+    const inbox = element("div", "application-detail");
+    const open = element("button", "outline-button", "Open submission notifications"); open.type = "button";
+    open.addEventListener("click", () => loadHrNotifications(inbox));
+    box.append(open, inbox);
+  }
   box.append(list); target.replaceChildren(box);
+}
+
+async function loadHrNotifications(target, before = null) {
+  target.replaceChildren(element("p", "subtle-note", "Loading local notifications..."));
+  try {
+    const data = await api(`/api/hr/notifications${before === null ? "" : `?before=${encodeURIComponent(before)}`}`);
+    if (!target.isConnected) return;
+    target.replaceChildren(element("h4", "", "Submission notifications"), element("p", "subtle-note", data.notice));
+    if (!data.items.length) target.append(element("p", "subtle-note", "No notifications on this page."));
+    for (const item of data.items) {
+      const row = element("section", "application-detail");
+      row.append(element("p", "", `Application #${item.application_id} · submitted job ${item.submitted_job_id} · current job ${item.current_job_id} · status ${item.current_status} · ${item.is_read ? "read" : "unread"}`));
+      if (!item.is_read) {
+        const read = element("button", "small-button", "Mark read"); read.type = "button";
+        read.addEventListener("click", async () => {
+          read.disabled = true;
+          try { await api(`/api/hr/notifications/${encodeURIComponent(item.id)}/read`, {method: "POST"}); if (target.isConnected) await loadHrNotifications(target, before); }
+          catch (error) { if (!isStale(error) && target.isConnected) { row.append(element("p", "form-error", "Could not acknowledge. Reload to check before trying again.")); read.disabled = false; } }
+        });
+        row.append(read);
+      }
+      target.append(row);
+    }
+    if (data.next_before !== null) { const next = element("button", "outline-button", "Older notifications"); next.type = "button"; next.addEventListener("click", () => loadHrNotifications(target, data.next_before)); target.append(next); }
+    if (before !== null) { const first = element("button", "outline-button", "Newest notifications"); first.type = "button"; first.addEventListener("click", () => loadHrNotifications(target)); target.append(first); }
+  } catch (error) { if (!isStale(error) && target.isConnected) target.replaceChildren(element("p", "form-error", "Could not load notifications.")); }
 }
 
 const rubricCategories = {

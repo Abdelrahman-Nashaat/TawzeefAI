@@ -33,6 +33,8 @@ The [counterfactual screening diagnostic](counterfactual-screening-diagnostic.md
 
 ## Authorization, privacy, and audit
 
+The [synthetic access matrix](access-matrix-diagnostic.md) records fixed API role and ownership checks with positive controls; it does not establish zero leaks.
+
 Test through actual server endpoints and storage/retrieval boundaries, not only through hidden UI elements. For each role and resource, record expected allow/deny and observed status. Include unauthenticated requests; candidate A requesting candidate B's records, résumé, conversation and status by changing IDs; employee access to HR-only resources; and a candidate trying to call HR actions. Confirm retrieval and search results obey the same access rules as direct reads. Inspect responses and citations for protected data and metadata. Use negative tests as well as positive tests.
 
 For screening and status changes, verify that a durable audit entry captures actor, event, time, target, rubric/version and decision or override, with sufficient evidence to reconstruct the action. Check failed and denied attempts where appropriate. Never put secrets or complete résumé contents into routine logs; minimize test data in traces and error messages. Test that users without permission cannot view or modify audit records.

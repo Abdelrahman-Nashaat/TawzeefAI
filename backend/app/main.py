@@ -41,6 +41,8 @@ from app.google_cancellation import router as google_cancellation_router
 from app.google_outbox import initialize_google_outbox
 from app.google_outbox import router as google_outbox_router
 from app.graph_orchestrator import router as graph_reviews_router
+from app.hr_notifications import initialize_hr_notifications
+from app.hr_notifications import router as hr_notifications_router
 from app.hybrid_api import router as hybrid_router
 from app.interview_calendar import router as interview_calendar_router
 from app.interview_guide import router as interview_guide_router
@@ -108,6 +110,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
         initialize_rubric_admin(path)
         initialize_resume_masks(path)
         initialize_hr_reviews(path)
+        initialize_hr_notifications(path)
         initialize_provisional_queue(path)
         initialize_auto_screen(path)
         initialize_rubric_triage(path)
@@ -156,6 +159,7 @@ def create_app(database_path: str | Path | None = None, seed_demo: bool = False)
     application.include_router(resume_field_review_router)
     application.include_router(resume_mask_router)
     application.include_router(provisional_queue_router)
+    application.include_router(hr_notifications_router)
     application.include_router(scheduling_router)
     application.include_router(slots_router)
     application.include_router(dashboard_router)

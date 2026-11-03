@@ -65,6 +65,10 @@ After a locally cancelled interview whose confirmation email was recorded as sen
 
 HR can also review a combined Calendar and email proposal and prepare two local drafts together. HR supplies the email address; the application does not verify ownership. Preparing drafts does not contact Google or send anything; each external action requires separate review and confirmation.
 
+## Local submission notifications
+
+New candidate submissions create an HR-only notification in the same transaction as the application. HR can inspect a paginated inbox in the main or Streamlit interface and acknowledge a notification for their own account. A notification does not indicate shortlisting or a threshold result. Acknowledgment does not review, advance, or reject the application. Notifications contain application and job identifiers, not résumé content; no message is sent outside the application. Applications created before this feature are not backfilled as new notifications.
+
 ## AI connection
 
 When a Groq key encrypted for the current Windows user is present at `.tooling/groq-key.dpapi`, the startup script loads it into the temporary process environment and enables generated answers. Otherwise the application shows document excerpts only. To run the server without the script, set `GROQ_API_KEY` and `TAWZEEF_ENABLE_GROQ=1` in the environment; do not put the key in code or a tracked file. When enabled, the question and authorized policy excerpts are sent to the provider; up to 500 characters of an eligible preceding question may also be sent as follow-up context. Use synthetic data only in this demo. Authorization is checked before the call and before saving, but the network call cannot be made atomic with a database transaction. A model answer can be wrong even when it cites a valid source ID, so review the source and decision with HR.

@@ -251,6 +251,7 @@ async def apply(request: Request, user: Candidate, job_id: str, filename: str,
             (user.id, job_id, filename, text, json.dumps(extraction) if extraction is not None else None),
         )
         application_id = cursor.lastrowid
+        db.execute("INSERT INTO hr_notifications(application_id,submitted_job_id) VALUES (?,?)", (application_id, job_id))
         db.execute("INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",
                    (application_id, user.id, "submitted", "{}"))
         from app.provisional_queue import create_pending_snapshot
