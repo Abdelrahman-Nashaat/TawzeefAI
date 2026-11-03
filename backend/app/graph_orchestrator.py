@@ -113,6 +113,7 @@ class ReviewState(TypedDict, total=False):
     parser_context_ref: str
     matching: dict
     matching_specialist_ref: str
+    matching_unavailable_ref: dict
     policy: dict
     scheduling: dict
     status: dict
@@ -324,7 +325,23 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         authorize()
         with connect(path) as db:
             db.execute('BEGIN')
-            job_id, job, source = _bounded_matching_inputs(db, application_id)
+            try:
+                job_id, job, source = _bounded_matching_inputs(db, application_id)
+            except HTTPException as exc:
+                if (state.get('intent', 'full') != 'full' or exc.status_code != 422
+                        or not isinstance(exc.detail, dict) or exc.detail.get('code') != 'graph_matching_work_limit'):
+                    raise
+                application = get_application(db, application_id)
+                job_id = application['job_id']
+                source = masked_source(db, application_id)
+                if state.get('parser_context_ref', state.get('parser_source_ref')) != source['context_sha256']:
+                    raise HTTPException(status_code=409, detail='Resume changed; start a new review') from exc
+                unavailable = {'job_id': job_id, 'source_context': source['context_sha256'],
+                               'job_revision': _job_revision(db, job_id),
+                               'assignment_revision': _assignment_revision(db, application_id),
+                               'source_revisions': list(_source_revisions(db, application_id))}
+                authorize()
+                return {'matching_unavailable_ref': unavailable}
             parser_context = state.get('parser_context_ref', state.get('parser_source_ref'))
             if parser_context is not None and parser_context != source['context_sha256']:
                 raise HTTPException(status_code=409, detail='Resume changed; start a new review')
@@ -682,6 +699,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
           user: User | None = None) -> dict:
     state = dict(snapshot.values)
     specialist_ref = state.pop('matching_specialist_ref', None)
+    unavailable_ref = state.pop('matching_unavailable_ref', None)
     parser_ref = state.pop('parser_source_ref', None)
     parser_context_ref = state.pop('parser_context_ref', parser_ref)
     semantic_refs = state.pop('semantic_refs', None)
@@ -760,6 +778,19 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     state['interview_guide'] = guide_from_matching(state['matching_specialist'])
                     if state['matching_specialist']['status'] == 'stale':
                         state.pop('matching', None)
+                if selected == 'full' and isinstance(unavailable_ref, dict):
+                    application = get_application(db, state['application_id'])
+                    current = masked_source(db, state['application_id'])
+                    current_ref = {'job_id': application['job_id'], 'source_context': current['context_sha256'],
+                                   'job_revision': _job_revision(db, application['job_id']),
+                                   'assignment_revision': _assignment_revision(db, state['application_id']),
+                                   'source_revisions': list(_source_revisions(db, state['application_id']))}
+                    if unavailable_ref == current_ref:
+                        state['matching_unavailable'] = {'status': 'limit_exceeded',
+                            'notice': 'Keyword matching was not run because this résumé or job exceeds the work limit. Review manually; no score was produced.'}
+                    else:
+                        state['matching_unavailable'] = {'status': 'stale',
+                            'notice': 'Matching inputs changed; start a new review.'}
                 if policy.get('status') in {'source_refs_v1', 'source_refs_v2'}:
                     refs = policy.get('refs')
                     if policy['status'] == 'source_refs_v2':

@@ -48,6 +48,8 @@ Test secret handling using dummy values: no secrets committed to the repository,
 
 ## Timing evaluation
 
+The [synthetic timing-study procedure](screening-time-study.md) prepares a frozen, counterbalanced study packet and reports only observations actually recorded by reviewers.
+
 Measure manual baseline and assisted screening with human reviewers using the same rubric and comparable cases. Record participant count, case order, training, inclusion criteria, timestamps, per-case time, outcomes, and exceptions. Counterbalance the order or use equivalent cases to reduce learning effects. Report per-case and aggregate times, quality alongside speed, method and limitations. Do not substitute program execution time, simulated human timings, or an unmeasured claim for the booklet's requested real comparison. External calendar delivery, cloud service behavior, and real-user measurements remain unverified until those integrations and users exist.
 
 ## Release evidence

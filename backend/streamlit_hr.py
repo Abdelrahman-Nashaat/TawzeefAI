@@ -3,6 +3,7 @@
 import streamlit as st
 
 from streamlit_client import ApiError, ApiUnavailable
+from streamlit_hr_lifecycle import render_hr_lifecycle
 
 
 def _discard_preview():
@@ -78,6 +79,7 @@ def render_hr_review(call, local_api, clear_session):
         selected = st.selectbox("Review application", list(by_id), key="hr_review_application",
                                 format_func=lambda value: f"Application #{value} — {by_id[value]['application_status']}")
         item = by_id[selected]
+        hire_ready = render_hr_lifecycle(call, local_api, clear_session, item)
         st.text(f"Provisional status: {item['recommendation']}")
         preview = st.session_state.get("hr_review_preview")
         if preview and (preview["application_id"] != selected or preview["job_id"] != job_id):
@@ -99,7 +101,10 @@ def render_hr_review(call, local_api, clear_session):
             st.caption(preview["notice"])
             st.caption(f"Mask review: {preview['source_status']}. Preview expires in 10 minutes; reload after changes.")
             st.text(preview["source"])
-            choices = {"submitted": ["advance", "reject"], "advanced": ["reject"], "offered": ["reject"]}.get(preview["status"], [])
+            choices = {"submitted": ["advance", "reject"], "advanced": ["reject"], "offered": ["reject"]}.get(preview["status"], []).copy()
+            if preview["status"] == "offered" and hire_ready:
+                choices.insert(0, "hire")
+                st.caption("The current offer is accepted. Hiring remains an explicit reviewed decision.")
             if choices:
                 with st.form(f"hr_decision_{selected}"):
                     decision = st.radio("Decision", choices, index=None, format_func=lambda value: value.title())

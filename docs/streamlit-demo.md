@@ -6,6 +6,15 @@ conversations, HR metrics, and candidate application submission, status,
 screening previews, shared assessments, interview booking, and reviewing and responding to job offers. HR can review a bounded masked résumé preview and record an advance or rejection with a reason; the server binds decisions to the reviewed snapshot. Use the main local interface for advanced HR review and administrative controls. Booking is local and
 does not send an email or create a Google Calendar event.
 
+For an advanced application, HR can preview and release a private slot using
+explicit UTC-offset times. HR can inspect targeted slots and explicitly withdraw
+an unbooked future slot; the server rechecks the candidate and application binding.
+The candidate chooses the slot in their interface. After an interview ends, HR may explicitly confirm that it took place. An offer
+can be presented only after a confirmed interview and when no interview is
+active; the API rechecks eligibility. After the candidate accepts, HR can
+explicitly record a reviewed hiring decision. If a write's result is uncertain, inspect
+the current application or interview before attempting another action.
+
 On Windows, run the API and the Streamlit UI in separate PowerShell windows:
 
 ```powershell

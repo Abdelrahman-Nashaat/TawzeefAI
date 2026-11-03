@@ -1061,6 +1061,7 @@ function setupGraphReview(target, application) {
       }
     }
     if (review.state.matching) { const score = element("div"); renderScore(score, review.state.matching); output.append(score); }
+    if (review.state.matching_unavailable) output.append(element("p", "form-error", review.state.matching_unavailable.notice));
     const specialist = review.state.matching_specialist;
     if (specialist) {
       output.append(element("h4", "", "ملخص التقييم البشري الموزون"));

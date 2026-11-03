@@ -79,3 +79,49 @@ def test_graph_scores_exact_limits_without_truncation(graph_app):
     assert len(matching['required']) == 20
     assert matching['required'][0] == {'skill': 'Python', 'mentioned': True}
     assert response.json()['awaiting_review']
+
+
+def test_full_review_survives_work_limit_without_scoring_and_resume(graph_app, monkeypatch):
+    client, path, application = graph_app
+    with connect(path) as db:
+        db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('x' * 4001, application))
+    def unexpected(*args):
+        raise AssertionError('oversized inputs must not be scored')
+    monkeypatch.setattr(graph_orchestrator, 'score_masked_resume', unexpected)
+    response = client.post('/api/graph-reviews', json={'application_id': application})
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result['awaiting_review']
+    assert result['state']['matching_unavailable']['status'] == 'limit_exceeded'
+    assert 'matching' not in result['state'] and 'matching_specialist' not in result['state']
+    assert 'matching_unavailable_ref' not in result['state']
+    saved = client.get(f"/api/graph-reviews/{result['id']}")
+    assert saved.json()['state']['matching_unavailable']['status'] == 'limit_exceeded'
+    resumed = client.post(f"/api/graph-reviews/{result['id']}/resume", json={'reviewed': True})
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()['state']['matching_unavailable']['status'] == 'limit_exceeded'
+    with connect(path) as db:
+        assert db.execute('SELECT status FROM applications WHERE id=?', (application,)).fetchone()[0] == 'submitted'
+        assert db.execute("SELECT count(*) FROM audit_events WHERE application_id=? AND action IN ('screened','decision')", (application,)).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('change', ['source', 'job'])
+def test_unavailable_marker_becomes_stale_after_change_and_revert(graph_app, change):
+    client, path, application = graph_app
+    with connect(path) as db:
+        db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('x' * 4001, application))
+    created = client.post('/api/graph-reviews', json={'application_id': application})
+    assert created.status_code == 201, created.text
+    review_id = created.json()['id']
+    with connect(path) as db:
+        if change == 'source':
+            db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('temporary', application))
+            db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('x' * 4001, application))
+        else:
+            job = db.execute("SELECT title FROM jobs WHERE id='job-backend-python'").fetchone()[0]
+            db.execute("UPDATE jobs SET title='temporary' WHERE id='job-backend-python'")
+            db.execute("UPDATE jobs SET title=? WHERE id='job-backend-python'", (job,))
+    result = client.get(f'/api/graph-reviews/{review_id}')
+    assert result.status_code == 200
+    assert result.json()['state']['matching_unavailable']['status'] == 'stale'
+    assert 'matching' not in result.json()['state']

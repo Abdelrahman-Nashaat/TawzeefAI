@@ -19,7 +19,7 @@ def clear_session():
     client = st.session_state.pop("local_api", None)
     if client:
         client.close()
-    for key in ("conversation_id", "question", "current_user", "candidate_message", "hr_review_preview", "hr_review_message"):
+    for key in ("conversation_id", "question", "current_user", "candidate_message", "hr_review_preview", "hr_review_message", "hr_slot_proposal", "hr_lifecycle_message"):
         st.session_state.pop(key, None)
 
 

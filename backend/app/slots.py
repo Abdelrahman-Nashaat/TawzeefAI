@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_digest
@@ -268,15 +268,23 @@ def create_slot_record(db, payload: SlotCreate, actor_id: int) -> dict:
 
 
 @router.get('/slots')
-def list_slots(request: Request, user: Authenticated, application_id: int | None = None):
+def list_slots(request: Request, user: Authenticated, application_id: int | None = None,
+               target_application_id: int | None = None):
     with connect(request.app.state.database_path) as db:
         if user.role == 'hr':
-            rows = db.execute('''SELECT s.*, i.status AS interview_status
+            db.execute('BEGIN')
+            _require_current_role(db, request, user, 'hr')
+            if target_application_id is not None and target_application_id <= 0:
+                raise HTTPException(status_code=422, detail='Application is invalid')
+            clause = 'WHERE s.target_application_id=?' if target_application_id is not None else ''
+            params = (target_application_id,) if target_application_id is not None else ()
+            rows = db.execute(f'''SELECT s.*, i.status AS interview_status
                 FROM interview_slots s LEFT JOIN interviews i ON i.id = s.interview_id
-                ORDER BY s.start_at, s.id''').fetchall()
+                {clause} ORDER BY s.start_at, s.id''', params).fetchall()
+            _require_current_role(db, request, user, 'hr')
             return [{**slot_view(row), 'target_application_id': row['target_application_id'], 'booked': row['interview_status'] == 'scheduled',
                      'withdrawn': bool(row['withdrawn'])} for row in rows]
-        if user.role != 'candidate':
+        if user.role != 'candidate' or target_application_id is not None:
             raise HTTPException(status_code=403, detail='Access denied')
         if application_id is None or application_id <= 0:
             raise HTTPException(status_code=422, detail='Application is required')
@@ -325,7 +333,8 @@ def book_slot(slot_id: int, payload: BookSlot, request: Request, user: Candidate
 
 
 @router.post('/slots/{slot_id}/withdraw')
-def withdraw_slot(slot_id: int, request: Request, user: HR):
+def withdraw_slot(slot_id: int, request: Request, user: HR,
+                  expected_application_id: int | None = Query(default=None, gt=0)):
     """Retire an unbooked slot without cancelling an existing interview."""
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN IMMEDIATE')
@@ -334,6 +343,12 @@ def withdraw_slot(slot_id: int, request: Request, user: HR):
             LEFT JOIN interviews i ON i.id=s.interview_id WHERE s.id=?''', (slot_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail='Slot not found')
+        if expected_application_id is not None:
+            application = db.execute('SELECT candidate_id,status FROM applications WHERE id=?',
+                                     (expected_application_id,)).fetchone()
+            if (row['target_application_id'] != expected_application_id or application is None
+                    or application['status'] != 'advanced' or row['target_candidate_id'] != application['candidate_id']):
+                raise HTTPException(status_code=409, detail='Slot or application changed; reload before withdrawing')
         if row['withdrawn'] or row['interview_status'] == 'scheduled':
             raise HTTPException(status_code=409, detail='Slot is withdrawn or has a scheduled interview')
         if row['start_at'] <= utc_text(datetime.now(UTC)):
@@ -341,4 +356,5 @@ def withdraw_slot(slot_id: int, request: Request, user: HR):
         db.execute('UPDATE interview_slots SET withdrawn=1 WHERE id=?', (slot_id,))
         db.execute('INSERT INTO slot_audit_events (slot_id,actor_id,action) VALUES (?,?,?)',
                    (slot_id, user.id, 'slot_withdrawn'))
+        _require_current_role(db, request, user, 'hr')
         return {**slot_view(row), 'withdrawn': True}
