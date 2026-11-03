@@ -97,32 +97,43 @@ def _require_current_hr(db, request: Request, user: User) -> None:
         raise HTTPException(status_code=403, detail="HR access required")
 
 
+def validate_interview_completion(db, interview_id: int):
+    """Validate the current interview inside the caller's transaction."""
+    row = db.execute("""SELECT i.*, a.status AS application_status, a.candidate_id AS application_candidate_id
+        FROM interviews i JOIN applications a ON a.id=i.application_id WHERE i.id=?""", (interview_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    if row['status'] != 'scheduled' or row['application_status'] not in ('submitted', 'advanced'):
+        raise HTTPException(status_code=409, detail="Interview cannot be marked completed")
+    try:
+        end = datetime.fromisoformat(row['end_at'])
+        if end.tzinfo is None or end.utcoffset() is None or end > datetime.now(UTC):
+            raise ValueError('Interview is not over')
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=409, detail="Interview end must have passed") from exc
+    if db.execute("SELECT 1 FROM interview_completions WHERE interview_id=?", (interview_id,)).fetchone():
+        raise HTTPException(status_code=409, detail="Interview completion already recorded")
+    return row
+
+
+def record_interview_completion(db, interview_id: int, actor_id: int):
+    """Record one validated completion and audit event in the caller's transaction."""
+    row = validate_interview_completion(db, interview_id)
+    db.execute("INSERT INTO interview_completions(interview_id, recorded_by) VALUES (?,?)", (interview_id, actor_id))
+    db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,?,?)",
+               (row['application_id'], actor_id, 'interview_completed', json.dumps({'interview_id': interview_id})))
+    return interview_view(db.execute("SELECT *, 1 AS completed FROM interviews WHERE id=?", (interview_id,)).fetchone())
+
+
 @router.post("/interviews/{interview_id}/complete")
 def complete_interview(interview_id: int, request: Request, user: HR):
     """Record that HR confirms an interview took place; no provider calls occur."""
     with connect(request.app.state.database_path) as db:
         db.execute("BEGIN IMMEDIATE")
         _require_current_hr(db, request, user)
-        row = db.execute("""SELECT i.*, a.status AS application_status FROM interviews i
-            JOIN applications a ON a.id=i.application_id WHERE i.id=?""", (interview_id,)).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Interview not found")
-        if row['status'] != 'scheduled' or row['application_status'] not in ('submitted', 'advanced'):
-            raise HTTPException(status_code=409, detail="Interview cannot be marked completed")
-        try:
-            end = datetime.fromisoformat(row['end_at'])
-            if end.tzinfo is None or end.utcoffset() is None or end > datetime.now(UTC):
-                raise ValueError('Interview is not over')
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise HTTPException(status_code=409, detail="Interview end must have passed") from exc
-        if db.execute("SELECT 1 FROM interview_completions WHERE interview_id=?", (interview_id,)).fetchone():
-            raise HTTPException(status_code=409, detail="Interview completion already recorded")
-        db.execute("INSERT INTO interview_completions(interview_id, recorded_by) VALUES (?,?)", (interview_id, user.id))
-        db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,?,?)",
-                   (row['application_id'], user.id, 'interview_completed', json.dumps({'interview_id': interview_id})))
-        updated = db.execute("SELECT *, 1 AS completed FROM interviews WHERE id=?", (interview_id,)).fetchone()
+        updated = record_interview_completion(db, interview_id, user.id)
         _require_current_hr(db, request, user)
-        return interview_view(updated)
+        return updated
 
 
 @router.post("/interviews", status_code=201)

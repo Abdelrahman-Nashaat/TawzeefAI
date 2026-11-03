@@ -60,7 +60,7 @@ from app.recruitment import (
 from app.resume_fields import resume_fields_for_display
 from app.resume_mask import masked_source
 from app.resume_structure import structure_resume
-from app.scheduling import utc_text
+from app.scheduling import record_interview_completion, utc_text, validate_interview_completion
 from app.slot_reservations import private_slot_conflict
 from app.slots import BatchSlot, SlotCreate, _validate_batch, create_slot_record
 from app.workflow import candidate_stage
@@ -74,8 +74,9 @@ _matching_workers = BoundedSemaphore(2)
 class ReviewRequest(BaseModel):
     application_id: int = Field(gt=0)
     policy_question: str = Field(default="", max_length=2000)
-    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application'] = 'full'
+    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application', 'complete_interview'] = 'full'
     slot: SlotCreate | None = None
+    interview_id: int | None = Field(default=None, gt=0)
     adaptive_goal: Literal['review_application', 'schedule_interview', 'advance_and_reserve'] | None = None
     allow_semantic: StrictBool = False
 
@@ -89,9 +90,11 @@ class ReviewRequest(BaseModel):
 
     @model_validator(mode='after')
     def check_policy_question(self):
+        if (self.intent == 'complete_interview') != (self.interview_id is not None):
+            raise ValueError('Interview ID is required only for completion review')
         if self.intent == 'policy' and not self.policy_question.strip():
             raise ValueError('Policy review requires a question')
-        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'screen_application') and self.policy_question.strip():
+        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview') and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
         needs_slot = self.intent in ('create_slot', 'create_private_slot', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or (self.intent == 'adaptive' and self.adaptive_goal in ('schedule_interview', 'advance_and_reserve'))
         if needs_slot != (self.slot is not None):
@@ -112,6 +115,7 @@ class ReviewReply(BaseModel):
 
 class ReviewState(TypedDict, total=False):
     application_id: int
+    interview_id: int
     intent: str
     allow_semantic: bool
     plan: list[str]
@@ -233,6 +237,32 @@ def initialize_graph_reviews(path: str | Path) -> None:
                 UPDATE graph_screen_revisions SET revision=revision+1 WHERE application_id=OLD.id;
             END""")
 
+        db.execute("""CREATE TABLE IF NOT EXISTS graph_interview_revisions (
+            interview_id INTEGER PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0
+        )""")
+        for event, prefix in (('UPDATE', 'NEW'), ('DELETE', 'OLD'), ('INSERT', 'NEW')):
+            db.execute(f"""CREATE TRIGGER IF NOT EXISTS graph_interview_revision_{event.lower()}
+                AFTER {event} ON interviews BEGIN
+                    INSERT OR IGNORE INTO graph_interview_revisions(interview_id,revision) VALUES({prefix}.id,0);
+                    UPDATE graph_interview_revisions SET revision=revision+1 WHERE interview_id={prefix}.id;
+                END""")
+
+
+def _interview_completion_snapshot(db, application_id: int, interview_id: int):
+    """Bind completion approval to the exact interview and monotonic revisions."""
+    row = validate_interview_completion(db, interview_id)
+    if row['application_id'] != application_id or row['candidate_id'] != row['application_candidate_id']:
+        raise HTTPException(status_code=409, detail='Interview does not belong to this application and candidate')
+    revision = db.execute('SELECT revision FROM graph_interview_revisions WHERE interview_id=?', (interview_id,)).fetchone()
+    app_revision = db.execute('SELECT revision FROM rubric_publication_revisions WHERE application_id=?', (application_id,)).fetchone()
+    status_revision = db.execute('SELECT revision FROM graph_screen_revisions WHERE application_id=?', (application_id,)).fetchone()
+    values = {key: row[key] for key in ('id', 'application_id', 'candidate_id', 'start_at', 'end_at', 'interviewer', 'status', 'application_status')}
+    values.update(interview_revision=revision['revision'] if revision else 0,
+                  application_revision=app_revision['revision'] if app_revision else 0,
+                  status_revision=status_revision['revision'] if status_revision else 0)
+    digest = hashlib.sha256(json.dumps(values, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+    return row, digest
+
 
 def _current_scheduling(path: str | Path, application_id: int) -> dict:
     with connect(path) as db:
@@ -304,6 +334,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             'policy': ['policy', 'human_review'],
             'scheduling': ['scheduler', 'human_review'],
             'status': ['status', 'human_review'],
+            'complete_interview': ['status', 'prepare_completion', 'human_review', 'execute_completion'],
             'create_slot': ['prepare_slot', 'human_review', 'execute_slot'],
             'create_private_slot': ['prepare_slot', 'human_review', 'execute_slot'],
             'advance_application': ['parser', 'matching', 'status', 'prepare_advance', 'human_review', 'execute_advance'],
@@ -491,6 +522,30 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             created['application_id'] = state['application_id']
         return {'action_result': {'status': 'created', 'slot': created}}
 
+    def prepare_completion(state: ReviewState):
+        if authorize is None or user is None:
+            raise HTTPException(status_code=403, detail='HR access required')
+        authorize()
+        with connect(path) as db:
+            db.execute('BEGIN')
+            row, fingerprint = _interview_completion_snapshot(db, state['application_id'], state['interview_id'])
+            proposal = {'type': 'complete_interview', 'application_id': state['application_id'],
+                        'interview_id': row['id'], 'approval_fingerprint': fingerprint,
+                        'notice': 'Confirm only if the interview took place. No message is sent.'}
+        authorize()
+        return {'action_proposal': proposal}
+
+    def execute_completion(state: ReviewState):
+        if not state['reviewed']:
+            return {'action_result': {'status': 'declined'}}
+        if action_db is None or user is None:
+            raise RuntimeError('An authorized resume transaction is required')
+        _, current = _interview_completion_snapshot(action_db, state['application_id'], state['interview_id'])
+        if not secrets.compare_digest(current, state['action_proposal']['approval_fingerprint']):
+            raise HTTPException(status_code=409, detail='Interview or application changed; start a new review')
+        record_interview_completion(action_db, state['interview_id'], user.id)
+        return {'action_result': {'status': 'interview_completed', 'interview_id': state['interview_id']}}
+
     def prepare_screen(state: ReviewState):
         with connect(path) as db:
             db.execute('BEGIN')
@@ -595,7 +650,9 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         return {'action_result': {'status': 'advanced'}}
 
     def human_review(state: ReviewState):
-        notice = ('Approve recording this keyword screening. No hiring decision or message is made.'
+        notice = ('Confirm this interview took place. No message is sent.'
+                  if state.get('intent') == 'complete_interview' else
+                  'Approve recording this keyword screening. No hiring decision or message is made.'
                   if state.get('intent') == 'screen_application' else
                   'Approve advancement and a private slot for this candidate. No message is sent.'
                   if state.get('intent') in ('advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or state.get('adaptive_goal') == 'advance_and_reserve' else
@@ -617,7 +674,8 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
              "scheduler": scheduler, "status": status, "agent_review": agent_review,
              "human_review": human_review, "prepare_slot": prepare_slot, "execute_slot": execute_slot,
              "prepare_advance": prepare_advance, "execute_advance": execute_advance,
-             "prepare_screen": prepare_screen, "execute_screen": execute_screen}
+             "prepare_screen": prepare_screen, "execute_screen": execute_screen,
+             "prepare_completion": prepare_completion, "execute_completion": execute_completion}
     def guarded(node):
         def execute(state):
             if state.get('intent') != 'adaptive':
@@ -644,14 +702,15 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             steps = state['plan']
             return steps[0] if name == 'plan' else steps[steps.index(name) + 1]
         return route
-    choices = ['parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'prepare_screen', 'human_review', 'execute_slot', 'execute_advance', 'execute_screen']
-    for name in ['plan', 'parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'prepare_screen']:
+    choices = ['parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'prepare_screen', 'prepare_completion', 'human_review', 'execute_slot', 'execute_advance', 'execute_screen', 'execute_completion']
+    for name in ['plan', 'parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'prepare_screen', 'prepare_completion']:
         builder.add_conditional_edges(name, next_after(name), choices)
-    builder.add_conditional_edges('human_review', lambda state: 'execute_screen' if state.get('intent') == 'screen_application' else 'execute_advance' if state.get('intent') in ('advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or state.get('adaptive_goal') == 'advance_and_reserve' else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
-                                  {'execute_slot': 'execute_slot', 'execute_advance': 'execute_advance', 'execute_screen': 'execute_screen', END: END})
+    builder.add_conditional_edges('human_review', lambda state: 'execute_completion' if state.get('intent') == 'complete_interview' else 'execute_screen' if state.get('intent') == 'screen_application' else 'execute_advance' if state.get('intent') in ('advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or state.get('adaptive_goal') == 'advance_and_reserve' else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
+                                  {'execute_slot': 'execute_slot', 'execute_advance': 'execute_advance', 'execute_screen': 'execute_screen', 'execute_completion': 'execute_completion', END: END})
     builder.add_edge('execute_slot', END)
     builder.add_edge('execute_advance', END)
     builder.add_edge('execute_screen', END)
+    builder.add_edge('execute_completion', END)
     return builder.compile(checkpointer=checkpointer)
 
 
@@ -743,7 +802,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     selected = state.get('intent', 'full')
     scoped_fields = {'parsed': 'full', 'matching': 'full', 'agent_review': 'full',
                      'policy': 'policy', 'scheduling': 'scheduling', 'status': 'status'}
-    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application'}:
+    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application', 'complete_interview'}:
         selected = 'invalid'
     for field, scope in scoped_fields.items():
         adaptive_fields = {'parsed': 'parser', 'matching': 'matching', 'scheduling': 'scheduler', 'status': 'status'}
@@ -793,6 +852,17 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                         'Live queue information, not part of the reviewed graph snapshot. '
                         'A provisional keyword score is not verified ability or an HR decision. '
                         'The current threshold and source review status determine prioritization.')
+                if selected == 'complete_interview' and snapshot.next:
+                    try:
+                        interview, fingerprint = _interview_completion_snapshot(db, state['application_id'], state['interview_id'])
+                        if not secrets.compare_digest(fingerprint, state['action_proposal']['approval_fingerprint']):
+                            raise HTTPException(status_code=409, detail='Interview changed')
+                        state['interview_preview'] = {'status': 'current', 'id': interview['id'],
+                            'start_at': interview['start_at'], 'end_at': interview['end_at'],
+                            'interviewer': interview['interviewer'],
+                            'notice': 'Confirm only if this interview took place.'}
+                    except (HTTPException, KeyError):
+                        state['interview_preview'] = {'status': 'stale', 'notice': 'Interview changed; start a new review.'}
                 if selected == 'screen_application' and snapshot.next:
                     application, score, context_digest, revision, score_digest = _screen_snapshot(db, state['application_id'])
                     if _screen_is_current(state, application, context_digest, revision, score_digest):
@@ -896,6 +966,13 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     available = _authorized_sources(fresh, 'hr')
                 if any(ref['id'] not in available or _digest(available[ref['id']]) != ref['digest'] for ref in refs):
                     raise HTTPException(status_code=409, detail='Policy sources changed; reload the review')
+            if selected == 'complete_interview' and snapshot.next and state.get('interview_preview', {}).get('status') == 'current':
+                try:
+                    _, fingerprint = _interview_completion_snapshot(fresh, state['application_id'], state['interview_id'])
+                    if not secrets.compare_digest(fingerprint, state['action_proposal']['approval_fingerprint']):
+                        raise HTTPException(status_code=409, detail='Interview changed')
+                except (HTTPException, KeyError):
+                    raise HTTPException(status_code=409, detail='Interview changed; reload the review') from None
             if candidate_progress_owner is not None and 'candidate_progress' in state:
                 current = fresh.execute('SELECT candidate_id,status FROM applications WHERE id=?',
                                         (state['application_id'],)).fetchone()
@@ -929,6 +1006,8 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
                                        enable_agent=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1', request=request)
             config = _config(thread_id)
             initial = {"application_id": payload.application_id, "intent": payload.intent}
+            if payload.interview_id is not None:
+                initial['interview_id'] = payload.interview_id
             if payload.allow_semantic:
                 initial['allow_semantic'] = True
             if payload.adaptive_goal is not None:
@@ -989,7 +1068,7 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             if (snapshot.values.get('intent') == 'adaptive' and
                     context_for(db, snapshot.values['application_id'])[1] != snapshot.values.get('context_digest')):
                 raise HTTPException(status_code=409, detail='Application changed; start a new review')
-            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot', 'screen_application') or snapshot.values.get('adaptive_goal') in ('schedule_interview', 'advance_and_reserve')) and payload.reviewed:
+            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview') or snapshot.values.get('adaptive_goal') in ('schedule_interview', 'advance_and_reserve')) and payload.reviewed:
                 expected = snapshot.values.get('action_proposal', {}).get('approval_fingerprint', '')
                 if (not expected or not payload.approval_fingerprint or
                         not secrets.compare_digest(expected.encode('utf-8'), payload.approval_fingerprint.encode('utf-8'))):

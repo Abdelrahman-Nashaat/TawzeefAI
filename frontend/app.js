@@ -1012,7 +1012,9 @@ function setupGraphReview(target, application) {
   adaptiveAdvanceOption.value = "adaptive_advance"; intent.append(adaptiveAdvanceOption);
   const screenActionOption = element("option", "", "Review and record keyword screening");
   screenActionOption.value = "screen_application"; intent.append(screenActionOption);
+  const completionOption = element("option", "", "Review completed interview"); completionOption.value = "complete_interview"; intent.append(completionOption);
   intentLabel.append(intent);
+  const interviewLabel = element("label", "", "Interview ID"); const interviewId = element("input"); interviewId.type = "number"; interviewId.min = "1"; interviewId.step = "1"; interviewId.disabled = true; interviewLabel.hidden = true; interviewLabel.append(interviewId);
   const questionLabel = element("label", "", "سؤال سياسة اختياري للبحث المحلي");
   const question = element("textarea"); question.maxLength = 2000; question.placeholder = "يمكن تركه فارغًا"; questionLabel.append(question);
   const adaptiveSemanticLabel = element("label", "", "Allow the adaptive planner to use local semantic evidence when available; it may omit this step.");
@@ -1025,6 +1027,7 @@ function setupGraphReview(target, application) {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "التوقيت المحلي";
   slotFields.append(element("p", "subtle-note", `الوقت المدخل حسب المنطقة الزمنية لجهازك: ${timezone}.`), slotStartLabel, slotEndLabel, interviewerLabel);
   intent.addEventListener("change", () => {
+    const isCompletion = intent.value === "complete_interview"; interviewLabel.hidden = !isCompletion; interviewId.disabled = !isCompletion; interviewId.required = isCompletion;
     const adaptiveMode = ["adaptive", "adaptive_schedule", "adaptive_advance"].includes(intent.value);
     adaptiveSemanticLabel.hidden = !adaptiveMode; adaptiveSemantic.disabled = !adaptiveMode;
     if (!adaptiveMode) adaptiveSemantic.checked = false;
@@ -1039,7 +1042,7 @@ function setupGraphReview(target, application) {
     for (const field of [slotStart, slotEnd, interviewer]) { field.disabled = !createSlot; field.required = createSlot; }
   });
   const start = element("button", "small-button", "بدء مراجعة المراحل"); start.type = "submit";
-  form.append(intentLabel, adaptiveSemanticLabel, questionLabel, slotFields, element("p", "subtle-note", "يُعرض مقتطف من المصادر المصرح بها عند إدخال سؤال، ويُعاد فحصها عند تحميل المراجعة. لا يُحفظ نص السؤال في المراجعة."), start);
+  form.append(intentLabel, interviewLabel, adaptiveSemanticLabel, questionLabel, slotFields, element("p", "subtle-note", "يُعرض مقتطف من المصادر المصرح بها عند إدخال سؤال، ويُعاد فحصها عند تحميل المراجعة. لا يُحفظ نص السؤال في المراجعة."), start);
   const restore = element("form", "decision-form");
   const idLabel = element("label", "", "معرّف مراجعة سابقة لهذا الطلب");
   const idInput = element("input"); idInput.maxLength = 100; idLabel.append(idInput);
@@ -1051,6 +1054,7 @@ function setupGraphReview(target, application) {
   labels.prepare_advance = "Prepare advancement proposal";
   labels.execute_advance = "Advance after HR approval";
   labels.semantic = "Find résumé passages for human review";
+  labels.prepare_completion = "Prepare interview completion for HR review"; labels.execute_completion = "Record completion after HR approval";
   labels.prepare_screen = "Prepare screening for HR review";
   labels.execute_screen = "Record approved screening";
   function report(text, error = false) { message.textContent = text; message.className = error ? "form-error" : "subtle-note"; }
@@ -1195,6 +1199,7 @@ function setupGraphReview(target, application) {
       if (screeningPreview.status === "current" && screeningPreview.score) { const box = element("div"); renderScore(box, screeningPreview.score); output.append(box); }
       else output.append(element("p", "form-error", "The screening inputs changed. Start a new review."));
     }
+    if (proposal?.type === "complete_interview" && review.awaiting_review) { const v = review.state.interview_preview; output.append(element("p", "subtle-note", v?.status === "current" ? `Interview #${v.id}: ${displayDate(v.start_at)} to ${displayDate(v.end_at)}; interviewer ${v.interviewer}. Confirm only if it took place.` : "Interview changed; start a new review.")); }
     if (proposal?.type === "screen_application") output.append(element("p", "subtle-note", `Approval records the reviewed keyword screening for application #${proposal.application_id}, candidate #${proposal.candidate_id}. It does not advance, reject, or hire the candidate.`));
     if (["create_slot", "create_private_slot"].includes(proposal?.type) && proposal.slot) {
       output.append(element("h4", "", "تفاصيل الموعد المقترح"),
@@ -1217,6 +1222,7 @@ function setupGraphReview(target, application) {
     if (result?.status === "created") output.append(element("p", "result-badge", proposal?.type === "create_private_slot" ? "The candidate-specific slot was added after approval." : "The shared slot was added after approval."));
     else if (result?.status === "advanced") output.append(element("p", "result-badge", "The application was advanced after HR approval."));
     else if (result?.status === "advanced_and_reserved") output.append(element("p", "result-badge", "The application was advanced and its private slot reserved after HR approval."));
+    else if (result?.status === "interview_completed") output.append(element("p", "result-badge", "Interview completion recorded after HR approval."));
     else if (result?.status === "screened") output.append(element("p", "result-badge", "The reviewed keyword screening was recorded."));
     else if (result?.status === "declined") output.append(element("p", "result-badge", "The proposal was declined; no action was taken."));
     if (review.awaiting_review && (proposal || ["create_slot", "create_private_slot", "advance_application", "advance_and_reserve_slot"].includes(review.state.intent))) {
@@ -1226,11 +1232,12 @@ function setupGraphReview(target, application) {
       const validAdvance = proposal?.type === "advance_application" && proposal.current_status === "submitted" && proposal.target_status === "advanced" && Number.isInteger(proposal.assessment_id) && proposal.assessment_id > 0;
       const validCombined = proposal?.type === "advance_and_reserve_slot" && proposal.availability_scope === "selected_application_only" && proposal.current_status === "submitted" && proposal.target_status === "advanced" && Number.isInteger(proposal.candidate_id) && proposal.candidate_id > 0 && Number.isInteger(proposal.assessment_id) && proposal.assessment_id > 0 && proposal.slot?.start_at && proposal.slot?.end_at && proposal.slot?.interviewer;
       const validScreen = proposal?.type === "screen_application" && Number.isInteger(proposal.candidate_id) && proposal.candidate_id > 0 && screeningPreview?.status === "current";
-      if ((!validSlot && !validAdvance && !validCombined && !validScreen) || proposal.application_id !== application.id || !proposal.approval_fingerprint) {
+      const validCompletion = proposal?.type === "complete_interview" && review.state.interview_preview?.status === "current" && proposal.interview_id === review.state.interview_preview.id;
+      if ((!validSlot && !validAdvance && !validCombined && !validScreen && !validCompletion) || proposal.application_id !== application.id || !proposal.approval_fingerprint) {
         output.append(element("p", "form-error", "تعذّرت مراجعة تفاصيل المقترح بأمان. أعد تحميل المراجعة."));
         return;
       }
-      const approve = element("button", "small-button", validScreen ? "Approve and record screening" : validCombined ? "Approve advancement and private slot" : validAdvance ? "Approve advancement" : "Approve this slot"); approve.type = "button";
+      const approve = element("button", "small-button", validCompletion ? "Confirm interview took place" : validScreen ? "Approve and record screening" : validCombined ? "Approve advancement and private slot" : validAdvance ? "Approve advancement" : "Approve this slot"); approve.type = "button";
       const decline = element("button", "outline-button", "أرفض المقترح"); decline.type = "button";
       const staleSemantic = (review.state.intent === "semantic_advance_and_reserve_slot" || (review.state.intent === "adaptive" && review.state.plan?.includes("semantic"))) && semantic?.status !== "current";
       if (review.state.plan_stale || staleSemantic) { approve.disabled = true; decline.disabled = true; }
@@ -1274,6 +1281,7 @@ function setupGraphReview(target, application) {
     try {
       const adaptiveMode = ["adaptive", "adaptive_schedule", "adaptive_advance"].includes(intent.value);
       const body = { application_id: application.id, intent: adaptiveMode ? "adaptive" : intent.value };
+      if (intent.value === "complete_interview") body.interview_id = Number(interviewId.value);
       if (adaptiveMode) { body.adaptive_goal = intent.value === "adaptive" ? "review_application" : intent.value === "adaptive_schedule" ? "schedule_interview" : "advance_and_reserve"; body.allow_semantic = adaptiveSemantic.checked; }
       else body.policy_question = question.value.trim();
       if (["create_slot", "create_private_slot", "advance_and_reserve_slot", "semantic_advance_and_reserve_slot", "adaptive_schedule", "adaptive_advance"].includes(intent.value)) {
