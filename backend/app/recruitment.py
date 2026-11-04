@@ -516,7 +516,8 @@ def create_offer(application_id: int, payload: OfferCreate, request: Request, us
         if application['status'] != 'advanced':
             raise HTTPException(status_code=409, detail='Application is not ready for an offer')
         if not db.execute('''SELECT 1 FROM interviews i JOIN interview_completions c ON c.interview_id=i.id
-                             WHERE i.application_id=? LIMIT 1''', (application_id,)).fetchone():
+                             WHERE i.application_id=? AND i.candidate_id=? LIMIT 1''',
+                          (application_id, application['candidate_id'])).fetchone():
             raise HTTPException(status_code=409, detail='A completed interview is required')
         if _upcoming_interview(db, application_id):
             raise HTTPException(status_code=409, detail='Resolve active interviews before presenting an offer')

@@ -58,6 +58,28 @@ def test_offer_acceptance_and_hire(setup):
     assert all('Position and compensation' not in event['details'] for event in events)
 
 
+def test_offer_requires_completed_interview_for_current_candidate(setup):
+    from app.auth import hash_password
+
+    client, path, app_id, candidate, hr = setup
+    completed_interview(path, app_id, candidate, hr)
+    with connect(path) as db:
+        other = db.execute(
+            "INSERT INTO users(username,display_name,role,password_hash) VALUES ('other','Other','candidate',?)",
+            (hash_password('other-password'),),
+        ).lastrowid
+        db.execute('UPDATE applications SET candidate_id=? WHERE id=?', (other, app_id))
+
+    endpoint = f'/api/applications/{app_id}/offers'
+    assert client.post(endpoint, json={'details': 'Offer'}).status_code == 409
+    with connect(path) as db:
+        assert db.execute('SELECT status FROM applications WHERE id=?', (app_id,)).fetchone()[0] == 'advanced'
+        assert db.execute('SELECT count(*) FROM job_offers WHERE application_id=?', (app_id,)).fetchone()[0] == 0
+
+    completed_interview(path, app_id, other, hr)
+    assert client.post(endpoint, json={'details': 'Offer'}).status_code == 201
+
+
 def test_active_interview_blocks_offer_and_hiring(setup):
     client, path, app_id, candidate, hr = setup
     completed_interview(path, app_id, candidate, hr)
