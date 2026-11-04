@@ -37,6 +37,7 @@ from app.agent import AgentError, run_agent
 from app.auth import COOKIE_NAME, User, get_current_user, require_roles, token_digest
 from app.conversations import _authorized_sources, _digest
 from app.db import connect
+from app.google_outbox import cancellation_block_reason
 from app.graph_semantic import context as semantic_context
 from app.graph_semantic import restore_references, save_references
 from app.interview_guide import guide_from_matching
@@ -56,6 +57,7 @@ from app.recruitment import (
     get_application,
     record_hire,
     record_offer,
+    record_rejection,
     score_masked_resume,
     store_screening,
     validate_hire_eligibility,
@@ -78,10 +80,11 @@ _matching_workers = BoundedSemaphore(2)
 class ReviewRequest(BaseModel):
     application_id: int = Field(gt=0)
     policy_question: str = Field(default="", max_length=2000)
-    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application', 'complete_interview', 'present_offer', 'finalize_hire'] = 'full'
+    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application', 'complete_interview', 'present_offer', 'finalize_hire', 'reject_application'] = 'full'
     slot: SlotCreate | None = None
     interview_id: int | None = Field(default=None, gt=0)
     offer_details: str | None = Field(default=None, max_length=4000)
+    rejection_reason: str | None = Field(default=None, max_length=1000)
     adaptive_goal: Literal['review_application', 'schedule_interview', 'advance_and_reserve'] | None = None
     allow_semantic: StrictBool = False
 
@@ -95,13 +98,15 @@ class ReviewRequest(BaseModel):
 
     @model_validator(mode='after')
     def check_policy_question(self):
+        if (self.intent == 'reject_application') != bool(self.rejection_reason and self.rejection_reason.strip()):
+            raise ValueError('Rejection reason is required only for rejection review')
         if (self.intent == 'present_offer') != bool(self.offer_details and self.offer_details.strip()):
             raise ValueError('Offer details are required only for offer review')
         if (self.intent == 'complete_interview') != (self.interview_id is not None):
             raise ValueError('Interview ID is required only for completion review')
         if self.intent == 'policy' and not self.policy_question.strip():
             raise ValueError('Policy review requires a question')
-        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview', 'present_offer', 'finalize_hire') and self.policy_question.strip():
+        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview', 'present_offer', 'finalize_hire', 'reject_application') and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
         needs_slot = self.intent in ('create_slot', 'create_private_slot', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or (self.intent == 'adaptive' and self.adaptive_goal in ('schedule_interview', 'advance_and_reserve'))
         if needs_slot != (self.slot is not None):
@@ -124,6 +129,7 @@ class ReviewState(TypedDict, total=False):
     application_id: int
     interview_id: int
     offer_draft_id: str
+    rejection_draft_id: str
     intent: str
     allow_semantic: bool
     plan: list[str]
@@ -265,6 +271,42 @@ def initialize_graph_reviews(path: str | Path) -> None:
         db.execute("""CREATE TABLE IF NOT EXISTS graph_offer_revisions (
             application_id INTEGER PRIMARY KEY REFERENCES applications(id), revision INTEGER NOT NULL DEFAULT 0
         )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS graph_rejection_drafts (
+            thread_id TEXT PRIMARY KEY REFERENCES graph_review_owners(thread_id) ON DELETE CASCADE,
+            application_id INTEGER NOT NULL REFERENCES applications(id),
+            owner_id INTEGER NOT NULL REFERENCES users(id), reason TEXT NOT NULL,
+            expires_at INTEGER NOT NULL
+        )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS graph_rejection_revisions (
+            application_id INTEGER PRIMARY KEY REFERENCES applications(id), revision INTEGER NOT NULL DEFAULT 0
+        )""")
+        db.execute("""CREATE TRIGGER IF NOT EXISTS graph_rejection_draft_update
+            AFTER UPDATE ON graph_rejection_drafts BEGIN
+            INSERT OR IGNORE INTO graph_rejection_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE id IN (NEW.application_id,OLD.application_id);
+            UPDATE graph_rejection_revisions SET revision=revision+1
+                WHERE application_id IN (NEW.application_id,OLD.application_id);
+        END""")
+        for table, column in (('interview_slots', 'target_application_id'), ('google_deliveries', 'application_id')):
+            for event, alias in (('INSERT', 'NEW'), ('UPDATE', 'NEW'), ('DELETE', 'OLD')):
+                old_id = 'OLD.' + column if event == 'UPDATE' else alias + '.' + column
+                new_id = alias + '.' + column
+                db.execute(f"""CREATE TRIGGER IF NOT EXISTS graph_rejection_{table}_{event.lower()}
+                    AFTER {event} ON {table} BEGIN
+                    INSERT OR IGNORE INTO graph_rejection_revisions(application_id,revision)
+                        SELECT id,0 FROM applications WHERE id IN ({new_id},{old_id});
+                    UPDATE graph_rejection_revisions SET revision=revision+1
+                        WHERE application_id IN ({new_id},{old_id});
+                END""")
+        for event, alias in (('INSERT', 'NEW'), ('UPDATE', 'NEW'), ('DELETE', 'OLD')):
+            old_id = 'OLD.delivery_id' if event == 'UPDATE' else alias + '.delivery_id'
+            db.execute(f"""CREATE TRIGGER IF NOT EXISTS graph_rejection_removal_{event.lower()}
+                AFTER {event} ON google_calendar_removals BEGIN
+                INSERT OR IGNORE INTO graph_rejection_revisions(application_id,revision)
+                    SELECT application_id,0 FROM google_deliveries WHERE id IN ({alias}.delivery_id,{old_id});
+                UPDATE graph_rejection_revisions SET revision=revision+1 WHERE application_id IN
+                    (SELECT application_id FROM google_deliveries WHERE id IN ({alias}.delivery_id,{old_id}));
+            END""")
         db.execute("""CREATE TRIGGER IF NOT EXISTS graph_offer_candidate_access_update
             AFTER UPDATE OF role, active ON users
             WHEN OLD.role IS NOT NEW.role OR OLD.active IS NOT NEW.active BEGIN
@@ -314,6 +356,65 @@ def initialize_graph_reviews(path: str | Path) -> None:
                 UPDATE graph_offer_revisions SET revision=revision+1 WHERE application_id IN
                     (SELECT application_id FROM interviews WHERE id IN ({alias}.interview_id,{old_interview}));
             END""")
+
+
+def _rejection_snapshot(db, application_id: int, draft_id: str, owner_id: int):
+    draft = db.execute('SELECT * FROM graph_rejection_drafts WHERE thread_id=? AND application_id=? AND owner_id=?',
+                       (draft_id, application_id, owner_id)).fetchone()
+    if draft is None or draft['expires_at'] <= int(time.time()):
+        raise HTTPException(status_code=409, detail='Rejection draft unavailable or expired; start a new review')
+    application = get_application(db, application_id)
+    if application['status'] not in ('submitted', 'advanced', 'offered'):
+        raise HTTPException(status_code=409, detail='Application cannot be rejected from its current status')
+    candidate = db.execute('SELECT username,display_name FROM users WHERE id=?', (application['candidate_id'],)).fetchone()
+    job = db.execute('SELECT title FROM jobs WHERE id=?', (application['job_id'],)).fetchone()
+    if candidate is None or job is None:
+        raise HTTPException(status_code=409, detail='Candidate or job unavailable')
+    now = utc_text(datetime.now(UTC))
+    interviews = db.execute("""SELECT id,start_at,end_at,interviewer FROM interviews
+        WHERE application_id=? AND status='scheduled' AND start_at>? ORDER BY id LIMIT 51""",
+        (application_id, now)).fetchall()
+    if len(interviews) > 50:
+        raise HTTPException(status_code=409, detail='Too many interviews; review manually')
+    if any(cancellation_block_reason(db, row['id']) for row in interviews):
+        raise HTTPException(status_code=409, detail='Resolve the Google delivery before rejecting this application')
+    slots = db.execute("""SELECT s.id,s.start_at,s.end_at,s.interviewer FROM interview_slots s
+        LEFT JOIN interviews i ON i.id=s.interview_id WHERE s.target_application_id=? AND s.withdrawn=0
+        AND s.start_at>? AND (s.interview_id IS NULL OR i.status='cancelled' OR
+        (i.status='scheduled' AND i.application_id=? AND i.start_at>?)) ORDER BY s.id LIMIT 51""",
+        (application_id, now, application_id, now)).fetchall()
+    if len(slots) > 50:
+        raise HTTPException(status_code=409, detail='Too many private slots; review manually')
+    offer = db.execute("SELECT id,status FROM job_offers WHERE application_id=? AND status IN ('presented','accepted')", (application_id,)).fetchone()
+    identity = {'candidate_id': application['candidate_id'], 'candidate_name': candidate['display_name'],
+                'candidate_username': candidate['username'], 'job_id': application['job_id'], 'job_title': job['title']}
+    revisions = [db.execute(f'SELECT revision FROM {table} WHERE application_id=?', (application_id,)).fetchone()
+                 for table in ('graph_offer_revisions', 'graph_rejection_revisions')]
+    effects = {'interviews': [dict(row) for row in interviews], 'slots': [dict(row) for row in slots],
+               'offer_id': offer['id'] if offer else None, 'offer_status': offer['status'] if offer else None}
+    data = {'application_id': application_id, **identity, 'application_status': application['status'],
+            'reason_sha256': hashlib.sha256(draft['reason'].encode()).hexdigest(), 'effects': effects,
+            'revisions': [row['revision'] if row else 0 for row in revisions], 'expires_at': draft['expires_at']}
+    fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+    return draft['reason'], identity, effects, application['status'], fingerprint
+
+
+def _check_rejection_effects(db, effects):
+    """Fail and roll back if time passed or the recorded effects differ from the review."""
+    now = utc_text(datetime.now(UTC))
+    for interview in effects['interviews']:
+        row = db.execute('SELECT status FROM interviews WHERE id=?', (interview['id'],)).fetchone()
+        if interview['start_at'] <= now or row is None or row['status'] != 'cancelled':
+            raise HTTPException(status_code=409, detail='Interview timing changed; start a new review')
+    for slot in effects['slots']:
+        row = db.execute('SELECT withdrawn FROM interview_slots WHERE id=?', (slot['id'],)).fetchone()
+        if slot['start_at'] <= now or row is None or row['withdrawn'] != 1:
+            raise HTTPException(status_code=409, detail='Slot timing changed; start a new review')
+    if effects['offer_id'] is not None:
+        offer = db.execute('SELECT status FROM job_offers WHERE id=?', (effects['offer_id'],)).fetchone()
+        expected = 'withdrawn' if effects['offer_status'] == 'presented' else 'accepted'
+        if offer is None or offer['status'] != expected:
+            raise HTTPException(status_code=409, detail='Offer changed; start a new review')
 
 
 def _offer_snapshot(db, application_id: int, draft_id: str, owner_id: int):
@@ -443,6 +544,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             'complete_interview': ['status', 'prepare_completion', 'human_review', 'execute_completion'],
             'present_offer': ['status', 'prepare_offer', 'human_review', 'execute_offer'],
             'finalize_hire': ['status', 'prepare_hire', 'human_review', 'execute_hire'],
+            'reject_application': ['status', 'prepare_rejection', 'human_review', 'execute_rejection'],
             'create_slot': ['prepare_slot', 'human_review', 'execute_slot'],
             'create_private_slot': ['prepare_slot', 'human_review', 'execute_slot'],
             'advance_application': ['parser', 'matching', 'status', 'prepare_advance', 'human_review', 'execute_advance'],
@@ -655,6 +757,32 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         action_db.execute('DELETE FROM graph_offer_drafts WHERE thread_id=?', (state['offer_draft_id'],))
         return {'action_result': {'status': 'offer_presented', 'offer_id': offer['id']}}
 
+    def prepare_rejection(state: ReviewState):
+        if authorize is None or user is None:
+            raise HTTPException(status_code=403, detail='HR access required')
+        authorize()
+        with connect(path) as db:
+            db.execute('BEGIN')
+            _, _, _, _, fingerprint = _rejection_snapshot(db, state['application_id'], state['rejection_draft_id'], user.id)
+        authorize()
+        return {'action_proposal': {'type': 'reject_application', 'application_id': state['application_id'],
+                                    'approval_fingerprint': fingerprint,
+                                    'notice': 'Review the reason and local effects before rejecting. No message is sent.'}}
+
+    def execute_rejection(state: ReviewState):
+        if action_db is None or user is None:
+            raise RuntimeError('An authorized resume transaction is required')
+        if not state['reviewed']:
+            action_db.execute('DELETE FROM graph_rejection_drafts WHERE thread_id=?', (state['rejection_draft_id'],))
+            return {'action_result': {'status': 'declined'}}
+        reason, _, effects, _, fingerprint = _rejection_snapshot(action_db, state['application_id'], state['rejection_draft_id'], user.id)
+        if not secrets.compare_digest(fingerprint, state['action_proposal']['approval_fingerprint']):
+            raise HTTPException(status_code=409, detail='Rejection context changed; start a new review')
+        record_rejection(action_db, state['application_id'], user.id, reason)
+        _check_rejection_effects(action_db, effects)
+        action_db.execute('DELETE FROM graph_rejection_drafts WHERE thread_id=?', (state['rejection_draft_id'],))
+        return {'action_result': {'status': 'rejected'}}
+
     def prepare_hire(state: ReviewState):
         if authorize is None or user is None:
             raise HTTPException(status_code=403, detail='HR access required')
@@ -808,7 +936,9 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         return {'action_result': {'status': 'advanced'}}
 
     def human_review(state: ReviewState):
-        notice = ('Confirm hiring after reviewing the accepted offer. No message is sent.'
+        notice = ('Confirm rejection after reviewing its reason and local effects. No message is sent.'
+                  if state.get('intent') == 'reject_application' else
+                  'Confirm hiring after reviewing the accepted offer. No message is sent.'
                   if state.get('intent') == 'finalize_hire' else
                   'Present this offer locally. No message is sent.'
                   if state.get('intent') == 'present_offer' else
@@ -839,7 +969,8 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
              "prepare_screen": prepare_screen, "execute_screen": execute_screen,
              "prepare_completion": prepare_completion, "execute_completion": execute_completion,
              "prepare_offer": prepare_offer, "execute_offer": execute_offer,
-             "prepare_hire": prepare_hire, "execute_hire": execute_hire}
+             "prepare_hire": prepare_hire, "execute_hire": execute_hire,
+             "prepare_rejection": prepare_rejection, "execute_rejection": execute_rejection}
     def guarded(node):
         def execute(state):
             if state.get('intent') != 'adaptive':
@@ -866,17 +997,18 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             steps = state['plan']
             return steps[0] if name == 'plan' else steps[steps.index(name) + 1]
         return route
-    choices = ['parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'prepare_screen', 'prepare_completion', 'prepare_offer', 'human_review', 'execute_slot', 'execute_advance', 'execute_screen', 'execute_completion', 'execute_offer', 'prepare_hire', 'execute_hire']
-    for name in ['plan', 'parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'prepare_screen', 'prepare_completion', 'prepare_offer', 'prepare_hire']:
+    choices = ['parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'prepare_screen', 'prepare_completion', 'prepare_offer', 'human_review', 'execute_slot', 'execute_advance', 'execute_screen', 'execute_completion', 'execute_offer', 'prepare_hire', 'execute_hire', 'prepare_rejection', 'execute_rejection']
+    for name in ['plan', 'parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'prepare_screen', 'prepare_completion', 'prepare_offer', 'prepare_hire', 'prepare_rejection']:
         builder.add_conditional_edges(name, next_after(name), choices)
-    builder.add_conditional_edges('human_review', lambda state: 'execute_hire' if state.get('intent') == 'finalize_hire' else 'execute_offer' if state.get('intent') == 'present_offer' else 'execute_completion' if state.get('intent') == 'complete_interview' else 'execute_screen' if state.get('intent') == 'screen_application' else 'execute_advance' if state.get('intent') in ('advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or state.get('adaptive_goal') == 'advance_and_reserve' else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
-                                  {'execute_slot': 'execute_slot', 'execute_advance': 'execute_advance', 'execute_screen': 'execute_screen', 'execute_completion': 'execute_completion', 'execute_offer': 'execute_offer', 'execute_hire': 'execute_hire', END: END})
+    builder.add_conditional_edges('human_review', lambda state: 'execute_rejection' if state.get('intent') == 'reject_application' else 'execute_hire' if state.get('intent') == 'finalize_hire' else 'execute_offer' if state.get('intent') == 'present_offer' else 'execute_completion' if state.get('intent') == 'complete_interview' else 'execute_screen' if state.get('intent') == 'screen_application' else 'execute_advance' if state.get('intent') in ('advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or state.get('adaptive_goal') == 'advance_and_reserve' else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
+                                  {'execute_slot': 'execute_slot', 'execute_advance': 'execute_advance', 'execute_screen': 'execute_screen', 'execute_completion': 'execute_completion', 'execute_offer': 'execute_offer', 'execute_hire': 'execute_hire', 'execute_rejection': 'execute_rejection', END: END})
     builder.add_edge('execute_slot', END)
     builder.add_edge('execute_advance', END)
     builder.add_edge('execute_screen', END)
     builder.add_edge('execute_completion', END)
     builder.add_edge('execute_offer', END)
     builder.add_edge('execute_hire', END)
+    builder.add_edge('execute_rejection', END)
     return builder.compile(checkpointer=checkpointer)
 
 
@@ -968,7 +1100,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     selected = state.get('intent', 'full')
     scoped_fields = {'parsed': 'full', 'matching': 'full', 'agent_review': 'full',
                      'policy': 'policy', 'scheduling': 'scheduling', 'status': 'status'}
-    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application', 'complete_interview', 'present_offer', 'finalize_hire'}:
+    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application', 'complete_interview', 'present_offer', 'finalize_hire', 'reject_application'}:
         selected = 'invalid'
     for field, scope in scoped_fields.items():
         adaptive_fields = {'parsed': 'parser', 'matching': 'matching', 'scheduling': 'scheduler', 'status': 'status'}
@@ -1029,6 +1161,16 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                                                   'notice': 'Review exact offer details before approval.'}
                     except (HTTPException, KeyError):
                         state['offer_preview'] = {'status': 'stale', 'notice': 'Offer or application changed; start a new review.'}
+                if selected == 'reject_application' and snapshot.next:
+                    try:
+                        reason, identity, effects, current_status, fingerprint = _rejection_snapshot(
+                            db, state['application_id'], state['rejection_draft_id'], actor['id'])
+                        if not secrets.compare_digest(fingerprint, state['action_proposal']['approval_fingerprint']):
+                            raise HTTPException(status_code=409, detail='Rejection changed')
+                        state['rejection_preview'] = {'status': 'current', 'reason': reason, **identity,
+                                                      'current_status': current_status, **effects}
+                    except (HTTPException, KeyError):
+                        state['rejection_preview'] = {'status': 'stale', 'notice': 'Rejection context changed; start a new review.'}
                 if selected == 'finalize_hire' and snapshot.next:
                     try:
                         offer, identity, fingerprint = _hire_snapshot(db, state['application_id'])
@@ -1159,6 +1301,13 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                         raise HTTPException(status_code=409, detail='Offer changed')
                 except (HTTPException, KeyError):
                     raise HTTPException(status_code=409, detail='Offer changed; reload the review') from None
+            if selected == 'reject_application' and snapshot.next and state.get('rejection_preview', {}).get('status') == 'current':
+                try:
+                    _, _, _, _, fingerprint = _rejection_snapshot(fresh, state['application_id'], state['rejection_draft_id'], user.id)
+                    if not secrets.compare_digest(fingerprint, state['action_proposal']['approval_fingerprint']):
+                        raise HTTPException(status_code=409, detail='Rejection changed')
+                except (HTTPException, KeyError):
+                    raise HTTPException(status_code=409, detail='Rejection changed; reload the review') from None
             if selected == 'finalize_hire' and snapshot.next and state.get('hire_preview', {}).get('status') == 'current':
                 try:
                     _, _, fingerprint = _hire_snapshot(fresh, state['application_id'])
@@ -1199,6 +1348,10 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
             db.execute('DELETE FROM graph_offer_drafts WHERE expires_at<=?', (int(time.time()),))
             db.execute('INSERT INTO graph_offer_drafts(thread_id,application_id,owner_id,details,expires_at) VALUES(?,?,?,?,?)',
                        (thread_id, payload.application_id, user.id, payload.offer_details.strip(), int(time.time()) + 86400))
+        if payload.intent == 'reject_application':
+            db.execute('DELETE FROM graph_rejection_drafts WHERE expires_at<=?', (int(time.time()),))
+            db.execute('INSERT INTO graph_rejection_drafts(thread_id,application_id,owner_id,reason,expires_at) VALUES(?,?,?,?,?)',
+                       (thread_id, payload.application_id, user.id, payload.rejection_reason.strip(), int(time.time()) + 86400))
         _require_current_role(db, request, user, 'hr')
     try:
         with SqliteSaver.from_conn_string(str(path)) as saver:
@@ -1214,6 +1367,8 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
             initial = {"application_id": payload.application_id, "intent": payload.intent}
             if payload.intent == 'present_offer':
                 initial['offer_draft_id'] = thread_id
+            if payload.intent == 'reject_application':
+                initial['rejection_draft_id'] = thread_id
             if payload.interview_id is not None:
                 initial['interview_id'] = payload.interview_id
             if payload.allow_semantic:
@@ -1235,6 +1390,7 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
         try:
             with connect(path) as db:
                 db.execute("DELETE FROM graph_offer_drafts WHERE thread_id = ?", (thread_id,))
+                db.execute("DELETE FROM graph_rejection_drafts WHERE thread_id = ?", (thread_id,))
                 db.execute("DELETE FROM graph_review_owners WHERE thread_id = ?", (thread_id,))
         except Exception:
             logger.exception("Could not remove owner record after review start failed")
@@ -1277,7 +1433,7 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             if (snapshot.values.get('intent') == 'adaptive' and
                     context_for(db, snapshot.values['application_id'])[1] != snapshot.values.get('context_digest')):
                 raise HTTPException(status_code=409, detail='Application changed; start a new review')
-            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview', 'present_offer', 'finalize_hire') or snapshot.values.get('adaptive_goal') in ('schedule_interview', 'advance_and_reserve')) and payload.reviewed:
+            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview', 'present_offer', 'finalize_hire', 'reject_application') or snapshot.values.get('adaptive_goal') in ('schedule_interview', 'advance_and_reserve')) and payload.reviewed:
                 expected = snapshot.values.get('action_proposal', {}).get('approval_fingerprint', '')
                 if (not expected or not payload.approval_fingerprint or
                         not secrets.compare_digest(expected.encode('utf-8'), payload.approval_fingerprint.encode('utf-8'))):

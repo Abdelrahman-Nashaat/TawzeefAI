@@ -732,6 +732,30 @@ def record_hire(db, application_id: int, actor_id: int, note: str = ''):
     _release_finalized_slots(db, application_id, actor_id)
 
 
+def record_rejection(db, application_id: int, actor_id: int, note: str):
+    """Reject an application and reconcile its local future activity atomically."""
+    application = get_application(db, application_id)
+    if application['status'] not in ('submitted', 'advanced', 'offered'):
+        raise HTTPException(status_code=409, detail='Decision is not allowed from current status')
+    offered = db.execute("SELECT id FROM job_offers WHERE application_id=? AND status='presented'", (application_id,)).fetchone()
+    if offered:
+        db.execute("UPDATE job_offers SET status='withdrawn', responded_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (offered['id'],))
+        _offer_audit(db, application_id, actor_id, 'offer_withdrawn', offered['id'])
+    db.execute("UPDATE applications SET status='rejected', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (application_id,))
+    db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,'decision',?)",
+               (application_id, actor_id, json.dumps({'decision': 'reject', 'note': note}, ensure_ascii=False)))
+    now = utc_text(datetime.now(UTC))
+    upcoming = db.execute("SELECT id FROM interviews WHERE application_id=? AND status='scheduled' AND start_at>?",
+                          (application_id, now)).fetchall()
+    for interview in upcoming:
+        if cancellation_block_reason(db, interview['id']):
+            raise HTTPException(status_code=409, detail='Resolve the Google delivery before rejecting this application')
+        db.execute("UPDATE interviews SET status='cancelled' WHERE id=?", (interview['id'],))
+        db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,'interview_cancelled',?)",
+                   (application_id, actor_id, json.dumps({'interview_id': interview['id'], 'reason': 'application_rejected'})))
+    _release_finalized_slots(db, application_id, actor_id)
+
+
 @router.post("/applications/{application_id}/decision")
 def decide(application_id: int, payload: Decision, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
@@ -765,30 +789,13 @@ def decide(application_id: int, payload: Decision, request: Request, user: HR):
             _require_current_role(db, request, user, 'hr')
             return application_view(get_application(db, application_id), user)
         if payload.decision == 'reject':
-            offered = db.execute("SELECT id FROM job_offers WHERE application_id=? AND status='presented'", (application_id,)).fetchone()
-            if offered:
-                db.execute("UPDATE job_offers SET status='withdrawn', responded_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (offered['id'],))
-                _offer_audit(db, application_id, user.id, 'offer_withdrawn', offered['id'])
+            record_rejection(db, application_id, user.id, payload.note)
+            _require_current_role(db, request, user, 'hr')
+            return application_view(get_application(db, application_id), user)
         state = {"advance": "advanced", "reject": "rejected", "hire": "hired"}[payload.decision]
         db.execute("UPDATE applications SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?", (state, application_id))
         details = json.dumps({"decision": payload.decision, "note": payload.note}, ensure_ascii=False)
         db.execute("INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)", (application_id, user.id, "decision", details))
-        if payload.decision == "reject":
-            now = utc_text(datetime.now(UTC))
-            upcoming = db.execute(
-                "SELECT id FROM interviews WHERE application_id = ? AND status = 'scheduled' AND start_at > ?",
-                (application_id, now),
-            ).fetchall()
-            for interview in upcoming:
-                if cancellation_block_reason(db, interview['id']):
-                    raise HTTPException(status_code=409, detail='Resolve the Google delivery before rejecting this application')
-                db.execute("UPDATE interviews SET status = 'cancelled' WHERE id = ?", (interview["id"],))
-                db.execute(
-                    "INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",
-                    (application_id, user.id, "interview_cancelled", json.dumps({"interview_id": interview["id"], "reason": "application_rejected"})),
-                )
-        if payload.decision == 'reject':
-            _release_finalized_slots(db, application_id, user.id)
         _require_current_role(db, request, user, 'hr')
         return application_view(get_application(db, application_id), user)
 
