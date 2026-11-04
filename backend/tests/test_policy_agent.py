@@ -34,6 +34,55 @@ def tool(query):
     }}]}
 
 
+def test_numeric_comparison_retains_correct_policy_and_warns(policy_setup):
+    path, users, _ = policy_setup
+    with connect(path) as db:
+        db.execute('''INSERT INTO knowledge_documents(title,audience,text,created_by,collection)
+            VALUES (?,?,?,?,?)''', ('Remote allowance', 'staff',
+                                   'Remote allowance provides 20 units monthly.',
+                                   users['hr'].id, 'handbook'))
+    result = policy_agent.run_policy_agent(path, users['employee'], 'Is the remote allowance 30 units monthly?')
+    assert result.answer.mode == 'extractive'
+    assert '20 units' in result.answer.answer
+    assert 'may be a comparison or a missing condition' in result.answer.notice
+    assert result.answer.sources
+
+
+@pytest.mark.parametrize(('question','passages','expected'), [
+    ('allowance 2 units', ['allowance 20 units'], True),
+    ('allowance 2.5 units', ['allowance 2 units'], True),
+    ('allowance 20% bonus', ['allowance 20 units bonus'], True),
+    ('leave 2026-01-02 dates', ['leave 2026-01-03 dates'], True),
+    ('allowance 20 units', ['allowance 20 units'], False),
+    ('allowance \u0662\u0660 units', ['allowance 20 units'], False),
+    ('allowance 2\u066b5 units', ['allowance 2.5 units'], False),
+    ('allowance 20\u066a bonus', ['allowance 20% bonus'], False),
+    ('how many allowance units', ['allowance 20 units'], False),
+    ('30 days and 20 units', ['30 days', '20 units'], False),
+])
+def test_numeric_notice_flags_absence_without_interpreting_meaning(question, passages, expected):
+    assert bool(policy_agent._numeric_notice(question, passages)) is expected
+
+
+def test_numeric_notice_checks_selected_quote_not_unselected_paragraph(policy_setup, monkeypatch):
+    path, users, _ = policy_setup
+    with connect(path) as db:
+        db.execute('UPDATE knowledge_settings SET include_sample_policies=0 WHERE id=1')
+        db.execute('''INSERT INTO knowledge_documents(title,audience,text,created_by,collection)
+            VALUES (?,?,?,?,?)''', ('Remote allowance', 'staff',
+                                   'Remote allowance provides 20 units monthly.\nTraining lasts 30 days.',
+                                   users['hr'].id, 'handbook'))
+    monkeypatch.setenv('GROQ_API_KEY', 'test-key')
+    monkeypatch.setattr(policy_agent, '_request_search', lambda *_: tool('remote allowance'))
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda _q, passages:
+                        json.dumps({'quotes': [{'source_id': passages[0]['id'],
+                                                'quote': 'Remote allowance provides 20 units monthly.'}]}))
+    result = policy_agent.run_policy_agent(path, users['employee'], 'remote allowance 30 units monthly', enabled=True)
+    assert result.answer.mode == 'groq'
+    assert '20 units' in result.answer.answer
+    assert 'may be a comparison or a missing condition' in result.answer.notice
+
+
 def test_search_filters_role_and_collection_before_ranking(policy_setup):
     path, users, _ = policy_setup
     result = policy_agent.run_policy_agent(path, users['hr'], 'What is the Python SQL policy?')

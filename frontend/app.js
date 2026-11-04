@@ -1201,6 +1201,7 @@ function setupGraphReview(target, application, refreshWorkflow) {
     const policy = review.state.policy;
     if (policy?.status === "answer" && typeof policy.answer === "string" && Array.isArray(policy.sources)) {
       output.append(element("h4", "", "نتيجة بحث السياسة"), element("p", "subtle-note", "مقتطفات من المصادر؛ تحقق من السياق قبل الاعتماد عليها."), element("p", "", policy.answer));
+      if (policy.notice) output.append(element("p", "subtle-note", policy.notice));
       const sources = element("ul", "evidence-list");
       for (const source of policy.sources) { const item = element("li"); item.append(element("strong", "", knowledgeSourceLabel(source)), element("p", "", source.text)); sources.append(item); }
       output.append(sources);

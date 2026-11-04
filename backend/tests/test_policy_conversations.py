@@ -20,6 +20,24 @@ def ask(client, chat_id, question, **extra):
     return client.post(f'/api/conversations/{chat_id}/messages', json={'question': question, **extra})
 
 
+def test_numeric_comparison_returns_source_and_notice_in_saved_conversation(tmp_path, monkeypatch):
+    monkeypatch.delenv('TAWZEEF_ENABLE_GROQ', raising=False)
+    with TestClient(create_app(tmp_path / 'numeric-policy.sqlite3', seed_demo=True)) as client:
+        login(client, 'hr')
+        add_document(client, 'Remote allowance', 'Remote allowance provides 20 units monthly.')
+        login(client, 'employee')
+        conversation = client.post('/api/conversations', json={'title': 'Policy'}).json()['id']
+        response = ask(client, conversation, 'Remote allowance 30 units monthly', mode='policy')
+        assert response.status_code == 201
+        message = response.json()
+        assert message['mode'] == 'extractive'
+        assert '20 units' in message['answer']
+        assert 'may be a comparison or a missing condition' in message['notice']
+        history = client.get(f'/api/conversations/{conversation}')
+        assert history.status_code == 200
+        assert 'may be a comparison or a missing condition' in history.json()['messages'][-1]['notice']
+
+
 def test_prefixed_arabic_negation_abstains_in_conversation(tmp_path, monkeypatch):
     monkeypatch.delenv('TAWZEEF_ENABLE_GROQ', raising=False)
     path = tmp_path / 'arabic-negation.sqlite3'

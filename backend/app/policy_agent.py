@@ -69,6 +69,29 @@ def _qualifiers_match(question: str, source: Source) -> bool:
                for group in POLICY_QUALIFIERS)
 
 
+_NUMERIC_TOKEN = re.compile(r'(?<!\d)[+\-\u2212]?\d+(?:[.,\u066b\u066c/:\-\u2212]\d+)*(?:\s*[%\u066a])?')
+NUMERIC_NOTICE = ('Some numbers in the question do not appear in the displayed passages. '
+                  'This may be a comparison or a missing condition; review the source. '
+                  'Different number or date formats can also cause this notice.')
+
+
+def _numeric_tokens(text: str) -> set[str]:
+    """Normalize digits and punctuation without inferring numerical equivalence."""
+    result = set()
+    for match in _NUMERIC_TOKEN.finditer(unicodedata.normalize('NFKC', text)):
+        token = ''.join(str(unicodedata.decimal(char)) if char.isdecimal() else char for char in match.group())
+        token = token.replace('\u066b', '.').replace('\u066c', ',').replace('\u066a', '%').replace('\u2212', '-')
+        result.add(re.sub(r'\s+', '', token))
+    return result
+
+
+def _numeric_notice(question: str, passages: list[str]) -> str:
+    """Flag absent question values without treating them as proof of contradiction."""
+    if _numeric_tokens(question) - _numeric_tokens(' '.join(passages)):
+        return NUMERIC_NOTICE
+    return ''
+
+
 _NEGATION_WORDS = frozenset(('no', 'not', 'never', 'neither', 'nor', 'without', 'cannot',
                             'لا', 'لم', 'لن', 'ليس', 'ليست', 'ليسوا', 'غير', 'دون', 'بدون'))
 # Arabic conjunctions are commonly written attached to standalone negators.
@@ -466,10 +489,11 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
                     raise PermissionError('Policy source authorization changed')
                 answer = _grounded_quotes(selection, answerable)
                 if answer:
-                    selected_ids = {item['source_id'] for item in json.loads(selection)['quotes']}
+                    quotes = json.loads(selection)['quotes']
+                    selected_ids = {item['source_id'] for item in quotes}
                     selected_sources = [source for source in answerable if source.id in selected_ids]
                     return PolicyAgentResult(KnowledgeAnswer(answer, selected_sources, 'groq',
-                        ' '.join(filter(None, (notice, ('Experimental hybrid answer: exact source lines are verified, '
+                        ' '.join(filter(None, (notice, _numeric_notice(question, [item['quote'] for item in quotes]), ('Experimental hybrid answer: exact source lines are verified, '
                         'but model-assessed relevance and completeness are not. Review the original sources.'))))), ['search_policy'])
             except ProviderRateLimited:
                 notice = ' '.join(filter(None, (notice, 'Policy model temporarily rate limited; no answer was generated.')))
@@ -520,10 +544,11 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
             if not answer:
                 return PolicyAgentResult(KnowledgeAnswer('No supported policy answer was found.', [], 'abstain',
                     'The model did not select a relevant source paragraph.'), ['search_policy'])
-            selected_ids = {item['source_id'] for item in json.loads(selection)['quotes']}
+            quotes = json.loads(selection)['quotes']
+            selected_ids = {item['source_id'] for item in quotes}
             selected_sources = [source for source in sources if source.id in selected_ids]
             return PolicyAgentResult(KnowledgeAnswer(answer, selected_sources, 'groq',
-                ' '.join(filter(None, (notice, 'Model-selected exact paragraphs; their relevance and completeness are not verified. Review the sources.')))), ['search_policy'])
+                ' '.join(filter(None, (notice, _numeric_notice(question, [item['quote'] for item in quotes]), 'Model-selected exact paragraphs; their relevance and completeness are not verified. Review the sources.')))), ['search_policy'])
         except ValueError:
             notice = ' '.join(filter(None, (notice, 'Model selection could not be verified; showing source excerpts.')))
         except ProviderRateLimited:
@@ -531,4 +556,5 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
         except ProviderUnavailable:
             notice = ' '.join(filter(None, (notice, 'AI service unavailable; showing source excerpts.')))
     revalidate()
+    notice = ' '.join(filter(None, (notice, _numeric_notice(question, [source.text for source in sources]))))
     return PolicyAgentResult(KnowledgeAnswer(extractive, sources, 'extractive', notice or None), ['search_policy'])

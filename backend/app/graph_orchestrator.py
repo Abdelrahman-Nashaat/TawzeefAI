@@ -42,7 +42,13 @@ from app.graph_semantic import context as semantic_context
 from app.graph_semantic import restore_references, save_references
 from app.interview_guide import guide_from_matching
 from app.matching_specialist import matching_snapshot
-from app.policy_agent import POLICY_CONTACT_HR, authorized_policy_sources, run_policy_agent
+from app.policy_agent import (
+    NUMERIC_NOTICE,
+    POLICY_CONTACT_HR,
+    _numeric_notice,
+    authorized_policy_sources,
+    run_policy_agent,
+)
 from app.provisional_queue import (
     _assignment_revision,
     _bounded_job,
@@ -642,7 +648,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             return {"policy": {"status": "abstain"}}
         return {"policy": {"status": "source_refs_v2", "refs": [
             {"id": source.id, "digest": _digest(source)} for source in answer.sources
-        ]}}
+        ], "numeric_notice": bool(_numeric_notice(question, [source.text for source in answer.sources]))}}
 
     def semantic(state: ReviewState):
         if request is None or user is None or authorize is None:
@@ -1254,7 +1260,8 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                         state['policy'] = {'status': 'answer',
                             'answer': '\n\n'.join(f'[{s.id}] {s.text}' for s in sources),
                             'sources': [asdict(source) for source in sources],
-                            'notice': 'Extractive excerpts; review the source for relevance.'}
+                            'notice': ' '.join(filter(None, ('Extractive excerpts; review the source for relevance.',
+                                NUMERIC_NOTICE if policy.get('numeric_notice') is True else '')))}
             application = get_application(db, state["application_id"])
             if request is not None and user is not None:
                 view_revisions = _view_revisions(db, application)

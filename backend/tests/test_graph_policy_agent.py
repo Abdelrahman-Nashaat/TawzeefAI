@@ -7,6 +7,41 @@ from app.graph_orchestrator import _config, build_review_graph
 from app.main import create_app
 
 
+def test_graph_numeric_notice_replays_without_question_and_obeys_revocation(tmp_path, monkeypatch):
+    path = tmp_path / 'graph-numeric.sqlite3'
+    monkeypatch.delenv('TAWZEEF_ENABLE_GROQ', raising=False)
+    question = 'Remote allowance 30 units monthly'
+    with TestClient(create_app(path, seed_demo=True)) as client:
+        assert client.post('/api/auth/login', json={'username': 'hr', 'password': 'hr-demo-only'}).status_code == 200
+        with connect(path) as db:
+            candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
+            application = db.execute("""INSERT INTO applications(candidate_id,job_id,filename,resume_text)
+                VALUES (?,'job-backend-python','test.pdf','synthetic')""", (candidate,)).lastrowid
+        doc = client.post('/api/knowledge/documents/text', json={
+            'title': 'Remote allowance', 'audience': 'hr', 'collection': 'handbook',
+            'text': 'Remote allowance provides 20 units monthly.',
+        }).json()
+        response = client.post('/api/graph-reviews', json={
+            'application_id': application, 'intent': 'policy', 'policy_question': question,
+        })
+        assert response.status_code == 201, response.text
+        review = response.json()
+        policy = review['state']['policy']
+        assert policy['status'] == 'answer' and '20 units' in policy['answer']
+        assert 'may be a comparison or a missing condition' in policy['notice']
+        replay = client.get(f"/api/graph-reviews/{review['id']}")
+        assert 'may be a comparison or a missing condition' in replay.json()['state']['policy']['notice']
+        with SqliteSaver.from_conn_string(str(path)) as saver:
+            history = list(build_review_graph(path, saver).get_state_history(_config(review['id'])))
+            assert question not in str(history)
+            assert 'Remote allowance provides 20 units monthly.' not in str(history)
+        with connect(path) as db:
+            db.execute("UPDATE knowledge_documents SET collection='job_description' WHERE id=?", (doc['id'],))
+        revoked = client.get(f"/api/graph-reviews/{review['id']}")
+        assert revoked.json()['state']['policy'] == {'status': 'unavailable'}
+        assert '20 units' not in revoked.text
+
+
 def test_graph_calls_policy_agent_and_rechecks_policy_scope(tmp_path, monkeypatch):
     path = tmp_path / 'graph-policy.sqlite3'
     monkeypatch.setenv('TAWZEEF_ENABLE_GROQ', '1')

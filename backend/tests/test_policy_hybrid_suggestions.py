@@ -147,6 +147,18 @@ def test_hybrid_answer_does_not_select_negated_policy(setup, monkeypatch):
     assert 'negation' in result.answer.notice.lower()
 
 
+def test_hybrid_numeric_comparison_preserves_exact_quote_with_notice(setup, monkeypatch):
+    path, users, _, source, _, _ = setup
+    enable_hybrid_answers(monkeypatch, [source])
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', lambda _q, passages:
+                        json.dumps({'quotes': [{'source_id': passages[0]['id'], 'quote': passages[0]['text']}]}))
+    result = policy_agent.run_policy_agent(path, users['employee'], 'Can employees work from home 5 days?',
+                                           enabled=True, allow_hybrid_answers=True)
+    assert result.answer.mode == 'groq'
+    assert source['text'] in result.answer.answer
+    assert 'may be a comparison or a missing condition' in result.answer.notice
+
+
 def test_hybrid_answer_uses_only_current_authorized_exact_lines(setup, monkeypatch):
     path, users, _, source, secret, _ = setup
     enable_hybrid_answers(monkeypatch, [secret, {**source, 'text': 'forged'}, source])
