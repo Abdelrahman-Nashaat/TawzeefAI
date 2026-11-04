@@ -132,8 +132,32 @@ def _score_blind(job: dict, blind: BlindText) -> dict:
     # Keep semicolon-separated lists together so a preceding negation applies
     # conservatively to every item. A dot inside Node.js or .NET is not a
     # sentence boundary; split dots only when followed by whitespace or EOF.
-    segments = [normalize(part) for part in re.split(r"[\n!?]+|\.+(?=\s|$)", blind.text) if part.strip()]
-    usable = [segment for segment in segments if not UNSAFE_CONTEXT.search(segment)]
+    segments = [(part, normalize(part)) for part in re.split(r"[\n!?]+|\.+(?=\s|$)", blind.text) if part.strip()]
+    safe = [(raw, normalized) for raw, normalized in segments if not UNSAFE_CONTEXT.search(normalized)]
+    usable = [normalized for _, normalized in safe]
+    source_maps = {}
+
+    def source_map(index: int):
+        """Map normalized characters to the masked source only when provably aligned."""
+        if index in source_maps:
+            return source_maps[index]
+        raw, normalized = safe[index]
+        chars, positions = [], []
+        pending_space = None
+        for offset, char in enumerate(raw):
+            for value in unicodedata.normalize('NFKC', char).casefold():
+                if value.isspace():
+                    if chars and pending_space is None:
+                        pending_space = offset
+                    continue
+                if pending_space is not None:
+                    chars.append(' ')
+                    positions.append(pending_space)
+                    pending_space = None
+                chars.append(value)
+                positions.append(offset)
+        source_maps[index] = positions if ''.join(chars) == normalized else None
+        return source_maps[index]
 
     # Normalization collapses all whitespace, so a newline cannot occur in a
     # segment or term. It is therefore a safe non-word segment separator for
@@ -184,13 +208,20 @@ def _score_blind(job: dict, blind: BlindText) -> dict:
             boundary = r"[a-z0-9_]" if term.isascii() else r"\w"
             return re.search(rf"(?<!{boundary})" + re.escape(term) + rf"(?!{boundary})", usable[index])
 
-        def excerpt(index: int, start: int, end: int) -> str:
-            segment = usable[index]
-            # The UI supports at most 240 characters per excerpt. Center the
-            # matched phrase so long sentences do not hide the actual evidence.
+        def excerpt(index: int, start: int, end: int):
+            segment = safe[index][0]
+            if len(segment) <= 240:
+                return segment, False, False
+            positions = source_map(index)
+            if positions is None:
+                return None, False, True
+            if start < end:
+                start, end = positions[start], positions[end - 1] + 1
+            else:
+                start = end = positions[start] if start < len(positions) else len(segment)
             left = max(0, start - max(0, 240 - (end - start)) // 2)
             left = min(left, max(0, len(segment) - 240))
-            return segment[left:left + 240]
+            return segment[left:left + 240], end - start > 240, False
 
         if key == "html and css":
             locations = []
@@ -200,24 +231,22 @@ def _score_blind(job: dict, blind: BlindText) -> dict:
                 locations.append((index, match.start(), match.end()))
             locations.sort()
             first, second = locations
-            if first[0] == second[0] and second[2] - first[1] <= 240:
-                evidence = [excerpt(first[0], first[1], second[2])]
-            else:
-                evidence = [excerpt(index, start, end) for index, start, end in locations]
-            partial = False
+            combined = excerpt(first[0], first[1], second[2]) if first[0] == second[0] else None
+            values = [combined] if combined is not None and not combined[1] else [
+                excerpt(index, start, end) for index, start, end in locations]
         else:
             indices = sorted({index for group in matches for index in group})[:2]
-            evidence = []
-            partial = False
+            values = []
             for index in indices:
                 occurrences = [occurrence(index, term) for term, group in zip(alternatives, matches, strict=True)
                                if index in group]
                 match = min(occurrences, key=lambda item: item.start())
-                partial = partial or match.end() - match.start() > 240
-                evidence.append(excerpt(index, match.start(), match.end()))
-        result = {"skill": skill, "mentioned": True, "evidence": evidence}
-        if partial:
+                values.append(excerpt(index, match.start(), match.end()))
+        result = {"skill": skill, "mentioned": True, "evidence": [value[0] for value in values if value[0] is not None]}
+        if any(value[1] for value in values):
             result['evidence_partial'] = True
+        if any(value[2] for value in values):
+            result['evidence_unavailable'] = True
         return result
 
     required = [assess(skill) for skill in job["required_skills"]]
@@ -229,7 +258,7 @@ def _score_blind(job: dict, blind: BlindText) -> dict:
         "preferred": preferred,
         "evidence_status": "limited" if matched == len(required) and any(WORK_CONTEXT.search(s) for s in usable) else "insufficient",
         "blind_screening": {"requires_review": blind.requires_review, "notice": blind.notice, "masked": blind.masked},
-        "method": "Conservative keyword mentions; negated or instruction-like sentences are excluded heuristically. Not verified experience or an automated hiring decision; human review required.",
+        "method": "Conservative keyword mentions; negated or instruction-like sentences are excluded heuristically. Evidence is quoted from the masked source, or flagged if a safe excerpt is unavailable. Not verified experience or an automated hiring decision; human review required.",
     }
 
 

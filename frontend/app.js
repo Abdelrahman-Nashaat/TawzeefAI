@@ -1922,6 +1922,7 @@ async function loadCandidateScreening(target, applicationId) {
         const item = element("li");
         item.append(element("strong", "", skill.skill), element("p", "", skill.mentioned ? "Mention found; review context." : "No reliable mention found; this does not prove a lack of skill."));
         if (skill.evidence_partial) item.append(element("p", "subtle-note", "This excerpt shows only part of a long matched phrase; review the full source."));
+        if (skill.evidence_unavailable) item.append(element("p", "subtle-note", "An exact excerpt could not be located safely; review the full source."));
         for (const excerpt of skill.evidence || []) item.append(element("p", "", excerpt));
         list.append(item);
       }
@@ -2116,7 +2117,7 @@ function loadInterviewGuide(target, applicationId) {
 
 function setupScreeningHistory(target, applicationId) {
   const heading = element("h4", "", "Screening history");
-  const note = element("p", "subtle-note", "HR-only snapshots may contain identifying résumé excerpts and remain in the local database until it is removed. Redaction is partial. Older screenings may not have a retained result.");
+  const note = element("p", "subtle-note", "HR-only snapshots may contain identifying résumé excerpts and remain in the local database until it is removed. Redaction is partial. Older screenings may not have a retained result, and older excerpts may be normalized rather than verbatim.");
   const list = element("div");
   const button = element("button", "outline-button", "Load screening history"); button.type = "button";
   const refresh = element("button", "outline-button", "Refresh history"); refresh.type = "button";
@@ -2142,6 +2143,7 @@ function setupScreeningHistory(target, applicationId) {
             for (const item of items || []) {
               const row = element("li", "", `${item.skill}: ${item.mentioned ? "mentioned" : "not found"}`);
               if (item.evidence_partial) row.append(element("p", "subtle-note", "This excerpt shows only part of a long matched phrase; review the full source."));
+              if (item.evidence_unavailable) row.append(element("p", "subtle-note", "An exact excerpt could not be located safely; review the full source."));
               for (const excerpt of item.evidence || []) row.append(element("p", "", String(excerpt)));
               evidence.append(row);
             }
@@ -2179,6 +2181,7 @@ function renderScore(target, score) {
   for (const entry of score.required || []) {
     const item = element("li", "", `${entry.skill}: ${entry.mentioned ? "مذكورة" : "لم يُعثر على ذكرها"}`);
     if (entry.evidence_partial) item.append(element("p", "subtle-note", "This excerpt shows only part of a long matched phrase; review the full source."));
+    if (entry.evidence_unavailable) item.append(element("p", "subtle-note", "An exact excerpt could not be located safely; review the full source."));
     if (Array.isArray(entry.evidence) && entry.evidence.length) {
       const quotes = element("ul", "evidence-list");
       for (const quote of entry.evidence) quotes.append(element("li", "", String(quote)));

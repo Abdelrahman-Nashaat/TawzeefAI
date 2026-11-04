@@ -65,7 +65,7 @@ def test_candidate_preview_shows_actual_long_sentence_match(preview):
     response = client.get(f'/api/applications/{app_id}/candidate-screening')
     assert response.status_code == 200
     python = next(item for item in response.json()['required'] if item['skill'] == 'Python')
-    assert python['mentioned'] and any('python' in text for text in python['evidence'])
+    assert python['mentioned'] and any('python' in text.casefold() for text in python['evidence'])
 
 
 def test_expired_session_before_response_is_rejected(preview, monkeypatch):

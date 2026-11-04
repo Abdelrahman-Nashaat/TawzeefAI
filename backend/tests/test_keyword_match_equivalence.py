@@ -35,9 +35,7 @@ def check(job, text):
     for category in ('required', 'preferred'):
         for result, previous in zip(actual[category], expected[category], strict=True):
             assert (result['skill'], result['mentioned']) == (previous['skill'], previous['mentioned'])
-            # Compound evidence deliberately changed to include both terms.
-            if normalize(result['skill']) != 'html and css':
-                assert result['evidence'] == previous['evidence']
+            assert all(len(quote) <= 240 and quote in text for quote in result['evidence'])
 
 
 @pytest.mark.parametrize('text,skills', [

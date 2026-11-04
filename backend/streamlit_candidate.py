@@ -91,6 +91,8 @@ def render_candidate(call, local_api, clear_session):
                         st.text(f"  {item['skill']}: {'mentioned' if item['mentioned'] else 'not detected'}")
                         if item.get('evidence_partial'):
                             st.caption('This excerpt shows only part of a long matched phrase; review the full source.')
+                        if item.get('evidence_unavailable'):
+                            st.caption('An exact excerpt could not be located safely; review the full source.')
                         for excerpt in item.get("evidence", []):
                             st.text(f"    Matching text: {excerpt}")
                 st.caption("Matching text is normalized and may be shortened. A mention is not verified ability; a missing mention does not prove a lack of skill. Negation detection can miss context.")

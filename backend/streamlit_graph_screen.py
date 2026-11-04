@@ -66,6 +66,9 @@ def render_graph_screen(api, clear_session, application_id, job_id):
     if any(item.get('evidence_partial') for field in ('required', 'preferred')
            for item in preview['score'].get(field, [])):
         st.caption('An excerpt shows only part of a long matched phrase; review the full source.')
+    if any(item.get('evidence_unavailable') for field in ('required', 'preferred')
+           for item in preview['score'].get(field, [])):
+        st.caption('An exact excerpt could not be located safely; review the full source.')
     st.json(preview['score'])
     confirmed = st.checkbox("I reviewed this graph screening", key=f"graph_screen_confirm_{review['id']}")
     if st.button("Approve and record graph screening", key=f"graph_screen_approve_{review['id']}"):

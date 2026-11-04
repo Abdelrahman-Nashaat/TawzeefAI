@@ -52,8 +52,8 @@ def test_graph_screen_review_real_api(tmp_path, scenario):
                 candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
                 source = 'Python SQL'
                 if scenario == 'partial':
-                    skill = '\u337f' * 61
-                    source = 'Built ' + skill
+                    skill = 'Python Flask'
+                    source = 'Built Python' + ' ' * 260 + 'Flask'
                     db.execute("UPDATE jobs SET required_skills=?,preferred_skills='[]' WHERE id='job-backend-python'", (json.dumps([skill]),))
                 app_id = db.execute("INSERT INTO applications(candidate_id,job_id,filename,resume_text) VALUES (?,'job-backend-python','synthetic.pdf',?)", (candidate, source)).lastrowid
             ui = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'streamlit_app.py'), default_timeout=60)
