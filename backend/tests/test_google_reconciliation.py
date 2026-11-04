@@ -172,14 +172,50 @@ def test_revocation_in_preflight_never_calls_provider(confirmed):
 
 
 def test_old_schema_is_migrated_without_inventing_provenance(tmp_path):
-    from app.google_outbox import initialize_google_outbox
+    from app.admin_users import initialize_admin_users
+    from app.auth import hash_password
+    from app.db import initialize
+    from app.scheduling import initialize_scheduling
 
     path = tmp_path / 'legacy.sqlite3'
+    # Real application startup creates these parent tables before the outbox.
+    initialize(path)
+    initialize_admin_users(path)
+    initialize_scheduling(path)
     with connect(path) as db:
-        db.execute('CREATE TABLE google_deliveries (id INTEGER PRIMARY KEY, interview_id INTEGER, state TEXT)')
-        db.execute("INSERT INTO google_deliveries VALUES (1, 42, 'confirmed')")
-    initialize_google_outbox(path)
-    initialize_google_outbox(path)
+        db.execute("INSERT INTO users(id,username,display_name,role,password_hash) VALUES (1,'candidate','Candidate','candidate',?)", (hash_password('candidate-password'),))
+        db.execute("INSERT INTO users(id,username,display_name,role,password_hash) VALUES (2,'hr','HR','hr',?)", (hash_password('hr-password'),))
+        db.execute("INSERT INTO jobs(id,title,location,required_skills,preferred_skills,responsibilities) VALUES ('legacy','Legacy role','Remote','[]','[]','[]')")
+        db.execute("INSERT INTO applications(id,candidate_id,job_id,filename,resume_text,status) VALUES (1,1,'legacy','synthetic.pdf','synthetic','advanced')")
+        db.execute("""INSERT INTO interviews(id,application_id,candidate_id,start_at,end_at,interviewer,interviewer_key,created_by)
+            VALUES (42,1,1,'2099-01-01T10:00:00Z','2099-01-01T11:00:00Z','HR','hr',2)""")
+        # Pre-provenance outbox schema used by the earlier application.
+        db.executescript("""CREATE TABLE google_deliveries (
+            id INTEGER PRIMARY KEY, interview_id INTEGER NOT NULL REFERENCES interviews(id),
+            application_id INTEGER NOT NULL REFERENCES applications(id), kind TEXT NOT NULL,
+            recipient TEXT, event_id TEXT, start_at TEXT NOT NULL, end_at TEXT NOT NULL,
+            state TEXT NOT NULL, provider_id TEXT, created_by INTEGER NOT NULL REFERENCES users(id),
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(interview_id, kind));
+            INSERT INTO google_deliveries VALUES (1,42,1,'email','fictional@example.com',NULL,
+                '2099-01-01T10:00:00Z','2099-01-01T11:00:00Z','pending',NULL,2,
+                '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+            INSERT INTO google_deliveries VALUES (2,42,1,'calendar',NULL,'legacy-event',
+                '2099-01-01T10:00:00Z','2099-01-01T11:00:00Z','confirmed','legacy-event',2,
+                '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');""")
+    app = create_app(path)
+    calls = []
+    app.state.google_dispatcher = bound(lambda **kwargs: calls.append(kwargs) or {'status': 'confirmed'})
+    install_remover(app, lambda **kwargs: calls.append(kwargs) or {'status': 'removed'})
+    # The same startup sequence also needs to be safe on subsequent restarts.
+    for _ in range(2):
+        with TestClient(app) as client:
+            assert client.post('/api/auth/login', json={'username': 'hr', 'password': 'hr-password'}).status_code == 200
+            assert client.post('/api/google/deliveries/1/send', json={'confirmed': True}).status_code == 409
+            assert client.post('/api/google/deliveries/2/calendar-removal', json={'confirmed': True}).status_code == 409
+    assert calls == []
     with connect(path) as db:
-        row = db.execute('SELECT state, calendar_binding, calendar_etag FROM google_deliveries').fetchone()
-        assert tuple(row) == ('confirmed', None, None)
+        rows = db.execute('SELECT state, calendar_binding, calendar_etag, retry_generation, context_changed_during_send FROM google_deliveries ORDER BY id').fetchall()
+        assert [tuple(row) for row in rows] == [('pending', None, None, 0, 0), ('confirmed', None, None, 0, 0)]
+        assert db.execute('SELECT count(*) FROM google_delivery_context').fetchone()[0] == 0
+        db.execute("UPDATE users SET display_name='Updated Candidate' WHERE id=1")
+        assert db.execute('SELECT revision FROM google_context_revisions WHERE interview_id=42').fetchone()[0] == 1
