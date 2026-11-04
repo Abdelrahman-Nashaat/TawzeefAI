@@ -1,5 +1,13 @@
 # Optional local Streamlit interface
 
+HR can also start a graph offer review for an eligible application and inspect
+the current candidate, job and exact terms before explicit approval. Changed or
+expired reviews cannot be approved and can be discarded. The offer is presented
+locally; no message is sent. If the result is uncertain, inspect the application
+before retrying. Changing the selected application removes the review from this
+Streamlit session; an undiscarded or uncertain draft can remain on the server
+until it expires and a later offer review performs cleanup.
+
 HR can start a graph keyword-screening review from the application queue. The
 interface reloads the current server preview before approval, displays the
 candidate ID and scoring details, and requires explicit confirmation. Approval
