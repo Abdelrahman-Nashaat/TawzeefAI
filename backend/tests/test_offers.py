@@ -80,6 +80,59 @@ def test_offer_requires_completed_interview_for_current_candidate(setup):
     assert client.post(endpoint, json={'details': 'Offer'}).status_code == 201
 
 
+@pytest.mark.parametrize('accepted', [False, True])
+def test_offer_does_not_follow_application_reassignment(setup, accepted):
+    from app.auth import hash_password
+
+    client, path, app_id, candidate, hr = setup
+    completed_interview(path, app_id, candidate, hr)
+    offer = client.post(f'/api/applications/{app_id}/offers', json={'details': 'Private terms'}).json()
+    assert offer['recipient_id'] == candidate
+    if accepted:
+        login(client, 'candidate')
+        assert client.post(f"/api/offers/{offer['id']}/respond", json={'decision': 'accepted'}).status_code == 200
+    with connect(path) as db:
+        other = db.execute("INSERT INTO users(username,display_name,role,password_hash) VALUES ('other','Other','candidate',?)",
+                           (hash_password('other-password'),)).lastrowid
+        db.execute('UPDATE applications SET candidate_id=? WHERE id=?', (other, app_id))
+    assert client.post('/api/auth/login', json={'username': 'other', 'password': 'other-password'}).status_code == 200
+    assert client.get(f'/api/applications/{app_id}/offers').json() == []
+    assert client.post(f"/api/offers/{offer['id']}/respond", json={'decision': 'accepted'}).status_code == 404
+    assert client.get(f'/api/workflows/{app_id}/progress').json()['stage'] == 'unavailable'
+    login(client, 'hr')
+    assert client.post(f'/api/applications/{app_id}/decision', json={'decision': 'hire'}).status_code == 409
+    assert client.get(f'/api/workflows/{app_id}').json()['next_step'] == 'review_offer'
+    assert client.get(f'/api/applications/{app_id}/offers').json()[0]['recipient_id'] == candidate
+
+
+def test_legacy_offer_is_not_attributed_to_current_application_owner(setup):
+    import sqlite3
+
+    from app.db import initialize
+
+    client, path, app_id, candidate, hr = setup
+    with connect(path) as db:
+        db.execute('DROP TRIGGER job_offer_recipient_immutable')
+        db.execute('ALTER TABLE job_offers DROP COLUMN recipient_id')
+        db.execute("UPDATE applications SET status='offered' WHERE id=?", (app_id,))
+        offer_id = db.execute("INSERT INTO job_offers(application_id,details,status,created_by) VALUES (?,'Legacy terms','accepted',?)", (app_id, hr)).lastrowid
+    initialize(path)
+    initialize(path)  # Repeated initialization must not guess or change the recipient.
+    login(client, 'candidate')
+    assert client.get(f'/api/applications/{app_id}/offers').json() == []
+    assert client.post(f'/api/offers/{offer_id}/respond', json={'decision': 'accepted'}).status_code == 404
+    assert client.get(f'/api/workflows/{app_id}/progress').json()['stage'] == 'unavailable'
+    login(client, 'hr')
+    assert client.post(f'/api/applications/{app_id}/decision', json={'decision': 'hire'}).status_code == 409
+    assert client.get(f'/api/applications/{app_id}/offers').json()[0]['recipient_id'] is None
+    with connect(path) as db:
+        assert db.execute('SELECT recipient_id FROM job_offers WHERE id=?', (offer_id,)).fetchone()[0] is None
+        db.execute('UPDATE job_offers SET recipient_id=? WHERE id=?', (candidate, offer_id))
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute('UPDATE job_offers SET recipient_id=? WHERE id=?', (hr, offer_id))
+        db.execute('UPDATE job_offers SET status=\'withdrawn\' WHERE id=?', (offer_id,))
+
+
 def test_active_interview_blocks_offer_and_hiring(setup):
     client, path, app_id, candidate, hr = setup
     completed_interview(path, app_id, candidate, hr)

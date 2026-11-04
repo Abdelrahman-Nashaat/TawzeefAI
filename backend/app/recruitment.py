@@ -490,7 +490,7 @@ def _upcoming_interview(db, application_id: int) -> bool:
 
 
 def _offer_view(row) -> dict:
-    return {key: row[key] for key in ('id', 'application_id', 'details', 'status', 'created_at', 'responded_at')}
+    return {key: row[key] for key in ('id', 'application_id', 'recipient_id', 'details', 'status', 'created_at', 'responded_at')}
 
 
 @router.get('/applications/{application_id}/offers')
@@ -500,8 +500,12 @@ def list_offers(application_id: int, request: Request, user: Authenticated):
         _require_current_role(db, request, user, user.role)
         application = get_application(db, application_id)
         require_owner_or_hr(user, application['candidate_id'])
-        return [_offer_view(row) for row in db.execute(
-            'SELECT * FROM job_offers WHERE application_id=? ORDER BY id DESC', (application_id,))]
+        if user.role == 'hr':
+            rows = db.execute('SELECT * FROM job_offers WHERE application_id=? ORDER BY id DESC', (application_id,))
+        else:
+            rows = db.execute('SELECT * FROM job_offers WHERE application_id=? AND recipient_id=? ORDER BY id DESC',
+                              (application_id, user.id))
+        return [_offer_view(row) for row in rows]
 
 
 @router.post('/applications/{application_id}/offers', status_code=201)
@@ -521,8 +525,8 @@ def create_offer(application_id: int, payload: OfferCreate, request: Request, us
             raise HTTPException(status_code=409, detail='A completed interview is required')
         if _upcoming_interview(db, application_id):
             raise HTTPException(status_code=409, detail='Resolve active interviews before presenting an offer')
-        cursor = db.execute("INSERT INTO job_offers(application_id,details,status,created_by) VALUES (?,?,'presented',?)",
-                            (application_id, details, user.id))
+        cursor = db.execute("INSERT INTO job_offers(application_id,recipient_id,details,status,created_by) VALUES (?,?,?,'presented',?)",
+                            (application_id, application['candidate_id'], details, user.id))
         db.execute("UPDATE applications SET status='offered',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (application_id,))
         _offer_audit(db, application_id, user.id, 'offer_presented', cursor.lastrowid)
         _require_current_role(db, request, user, 'hr')
@@ -534,9 +538,10 @@ def respond_offer(offer_id: int, payload: OfferReply, request: Request, user: Ca
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN IMMEDIATE')
         _require_current_role(db, request, user, 'candidate')
-        offer = db.execute('''SELECT o.*,a.candidate_id,a.status AS application_status FROM job_offers o
-                              JOIN applications a ON a.id=o.application_id WHERE o.id=? AND a.candidate_id=?''',
-                           (offer_id, user.id)).fetchone()
+        offer = db.execute('''SELECT o.*,a.status AS application_status FROM job_offers o
+                              JOIN applications a ON a.id=o.application_id
+                              WHERE o.id=? AND a.candidate_id=? AND o.recipient_id=?''',
+                           (offer_id, user.id, user.id)).fetchone()
         if not offer:
             raise HTTPException(status_code=404, detail='Offer not found')
         if offer['status'] != 'presented' or offer['application_status'] != 'offered':
@@ -667,7 +672,8 @@ def decide(application_id: int, payload: Decision, request: Request, user: HR):
         if payload.decision not in permitted.get(application["status"], set()):
             raise HTTPException(status_code=409, detail="Decision is not allowed from current status")
         if payload.decision == 'hire':
-            if not db.execute("SELECT 1 FROM job_offers WHERE application_id=? AND status='accepted'", (application_id,)).fetchone():
+            if not db.execute("SELECT 1 FROM job_offers WHERE application_id=? AND recipient_id=? AND status='accepted'",
+                              (application_id, application['candidate_id'])).fetchone():
                 raise HTTPException(status_code=409, detail='Candidate must accept an offer before hiring')
             if _upcoming_interview(db, application_id):
                 raise HTTPException(status_code=409, detail='Resolve active interviews before hiring')

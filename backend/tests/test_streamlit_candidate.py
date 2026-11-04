@@ -171,7 +171,7 @@ def test_candidate_offer_response_uses_owner_api_and_handles_conflicts(tmp_path,
             hr_user = hr.request("POST", "/api/auth/login", json={"username": "hr", "password": "hr-demo-only"})
             with connect(database) as db:
                 app_id = db.execute("INSERT INTO applications(candidate_id,job_id,filename,resume_text,status) VALUES (?,'job-backend-python','fictional.docx','Python','offered')", (user['id'],)).lastrowid
-                offer_id = db.execute("INSERT INTO job_offers(application_id,details,status,created_by) VALUES (?,?,'presented',?)", (app_id, 'Fictional offer details', hr_user['id'])).lastrowid
+                offer_id = db.execute("INSERT INTO job_offers(application_id,recipient_id,details,status,created_by) VALUES (?,?,?,'presented',?)", (app_id, user['id'], 'Fictional offer details', hr_user['id'])).lastrowid
             ui = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "streamlit_app.py"), default_timeout=30)
             ui.session_state["local_api"] = candidate
             ui.session_state["current_user"] = user

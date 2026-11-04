@@ -60,7 +60,7 @@ def test_hire_releases_private_availability_after_accepted_offer(context):
     private = add_slot(path, actor, application, candidate)
     with connect(path) as db:
         db.execute("UPDATE applications SET status='offered' WHERE id=?", (application,))
-        db.execute("INSERT INTO job_offers(application_id,details,status,created_by) VALUES (?, 'synthetic', 'accepted', ?)", (application, actor))
+        db.execute("INSERT INTO job_offers(application_id,recipient_id,details,status,created_by) VALUES (?, ?, 'synthetic', 'accepted', ?)", (application, candidate, actor))
     assert hr.post(f'/api/applications/{application}/decision', json={'decision': 'hire'}).status_code == 200
     with connect(path) as db:
         assert db.execute('SELECT withdrawn FROM interview_slots WHERE id=?', (private,)).fetchone()[0] == 1

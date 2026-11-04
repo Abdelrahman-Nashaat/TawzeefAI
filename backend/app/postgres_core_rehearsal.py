@@ -36,7 +36,7 @@ LIFECYCLE_COLUMNS = {
     'interviews': ('id', 'application_id', 'candidate_id', 'start_at', 'end_at', 'interviewer', 'interviewer_key', 'status', 'created_by', 'created_at'),
     'interview_completions': ('interview_id', 'recorded_by', 'recorded_at'),
     'interview_slots': ('id', 'start_at', 'end_at', 'interviewer', 'interviewer_key', 'created_by', 'interview_id', 'withdrawn', 'created_at', 'target_application_id', 'target_candidate_id'),
-    'job_offers': ('id', 'application_id', 'details', 'status', 'created_by', 'created_at', 'responded_at'),
+    'job_offers': ('id', 'application_id', 'details', 'status', 'created_by', 'created_at', 'responded_at', 'recipient_id'),
     'hr_notifications': ('id', 'application_id', 'submitted_job_id', 'created_at'),
     'hr_notification_reads': ('notification_id', 'actor_id', 'read_at'),
     'slot_audit_events': ('id', 'slot_id', 'actor_id', 'action', 'created_at'),
@@ -50,18 +50,18 @@ LIFECYCLE_INTEGERS = {
     'interviews': {'id', 'application_id', 'candidate_id', 'created_by'},
     'interview_completions': {'interview_id', 'recorded_by'},
     'interview_slots': {'id', 'created_by', 'interview_id', 'withdrawn', 'target_application_id', 'target_candidate_id'},
-    'job_offers': {'id', 'application_id', 'created_by'},
+    'job_offers': {'id', 'application_id', 'created_by', 'recipient_id'},
     'hr_notifications': {'id', 'application_id'},
     'hr_notification_reads': {'notification_id', 'actor_id'},
     'slot_audit_events': {'id', 'slot_id', 'actor_id'},
 }
 LIFECYCLE_NULLABLE = {'interview_slots': {'interview_id', 'target_application_id', 'target_candidate_id'},
-                      'job_offers': {'responded_at'}}
+                      'job_offers': {'responded_at', 'recipient_id'}}
 _LIFECYCLE_DDL = (
     "CREATE TABLE interviews (id bigint PRIMARY KEY, application_id bigint NOT NULL REFERENCES applications(id), candidate_id bigint NOT NULL REFERENCES users(id), start_at text NOT NULL, end_at text NOT NULL, interviewer text NOT NULL, interviewer_key text NOT NULL, status text NOT NULL CHECK (status IN ('scheduled','cancelled')), created_by bigint NOT NULL REFERENCES users(id), created_at text NOT NULL)",
     'CREATE TABLE interview_completions (interview_id bigint PRIMARY KEY REFERENCES interviews(id), recorded_by bigint NOT NULL REFERENCES users(id), recorded_at text NOT NULL)',
     'CREATE TABLE interview_slots (id bigint PRIMARY KEY, start_at text NOT NULL, end_at text NOT NULL, interviewer text NOT NULL, interviewer_key text NOT NULL, created_by bigint NOT NULL REFERENCES users(id), interview_id bigint UNIQUE REFERENCES interviews(id), withdrawn integer NOT NULL CHECK (withdrawn IN (0,1)), created_at text NOT NULL, target_application_id bigint REFERENCES applications(id), target_candidate_id bigint REFERENCES users(id))',
-    "CREATE TABLE job_offers (id bigint PRIMARY KEY, application_id bigint NOT NULL REFERENCES applications(id), details text NOT NULL, status text NOT NULL CHECK (status IN ('presented','accepted','declined','withdrawn')), created_by bigint NOT NULL REFERENCES users(id), created_at text NOT NULL, responded_at text)",
+    "CREATE TABLE job_offers (id bigint PRIMARY KEY, application_id bigint NOT NULL REFERENCES applications(id), details text NOT NULL, status text NOT NULL CHECK (status IN ('presented','accepted','declined','withdrawn')), created_by bigint NOT NULL REFERENCES users(id), created_at text NOT NULL, responded_at text, recipient_id bigint REFERENCES users(id))",
     'CREATE TABLE hr_notifications (id bigint PRIMARY KEY, application_id bigint NOT NULL UNIQUE REFERENCES applications(id), submitted_job_id text NOT NULL, created_at text NOT NULL)',
     'CREATE TABLE hr_notification_reads (notification_id bigint NOT NULL REFERENCES hr_notifications(id), actor_id bigint NOT NULL REFERENCES users(id), read_at text NOT NULL, PRIMARY KEY (notification_id, actor_id))',
     'CREATE TABLE slot_audit_events (id bigint PRIMARY KEY, slot_id bigint NOT NULL REFERENCES interview_slots(id), actor_id bigint NOT NULL REFERENCES users(id), action text NOT NULL, created_at text NOT NULL)',

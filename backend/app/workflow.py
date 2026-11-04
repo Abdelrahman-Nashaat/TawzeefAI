@@ -43,8 +43,8 @@ def describe(db, application) -> dict:
     ).fetchone()
     screened = application["score_json"] is not None
     status = application["status"]
-    offer = db.execute('SELECT status FROM job_offers WHERE application_id=? ORDER BY id DESC LIMIT 1',
-                       (application['id'],)).fetchone()
+    offer = db.execute('SELECT status FROM job_offers WHERE application_id=? AND recipient_id=? ORDER BY id DESC LIMIT 1',
+                       (application['id'], application['candidate_id'])).fetchone()
     if status in {"hired", "rejected"}:
         next_step = "complete"
     elif status == "offered":
@@ -114,7 +114,12 @@ def candidate_stage(db, application_id: int, candidate_id: int) -> dict:
     if application is None:
         raise HTTPException(status_code=404, detail="Application not found")
     status = application['status']
-    if status in ('hired', 'rejected', 'offered'):
+    if status in ('hired', 'offered') and not db.execute(
+            """SELECT 1 FROM job_offers WHERE application_id=? AND recipient_id=?
+               AND (status='accepted' OR (status='presented' AND ?='offered'))""",
+            (application_id, candidate_id, status)).fetchone():
+        stage = 'unavailable'
+    elif status in ('hired', 'rejected', 'offered'):
         stage = status
     else:
         interview = db.execute("""SELECT i.id, EXISTS(SELECT 1 FROM interview_completions c WHERE c.interview_id=i.id) AS completed

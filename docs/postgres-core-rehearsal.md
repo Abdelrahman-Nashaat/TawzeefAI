@@ -10,6 +10,10 @@ capabilities, recruitment reviews, documents, graph checkpoints, and other data
 and behavior remain excluded. Do not use the resulting schema as an operational
 database or run this experiment on real candidate or employee data.
 
+The offer recipient column is copied as stored, including nulls for legacy
+offers whose original recipient has not been established. See
+[offer recipient migration](offer-recipient-migration.md).
+
 The source must be a current-format synthetic SQLite database. The code opens it
 read-only, starts one consistent read snapshot, checks the exact expected table
 columns and SQLite foreign keys, and copies into a **new** PostgreSQL schema.

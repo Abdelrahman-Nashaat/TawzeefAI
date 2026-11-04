@@ -159,7 +159,7 @@ def test_optional_lifecycle_copy_preserves_rows_and_foreign_keys(pg, source):
         slot = db.execute("""INSERT INTO interview_slots(start_at,end_at,interviewer,interviewer_key,created_by,interview_id,target_application_id,target_candidate_id)
             VALUES ('2026-01-01T09:00:00Z','2026-01-01T10:00:00Z','Fictional','fictional',?,?,?,?)""", (hr, interview, app_id, candidate)).lastrowid
         db.execute("INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (?,?,'booked')", (slot, hr))
-        db.execute("INSERT INTO job_offers(application_id,details,status,created_by) VALUES (?,'Fictional offer','accepted',?)", (app_id, hr))
+        db.execute("INSERT INTO job_offers(application_id,recipient_id,details,status,created_by) VALUES (?,?,'Fictional offer','accepted',?)", (app_id, candidate, hr))
         notification = db.execute("INSERT INTO hr_notifications(application_id,submitted_job_id) VALUES (?,'job-backend-python')", (app_id,)).lastrowid
         db.execute('INSERT INTO hr_notification_reads(notification_id,actor_id) VALUES (?,?)', (notification, hr))
     counts = rehearse(source, connection, schema, include_lifecycle=True)

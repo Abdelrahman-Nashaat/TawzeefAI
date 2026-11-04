@@ -61,7 +61,8 @@ def initialize(path: str | Path) -> None:
                 status TEXT NOT NULL CHECK (status IN ('presented', 'accepted', 'declined', 'withdrawn')),
                 created_by INTEGER NOT NULL REFERENCES users(id),
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                responded_at TEXT
+                responded_at TEXT,
+                recipient_id INTEGER REFERENCES users(id)
             );
             CREATE UNIQUE INDEX IF NOT EXISTS job_offer_current ON job_offers(application_id)
                 WHERE status IN ('presented', 'accepted');
@@ -84,3 +85,12 @@ def initialize(path: str | Path) -> None:
         columns = {row['name'] for row in db.execute('PRAGMA table_info(applications)')}
         if 'extraction_json' not in columns:
             db.execute('ALTER TABLE applications ADD COLUMN extraction_json TEXT')
+        offer_columns = {row['name'] for row in db.execute('PRAGMA table_info(job_offers)')}
+        if 'recipient_id' not in offer_columns:
+            # Legacy offers contain no reliable evidence of their original recipient.
+            db.execute('ALTER TABLE job_offers ADD COLUMN recipient_id INTEGER REFERENCES users(id)')
+        db.execute('''CREATE TRIGGER IF NOT EXISTS job_offer_recipient_immutable
+            BEFORE UPDATE OF application_id, recipient_id ON job_offers
+            WHEN NEW.application_id != OLD.application_id OR
+                 (OLD.recipient_id IS NOT NULL AND NEW.recipient_id IS NOT OLD.recipient_id)
+            BEGIN SELECT RAISE(ABORT, 'offer recipient is immutable'); END''')
