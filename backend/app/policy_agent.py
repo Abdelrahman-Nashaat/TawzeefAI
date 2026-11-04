@@ -71,12 +71,16 @@ def _qualifiers_match(question: str, source: Source) -> bool:
 
 _NEGATION_WORDS = frozenset(('no', 'not', 'never', 'neither', 'nor', 'without', 'cannot',
                             'لا', 'لم', 'لن', 'ليس', 'ليست', 'ليسوا', 'غير', 'دون', 'بدون'))
-_NEGATED_CONTRACTION = re.compile(r"\b(?:isn|aren|wasn|weren|doesn|don|didn|couldn|shouldn|wouldn|mustn|can|won)['’]t\b", re.IGNORECASE)
+_NEGATED_CONTRACTION = re.compile(
+    r"\b(?:isn|aren|wasn|weren|doesn|don|didn|couldn|shouldn|wouldn|mustn|needn|mightn|oughtn|daren|shan|ain|can|won)['’‘ʼ]t\b",
+    re.IGNORECASE,
+)
 
 
 def _has_explicit_negation(text: str) -> bool:
     """Detect selected negators; scope and indirect negation remain unresolved."""
-    return bool(_qualifier_words(text) & _NEGATION_WORDS or _NEGATED_CONTRACTION.search(text))
+    return bool(_qualifier_words(text) & _NEGATION_WORDS or
+                _NEGATED_CONTRACTION.search(unicodedata.normalize('NFKC', text)))
 
 
 def _title_only_match(terms: set[str], source: Source) -> bool:

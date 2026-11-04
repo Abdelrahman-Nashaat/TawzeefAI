@@ -46,6 +46,29 @@ def test_search_filters_role_and_collection_before_ranking(policy_setup):
     assert all(s.title not in {'Annual leave', 'HR secret'} for s in candidate.answer.sources)
 
 
+@pytest.mark.parametrize('contraction', ['aren\u02bct', 'aren\u2018t', 'aren\uff07t', "shan't", "needn't", "mightn't"])
+def test_negated_policy_contractions_are_not_returned_as_an_answer(policy_setup, contraction):
+    path, users, _ = policy_setup
+    with connect(path) as db:
+        db.execute('''INSERT INTO knowledge_documents(title,audience,text,created_by,collection)
+            VALUES (?,?,?,?,?)''', ('Travel reimbursement', 'staff',
+                                   f'Employees {contraction} eligible for travel reimbursement.',
+                                   users['hr'].id, 'handbook'))
+    result = policy_agent.run_policy_agent(path, users['employee'], 'travel reimbursement')
+    assert result.answer.mode == 'abstain'
+    assert result.answer.sources == []
+    assert 'Negation' in result.answer.notice
+
+
+@pytest.mark.parametrize('contraction', ['aren\u02bct', 'aren\u2018t', 'aren\uff07t', "shan't", "needn't", "mightn't"])
+def test_negated_questions_with_contractions_do_not_return_positive_policy(policy_setup, contraction):
+    path, users, _ = policy_setup
+    result = policy_agent.run_policy_agent(path, users['employee'], f'Why {contraction} annual leave available?')
+    assert result.answer.mode == 'abstain'
+    assert result.answer.sources == []
+    assert 'Negation' in result.answer.notice
+
+
 def test_search_rate_limit_falls_back_without_another_model_call(policy_setup, monkeypatch):
     path, users, _ = policy_setup
     monkeypatch.setenv('GROQ_API_KEY', 'private-test-key')
