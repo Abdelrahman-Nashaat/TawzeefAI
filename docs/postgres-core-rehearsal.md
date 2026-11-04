@@ -1,19 +1,21 @@
 # Experimental PostgreSQL core-data rehearsal
 
-This is an offline copy and verification of **four tables only**: `users`, `jobs`,
-`applications`, and `audit_events`. The application continues to use SQLite;
-the copied tables cannot run the application and are not a complete migration or
-cutover. Sessions, admin capabilities, recruitment reviews, scheduling, notices,
-documents, graph checkpoints, and other data and behavior are not copied. Do not
-use the resulting schema as an operational database. Do not run this experiment
-on real candidate or employee data.
+This offline rehearsal copies and verifies four core tables by default: `users`,
+`jobs`, `applications`, and `audit_events`. The optional `--include-lifecycle`
+flag also copies `interviews`, `interview_completions`, `interview_slots`,
+`job_offers`, `hr_notifications`, `hr_notification_reads`, and
+`slot_audit_events`. The application continues to use SQLite; neither option
+produces a complete migration or operational database. Sessions, admin
+capabilities, recruitment reviews, documents, graph checkpoints, and other data
+and behavior remain excluded. Do not use the resulting schema as an operational
+database or run this experiment on real candidate or employee data.
 
 The source must be a current-format synthetic SQLite database. The code opens it
 read-only, starts one consistent read snapshot, checks the exact expected table
 columns and SQLite foreign keys, and copies into a **new** PostgreSQL schema.
 An existing schema is never replaced. The destination transaction creates the
-four tables and their indexes, enforces the core foreign keys, then compares every
-copied value with the source snapshot before committing. Unsupported schema,
+selected tables and their indexes, enforces their defined foreign keys, then
+compares every copied value with the source snapshot before committing. Unsupported schema,
 types, nulls, embedded NULs, foreign-key errors, or verification failures abort
 the transaction. The process may hold a SQLite read transaction for the duration
 of the copy; run offline with a disposable database. Timestamps and JSON fields
@@ -53,6 +55,10 @@ synthetic source:
 ```powershell
 uv run --locked --extra postgres python -m app.postgres_core_rehearsal --source path-to-synthetic.sqlite3 --schema tawzeef_rehearsal_example
 ```
+
+To include the seven selected lifecycle tables, add `--include-lifecycle` to the
+command. This option requires the expected current schema for all selected
+tables, and it still leaves the remaining application data and behavior out.
 
 The caller owns and must later remove the schema using their normal PostgreSQL
 administration process. This command never deletes or overwrites one. Do not use

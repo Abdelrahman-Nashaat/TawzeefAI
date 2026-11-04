@@ -145,3 +145,55 @@ def test_cli_reports_only_counts_and_generic_failure(pg, source):
     assert 'no new schema was committed' in failure.stderr
     assert 'synthetic-test-only' not in failure.stdout + failure.stderr
     assert connection.execute('SELECT 1 FROM pg_namespace WHERE nspname=%s', (schema,)).fetchone()
+
+
+def test_optional_lifecycle_copy_preserves_rows_and_foreign_keys(pg, source):
+    connection, schema = pg
+    with sqlite3.connect(source) as db:
+        app_id = db.execute('SELECT id FROM applications LIMIT 1').fetchone()[0]
+        candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
+        hr = db.execute("SELECT id FROM users WHERE username='hr'").fetchone()[0]
+        interview = db.execute("""INSERT INTO interviews(application_id,candidate_id,start_at,end_at,interviewer,interviewer_key,status,created_by)
+            VALUES (?,?,'2026-01-01T09:00:00Z','2026-01-01T10:00:00Z','Fictional','fictional','scheduled',?)""", (app_id, candidate, hr)).lastrowid
+        db.execute('INSERT INTO interview_completions(interview_id,recorded_by) VALUES (?,?)', (interview, hr))
+        slot = db.execute("""INSERT INTO interview_slots(start_at,end_at,interviewer,interviewer_key,created_by,interview_id,target_application_id,target_candidate_id)
+            VALUES ('2026-01-01T09:00:00Z','2026-01-01T10:00:00Z','Fictional','fictional',?,?,?,?)""", (hr, interview, app_id, candidate)).lastrowid
+        db.execute("INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (?,?,'booked')", (slot, hr))
+        db.execute("INSERT INTO job_offers(application_id,details,status,created_by) VALUES (?,'Fictional offer','accepted',?)", (app_id, hr))
+        notification = db.execute("INSERT INTO hr_notifications(application_id,submitted_job_id) VALUES (?,'job-backend-python')", (app_id,)).lastrowid
+        db.execute('INSERT INTO hr_notification_reads(notification_id,actor_id) VALUES (?,?)', (notification, hr))
+    counts = rehearse(source, connection, schema, include_lifecycle=True)
+    with sqlite3.connect(source) as original:
+        for table, columns in migration.LIFECYCLE_COLUMNS.items():
+            keys = migration.LIFECYCLE_KEYS[table]
+            names = ', '.join(f'"{column}"' for column in columns)
+            order = ', '.join(f'"{key}"' for key in keys)
+            expected = original.execute(f'SELECT {names} FROM "{table}" ORDER BY {order}').fetchall()
+            query = sql.SQL('SELECT {} FROM {}.{} ORDER BY {}').format(
+                sql.SQL(', ').join(map(sql.Identifier, columns)), sql.Identifier(schema),
+                sql.Identifier(table), sql.SQL(', ').join(map(sql.Identifier, keys)))
+            assert connection.execute(query).fetchall() == expected
+            assert counts[table] == len(expected) == 1
+    assert connection.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=%s AND table_name='sessions'", (schema,)).fetchone() is None
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        connection.execute(sql.SQL("INSERT INTO {}.interview_completions VALUES (9999,9999,'x')").format(sql.Identifier(schema)))
+
+
+def test_optional_lifecycle_unknown_column_aborts_entire_copy(pg, source):
+    connection, schema = pg
+    with sqlite3.connect(source) as db:
+        db.execute('ALTER TABLE interviews ADD COLUMN unexpected TEXT')
+    with pytest.raises(ValueError, match='Unsupported source schema for interviews'):
+        rehearse(source, connection, schema, include_lifecycle=True)
+    assert connection.execute('SELECT 1 FROM pg_namespace WHERE nspname=%s', (schema,)).fetchone() is None
+
+
+def test_optional_lifecycle_bad_value_rolls_back_every_table(pg, source):
+    connection, schema = pg
+    with sqlite3.connect(source) as db:
+        app_id = db.execute('SELECT id FROM applications LIMIT 1').fetchone()[0]
+        hr = db.execute("SELECT id FROM users WHERE username='hr'").fetchone()[0]
+        db.execute("INSERT INTO job_offers(application_id,details,status,created_by) VALUES (?,'bad' || char(0) || 'value','presented',?)", (app_id, hr))
+    with pytest.raises(ValueError, match='Unsupported text in job_offers'):
+        rehearse(source, connection, schema, include_lifecycle=True)
+    assert connection.execute('SELECT 1 FROM pg_namespace WHERE nspname=%s', (schema,)).fetchone() is None
