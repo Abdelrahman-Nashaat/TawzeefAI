@@ -99,14 +99,17 @@ ALIASES = {
 # and human review. These patterns cannot detect every phrasing or language.
 UNSAFE_CONTEXT = re.compile(
     r"\b(?:no|not|never|without|lack(?:s|ing|ed)?|none|neither|cannot|unable)\b"
-    r"|\b(?:ca|do|does|did|is|are|was|were|have|has|had|wo|would|should|could|must|need)n['’]t\b"
-    r"|\b(?:zero\s+(?:prior\s+)?experience|unfamiliar|yet\s+to\s+learn|seeking\s+to\s+learn)\b"
+    r"|\b(?:ca|do|does|did|is|are|was|were|have|has|had|wo|would|should|could|must|need|might|ought|dare|sha|ai)n['’‘ʼ]t\b"
+    r"|\b(?:zero\s+(?:prior\s+)?experience|unfamiliar|yet\s+to\s+learn)\b"
+    r"|\b(?:plan(?:s|ning|ned)?|intend(?:s|ing|ed)?|hope(?:s|d)?|hoping|wish(?:es|ed)?|aim(?:s|ing|ed)?|want(?:s|ed|ing)?|seek(?:s|ing)?|expect(?:s|ed|ing)?)\s+to\s+(?:learn|study|master)\b"
+    r"|\b(?:will\s+|going\s+to\s+)(?:learn|study|master)\b"
     r"|\b(?:ignore|disregard|override|reveal|bypass)\b"
     r"|\b(?:system prompt|previous instructions|assign (?:a )?(?:perfect|highest) score)\b"
-    r"|(?:لا|لم|ليس|لست|غير|بدون|تنقصني|تجاهل|اكشف)(?=\s|$)"
+    r"|(?<!\w)(?:و|ف)?(?:لا|لم|لن|ليس|لست|غير|بدون|تنقصني|تجاهل|اكشف)(?=$|[\s،,:;؛])"
     r"|(?:عديم(?:ة)?\s+الخبرة|أتمنى\s+تعلم|اتمنى\s+تعلم)",
     re.IGNORECASE,
 )
+ARABIC_DIACRITICS = re.compile(r"[\u0610-\u061a\u064b-\u065f\u0670\u06d6-\u06ed]")
 WORK_CONTEXT = re.compile(
     r"\b(?:built|developed|implemented|maintained|used|created|designed|deployed|"
     r"worked|wrote|managed|integrated|tested|built|experience)\b"
@@ -133,7 +136,12 @@ def _score_blind(job: dict, blind: BlindText) -> dict:
     # conservatively to every item. A dot inside Node.js or .NET is not a
     # sentence boundary; split dots only when followed by whitespace or EOF.
     segments = [(part, normalize(part)) for part in re.split(r"[\n!?]+|\.+(?=\s|$)", blind.text) if part.strip()]
-    safe = [(raw, normalized) for raw, normalized in segments if not UNSAFE_CONTEXT.search(normalized)]
+    # Diacritics may be attached inside an Arabic negator; remove them only
+    # for the conservative safety check, never from displayed source evidence.
+    safe = [(raw, normalized) for raw, normalized in segments
+            if not UNSAFE_CONTEXT.search(normalized)
+            and not (ARABIC_DIACRITICS.search(normalized)
+                     and UNSAFE_CONTEXT.search(ARABIC_DIACRITICS.sub('', normalized)))]
     usable = [normalized for _, normalized in safe]
     source_maps = {}
 
