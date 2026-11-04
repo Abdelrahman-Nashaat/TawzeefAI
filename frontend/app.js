@@ -2907,11 +2907,34 @@ function setupGoogleDeliveries(card, interview) {
       proposalView.replaceChildren(element("h5", "", "راجع المقترح قبل تجهيز المسودات"),
         element("p", "form-error", `المستلم: ${proposal.recipient} — أدخله HR ولم يُتحقق منه.`),
         element("p", "", `المقابلة: ${displayDate(proposal.start_at)} إلى ${displayDate(proposal.end_at)} · الطلب #${proposal.application_id}`),
+        element("p", "", `Candidate #${proposal.candidate_id}: ${proposal.candidate_name} (${proposal.candidate_username}); role: ${proposal.job_title} (${proposal.job_id})`),
         element("p", "", `التقويم: ${proposal.calendar?.summary || ""} · خاص، دون مدعوين`),
         element("p", "", `موضوع الرسالة: ${proposal.email?.subject || ""}`), element("pre", "resume-preview", proposal.email?.body || ""),
         element("p", "subtle-note", "هذا يجهز مسودتين محليتين فقط؛ لا ينشئ حدثًا ولا يرسل بريدًا. لكل إجراء خارجي تأكيد منفصل."));
       const states = element("ul", "evidence-list"); for (const draft of proposal.drafts || []) states.append(element("li", "", `${draft.kind === "calendar" ? "التقويم" : "البريد"}: ${draft.state}`)); proposalView.append(states);
-      if (!proposal.can_prepare) { proposalView.append(element("p", "form-error", "تحتاج المسودات الحالية إلى مراجعة منفصلة قبل المتابعة.")); return; }
+      if (!proposal.can_prepare) {
+        proposalView.append(element("p", "form-error", "Existing deliveries require separate review."));
+        for (const draft of proposal.drafts || []) {
+          if (draft.context_current !== false || !["pending", "rejected"].includes(draft.state) || !draft.id) continue;
+          if (draft.kind === "email" && draft.recipient !== recipient) {
+            proposalView.append(element("p", "form-error", `Review the existing email recipient ${draft.recipient} using that address.`));
+            continue;
+          }
+          const label = element("label", "admin-checkbox", `I reviewed the candidate, role, recipient and ${draft.kind} draft above.`);
+          const check = element("input"); check.type = "checkbox"; label.prepend(check);
+          const review = element("button", "outline-button", `Review ${draft.kind} draft context`); review.type = "button";
+          review.addEventListener("click", async () => {
+            if (!check.checked) { report("Confirm the candidate, role and draft details first.", true); return; }
+            review.disabled = true; check.disabled = true;
+            try {
+              await api(`/api/google/deliveries/${encodeURIComponent(draft.id)}/review-context`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipient, fingerprint: proposal.fingerprint, confirmed: true }) });
+              if (proposalView.isConnected) { proposalView.replaceChildren(element("p", "subtle-note", "Draft context reviewed locally. Refresh the proposal to review another draft; no message was sent.")); reload.click(); }
+            } catch (error) { if (!isStale(error) && proposalView.isConnected) { report(error instanceof TypeError ? "Connection failed. Refresh the delivery record before retrying." : error.message, true); } }
+          });
+          proposalView.append(label, review);
+        }
+        return;
+      }
       const confirmLabel = element("label", "", "راجعت العنوان غير المتحقق منه والتفاصيل وأوافق على تجهيز المسودات المحلية"); const confirm = element("input"); confirm.type = "checkbox"; confirmLabel.prepend(confirm);
       const prepare = element("button", "small-button", "تجهيز المسودتين محليًا"); prepare.type = "button";
       prepare.addEventListener("click", async () => {

@@ -1,5 +1,22 @@
 # Google Calendar and Gmail integration: development status
 
+Delivery drafts created before candidate-context tracking have no verified
+context and cannot be sent or reprepared. A pending or rejected legacy or stale
+draft can be bound to a current interview through the local
+`POST /api/google/deliveries/{id}/review-context` endpoint: first request an
+HR delivery proposal, inspect its candidate, application, recipient, interview
+and exact contents, then submit that proposal's fingerprint, recipient and
+`confirmed: true` to the endpoint. This increments the delivery generation,
+invalidating older send confirmations. Rejected drafts still require the separate
+reprepare operation; no provider action is performed by the review. The existing
+delivery proposal panel displays recovery controls for eligible stale drafts.
+Address ownership remains unverified.
+Only interview cancellation is serialized against dispatch; a concurrent
+candidate account change or direct database change to application ownership
+immediately after the last validation can race a provider call. Application
+ownership changes are not a supported UI operation. Do not use this demo for
+real candidate data.
+
 This is an unfinished local integration. OAuth credentials can be authorized on
 Windows, and provider calls and a durable delivery outbox are covered by tests
 with fake Google responses. An explicitly enabled Windows host can configure a

@@ -85,6 +85,45 @@ def initialize_google_outbox(path: str | Path) -> None:
                 db.execute(f'ALTER TABLE google_deliveries ADD COLUMN {name} TEXT')
         if 'retry_generation' not in columns:
             db.execute('ALTER TABLE google_deliveries ADD COLUMN retry_generation INTEGER NOT NULL DEFAULT 0 CHECK (retry_generation >= 0)')
+        db.execute('''CREATE TABLE IF NOT EXISTS google_context_revisions (
+            interview_id INTEGER PRIMARY KEY REFERENCES interviews(id), revision INTEGER NOT NULL DEFAULT 0)''')
+        db.execute('''CREATE TABLE IF NOT EXISTS google_delivery_context (
+            delivery_id INTEGER PRIMARY KEY REFERENCES google_deliveries(id),
+            candidate_id INTEGER NOT NULL REFERENCES users(id), revision INTEGER NOT NULL)''')
+        db.executescript('''
+        CREATE TRIGGER IF NOT EXISTS google_context_interview_changed
+        AFTER UPDATE OF application_id,candidate_id,status,start_at,end_at,interviewer ON interviews
+        WHEN OLD.application_id IS NOT NEW.application_id OR OLD.candidate_id IS NOT NEW.candidate_id
+          OR OLD.status IS NOT NEW.status OR OLD.start_at IS NOT NEW.start_at
+          OR OLD.end_at IS NOT NEW.end_at OR OLD.interviewer IS NOT NEW.interviewer BEGIN
+          INSERT OR IGNORE INTO google_context_revisions(interview_id,revision) VALUES(NEW.id,0);
+          UPDATE google_context_revisions SET revision=revision+1 WHERE interview_id=NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS google_context_application_changed
+        AFTER UPDATE OF candidate_id,status,job_id ON applications
+        WHEN OLD.candidate_id IS NOT NEW.candidate_id OR OLD.status IS NOT NEW.status OR OLD.job_id IS NOT NEW.job_id BEGIN
+          INSERT OR IGNORE INTO google_context_revisions(interview_id,revision)
+            SELECT id,0 FROM interviews WHERE application_id=NEW.id;
+          UPDATE google_context_revisions SET revision=revision+1 WHERE interview_id IN
+            (SELECT id FROM interviews WHERE application_id=NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS google_context_candidate_changed
+        AFTER UPDATE OF active,role,username,display_name ON users
+        WHEN OLD.active IS NOT NEW.active OR OLD.role IS NOT NEW.role
+          OR OLD.username IS NOT NEW.username OR OLD.display_name IS NOT NEW.display_name BEGIN
+          INSERT OR IGNORE INTO google_context_revisions(interview_id,revision)
+            SELECT id,0 FROM interviews WHERE candidate_id=NEW.id;
+          UPDATE google_context_revisions SET revision=revision+1 WHERE interview_id IN
+            (SELECT id FROM interviews WHERE candidate_id=NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS google_context_job_changed
+        AFTER UPDATE OF title ON jobs WHEN OLD.title IS NOT NEW.title BEGIN
+          INSERT OR IGNORE INTO google_context_revisions(interview_id,revision)
+            SELECT i.id,0 FROM interviews i JOIN applications a ON a.id=i.application_id WHERE a.job_id=NEW.id;
+          UPDATE google_context_revisions SET revision=revision+1 WHERE interview_id IN
+            (SELECT i.id FROM interviews i JOIN applications a ON a.id=i.application_id WHERE a.job_id=NEW.id);
+        END;
+        ''')
 
 
 class Prepare(BaseModel):
@@ -197,6 +236,32 @@ def _eligible(interview) -> None:
         raise HTTPException(status_code=409, detail='Interview time is invalid or has passed') from exc
 
 
+def _current_delivery_context(db, interview, application_id):
+    application = db.execute('SELECT candidate_id FROM applications WHERE id=?', (application_id,)).fetchone()
+    account = db.execute("SELECT 1 FROM users WHERE id=? AND active=1 AND role='candidate'",
+                         (interview['candidate_id'],)).fetchone()
+    if (application is None or interview['application_id'] != application_id or
+            application['candidate_id'] != interview['candidate_id'] or account is None):
+        raise HTTPException(status_code=409, detail='Interview candidate or application changed; review the delivery')
+    revision = db.execute('SELECT revision FROM google_context_revisions WHERE interview_id=?', (interview['id'],)).fetchone()
+    return interview['candidate_id'], revision['revision'] if revision else 0
+
+
+def _bind_delivery_context(db, delivery_id, interview):
+    candidate, revision = _current_delivery_context(db, interview, interview['application_id'])
+    db.execute('''INSERT INTO google_delivery_context(delivery_id,candidate_id,revision) VALUES (?,?,?)
+                  ON CONFLICT(delivery_id) DO UPDATE SET candidate_id=excluded.candidate_id,revision=excluded.revision''',
+               (delivery_id, candidate, revision))
+
+
+def _check_delivery_context(db, delivery, interview):
+    candidate, revision = _current_delivery_context(db, interview, delivery['application_id'])
+    bound = db.execute('SELECT candidate_id,revision FROM google_delivery_context WHERE delivery_id=?',
+                       (delivery['id'],)).fetchone()
+    if bound is None or (bound['candidate_id'], bound['revision']) != (candidate, revision):
+        raise HTTPException(status_code=409, detail='Delivery context changed or is unverified; prepare a new review')
+
+
 def _audit(db, application_id: int, actor_id: int, delivery_id: int, kind: str, action: str) -> None:
     details = json.dumps({'delivery_id': delivery_id, 'kind': kind})
     db.execute('INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,?,?)',
@@ -212,31 +277,48 @@ def _proposal(db, interview_id: int, recipient: str, reviewer_id: int) -> dict:
     """Build an exact, currently reviewable proposal without side effects."""
     interview = _interview(db, interview_id)
     _eligible(interview)
-    application = db.execute('SELECT id,candidate_id,status FROM applications WHERE id=?',
+    _, revision = _current_delivery_context(db, interview, interview['application_id'])
+    application = db.execute('SELECT id,candidate_id,status,job_id FROM applications WHERE id=?',
                              (interview['application_id'],)).fetchone()
     if (application is None or application['candidate_id'] != interview['candidate_id']
             or application['status'] != 'advanced'):
         raise HTTPException(status_code=409, detail='Application is not eligible for a delivery proposal')
+    identity = db.execute('SELECT username,display_name FROM users WHERE id=?', (application['candidate_id'],)).fetchone()
+    job = db.execute('SELECT title FROM jobs WHERE id=?', (application['job_id'],)).fetchone()
+    if identity is None or job is None:
+        raise HTTPException(status_code=409, detail='Candidate or job unavailable')
     existing = {row['kind']: row for row in db.execute(
         'SELECT * FROM google_deliveries WHERE interview_id=? ORDER BY id', (interview_id,))}
     drafts = []
+    stale_existing = False
     for kind in ('calendar', 'email'):
         row = existing.get(kind)
+        context_current = None
+        if row:
+            try:
+                _check_delivery_context(db, row, interview)
+                context_current = True
+            except HTTPException:
+                context_current = False
+                stale_existing = True
         drafts.append({'kind': kind, 'state': row['state'] if row else 'not_prepared',
                        'id': row['id'] if row else None,
+                       'context_current': context_current,
                        'recipient': row['recipient'] if row else (recipient if kind == 'email' else None),
                        'event_id': row['event_id'] if row else None,
                        'start_at': row['start_at'] if row else interview['start_at'],
                        'end_at': row['end_at'] if row else interview['end_at'],
                        'retry_generation': row['retry_generation'] if row else None,
                        'updated_at': row['updated_at'] if row else None})
-    blockers = any(draft['state'] not in ('not_prepared', 'pending')
+    blockers = stale_existing or any(draft['state'] not in ('not_prepared', 'pending')
                    or draft['start_at'] != interview['start_at'] or draft['end_at'] != interview['end_at']
                    or (draft['kind'] == 'email' and draft['recipient'] != recipient)
                    for draft in drafts)
     subject, body = confirmation_content(interview['start_at'], interview['end_at'])
-    snapshot = {'version': 1, 'reviewer_id': reviewer_id, 'interview_id': interview_id,
+    snapshot = {'version': 1, 'reviewer_id': reviewer_id, 'interview_id': interview_id, 'context_revision': revision,
                 'application_id': application['id'], 'candidate_id': application['candidate_id'],
+                'candidate_name': identity['display_name'], 'candidate_username': identity['username'],
+                'job_id': application['job_id'], 'job_title': job['title'],
                 'application_status': application['status'], 'interviewer': interview['interviewer'],
                 'start_at': interview['start_at'], 'end_at': interview['end_at'],
                 'recipient': recipient, 'recipient_verified': False, 'drafts': drafts,
@@ -278,6 +360,7 @@ def correct_recipient(delivery_id: int, payload: CorrectRecipient, request: Requ
         _check_generation(row, payload.expected_generation)
         interview = _interview(db, row['interview_id'])
         _eligible(interview)
+        _check_delivery_context(db, row, interview)
         if row['start_at'] != interview['start_at'] or row['end_at'] != interview['end_at']:
             raise HTTPException(status_code=409, detail='Interview time changed; review the delivery')
         if payload.recipient != row['recipient']:
@@ -300,6 +383,7 @@ def reprepare_delivery(delivery_id: int, payload: Reprepare, request: Request, u
         _check_generation(row, payload.expected_generation)
         interview = _interview(db, row['interview_id'])
         _eligible(interview)
+        _check_delivery_context(db, row, interview)
         if row['start_at'] != interview['start_at'] or row['end_at'] != interview['end_at']:
             raise HTTPException(status_code=409, detail='Interview time changed; review the delivery')
         db.execute('''INSERT INTO google_rejected_attempts
@@ -367,6 +451,7 @@ def prepare_delivery_proposal(interview_id: int, payload: PrepareProposal, reque
                 (interview_id,application_id,kind,recipient,event_id,start_at,end_at,state,created_by)
                 VALUES (?,?,?,?,?,?,?,'pending',?)''', (interview_id, interview['application_id'], kind,
                 recipient, event_id, interview['start_at'], interview['end_at'], user.id))
+            _bind_delivery_context(db, cursor.lastrowid, interview)
             _audit(db, interview['application_id'], user.id, cursor.lastrowid, kind, 'google_delivery_prepared')
         # Recheck time and session before the transaction can commit.
         _eligible(_interview(db, interview_id))
@@ -374,6 +459,33 @@ def prepare_delivery_proposal(interview_id: int, payload: PrepareProposal, reque
         return {'drafts': [_public(row) for row in db.execute(
             'SELECT * FROM google_deliveries WHERE interview_id=? ORDER BY kind', (interview_id,))],
             'notice': 'Local drafts only. Each Google action requires separate confirmation.'}
+
+
+@router.post('/deliveries/{delivery_id}/review-context')
+def review_delivery_context(delivery_id: int, payload: PrepareProposal, request: Request, user: HR):
+    """Bind an unsent legacy or stale draft only to a freshly reviewed proposal."""
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _actor(db, request, user)
+        row = db.execute('SELECT * FROM google_deliveries WHERE id=?', (delivery_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail='Delivery not found')
+        if row['state'] not in ('pending', 'rejected'):
+            raise HTTPException(status_code=409, detail='Only unsent or rejected drafts can be reviewed')
+        proposal = _proposal(db, row['interview_id'], payload.recipient, user.id)
+        if not secrets.compare_digest(proposal['fingerprint'], payload.fingerprint):
+            raise HTTPException(status_code=409, detail='Proposal changed; review it again')
+        interview = _interview(db, row['interview_id'])
+        if (row['application_id'] != interview['application_id'] or
+                row['start_at'] != interview['start_at'] or row['end_at'] != interview['end_at'] or
+                (row['kind'] == 'email' and row['recipient'] != payload.recipient)):
+            raise HTTPException(status_code=409, detail='Draft contents changed; separate review is required')
+        _bind_delivery_context(db, delivery_id, interview)
+        db.execute('UPDATE google_deliveries SET retry_generation=retry_generation+1, '
+                   "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?", (delivery_id,))
+        _audit(db, row['application_id'], user.id, delivery_id, row['kind'], 'google_context_reviewed')
+        _actor(db, request, user)
+        return _public(db.execute('SELECT * FROM google_deliveries WHERE id=?', (delivery_id,)).fetchone())
 
 
 @router.post('/interviews/{interview_id}/deliveries', status_code=201)
@@ -387,6 +499,7 @@ def prepare_delivery(interview_id: int, payload: Prepare, request: Request, user
                               (interview_id, payload.kind)).fetchone()
         if existing:
             if existing['state'] == 'pending' and existing['recipient'] == payload.recipient:
+                _check_delivery_context(db, existing, interview)
                 return _public(existing)
             raise HTTPException(status_code=409, detail='Delivery already exists and needs review')
         event_id = uuid.uuid4().hex if payload.kind == 'calendar' else None
@@ -394,6 +507,7 @@ def prepare_delivery(interview_id: int, payload: Prepare, request: Request, user
             (interview_id,application_id,kind,recipient,event_id,start_at,end_at,state,created_by)
             VALUES (?,?,?,?,?,?,?,'pending',?)''', (interview_id, interview['application_id'], payload.kind,
             payload.recipient, event_id, interview['start_at'], interview['end_at'], user.id))
+        _bind_delivery_context(db, cursor.lastrowid, interview)
         _audit(db, interview['application_id'], user.id, cursor.lastrowid, payload.kind, 'google_delivery_prepared')
         return _public(db.execute('SELECT * FROM google_deliveries WHERE id=?', (cursor.lastrowid,)).fetchone())
 
@@ -417,7 +531,9 @@ def send_delivery(delivery_id: int, payload: SendConfirm, request: Request, user
                 raise HTTPException(status_code=404, detail='Delivery not found')
             if draft['state'] != 'pending':
                 raise HTTPException(status_code=409, detail='Delivery cannot be sent again automatically')
-            _eligible(_interview(db, draft['interview_id']))
+            interview = _interview(db, draft['interview_id'])
+            _eligible(interview)
+            _check_delivery_context(db, draft, interview)
         try:
             prepared = preflight(draft['kind'])
             if prepared is not None:
@@ -441,6 +557,7 @@ def send_delivery(delivery_id: int, payload: SendConfirm, request: Request, user
             raise HTTPException(status_code=409, detail='Recipient changed or was not reviewed')
         interview = _interview(db, row['interview_id'])
         _eligible(interview)
+        _check_delivery_context(db, row, interview)
         if row['start_at'] != interview['start_at'] or row['end_at'] != interview['end_at']:
             raise HTTPException(status_code=409, detail='Interview time changed; review the delivery')
         if row['kind'] == 'email' and db.execute('''SELECT 1 FROM google_calendar_removals r
@@ -463,6 +580,7 @@ def send_delivery(delivery_id: int, payload: SendConfirm, request: Request, user
             _actor(db, request, user)
             interview = _interview(db, row['interview_id'])
             _eligible(interview)
+            _check_delivery_context(db, row, interview)
             if row['start_at'] != interview['start_at'] or row['end_at'] != interview['end_at']:
                 raise HTTPException(status_code=409, detail='Interview time changed; review the delivery')
     except HTTPException:
