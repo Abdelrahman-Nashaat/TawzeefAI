@@ -9,6 +9,7 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 
+from app.auth_store import InvalidAccount, issue_session
 from app.db import connect
 
 COOKIE_NAME = "tawzeef_session"
@@ -50,15 +51,12 @@ def create_session(request: Request, user_id: int, *, expected_password_hash: st
     token = secrets.token_urlsafe(32)
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN IMMEDIATE')
-        account = db.execute('SELECT active,password_hash FROM users WHERE id = ?', (user_id,)).fetchone()
-        if not account or not account['active'] or account['password_hash'] != expected_password_hash:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid credentials')
         now = int(time.time())
-        db.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
-        db.execute(
-            "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
-            (token_digest(token), user_id, now + SESSION_SECONDS),
-        )
+        try:
+            issue_session(db, dialect='sqlite', user_id=user_id, expected_password_hash=expected_password_hash,
+                          token_hash=token_digest(token), now=now, expires_at=now + SESSION_SECONDS)
+        except InvalidAccount:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid credentials') from None
     return token
 
 
