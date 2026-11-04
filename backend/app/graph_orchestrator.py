@@ -54,8 +54,10 @@ from app.provisional_queue import (
 from app.recruitment import (
     _require_current_role,
     get_application,
+    record_offer,
     score_masked_resume,
     store_screening,
+    validate_offer_eligibility,
 )
 from app.resume_fields import resume_fields_for_display
 from app.resume_mask import masked_source
@@ -74,9 +76,10 @@ _matching_workers = BoundedSemaphore(2)
 class ReviewRequest(BaseModel):
     application_id: int = Field(gt=0)
     policy_question: str = Field(default="", max_length=2000)
-    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application', 'complete_interview'] = 'full'
+    intent: Literal['full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application', 'complete_interview', 'present_offer'] = 'full'
     slot: SlotCreate | None = None
     interview_id: int | None = Field(default=None, gt=0)
+    offer_details: str | None = Field(default=None, max_length=4000)
     adaptive_goal: Literal['review_application', 'schedule_interview', 'advance_and_reserve'] | None = None
     allow_semantic: StrictBool = False
 
@@ -90,11 +93,13 @@ class ReviewRequest(BaseModel):
 
     @model_validator(mode='after')
     def check_policy_question(self):
+        if (self.intent == 'present_offer') != bool(self.offer_details and self.offer_details.strip()):
+            raise ValueError('Offer details are required only for offer review')
         if (self.intent == 'complete_interview') != (self.interview_id is not None):
             raise ValueError('Interview ID is required only for completion review')
         if self.intent == 'policy' and not self.policy_question.strip():
             raise ValueError('Policy review requires a question')
-        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview') and self.policy_question.strip():
+        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview', 'present_offer') and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
         needs_slot = self.intent in ('create_slot', 'create_private_slot', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or (self.intent == 'adaptive' and self.adaptive_goal in ('schedule_interview', 'advance_and_reserve'))
         if needs_slot != (self.slot is not None):
@@ -116,6 +121,7 @@ class ReviewReply(BaseModel):
 class ReviewState(TypedDict, total=False):
     application_id: int
     interview_id: int
+    offer_draft_id: str
     intent: str
     allow_semantic: bool
     plan: list[str]
@@ -248,6 +254,72 @@ def initialize_graph_reviews(path: str | Path) -> None:
                 END""")
 
 
+        db.execute("""CREATE TABLE IF NOT EXISTS graph_offer_drafts (
+            thread_id TEXT PRIMARY KEY REFERENCES graph_review_owners(thread_id) ON DELETE CASCADE,
+            application_id INTEGER NOT NULL REFERENCES applications(id),
+            owner_id INTEGER NOT NULL REFERENCES users(id), details TEXT NOT NULL,
+            expires_at INTEGER NOT NULL
+        )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS graph_offer_revisions (
+            application_id INTEGER PRIMARY KEY REFERENCES applications(id), revision INTEGER NOT NULL DEFAULT 0
+        )""")
+        db.execute("""CREATE TRIGGER IF NOT EXISTS graph_offer_candidate_access_update
+            AFTER UPDATE OF role, active ON users
+            WHEN OLD.role IS NOT NEW.role OR OLD.active IS NOT NEW.active BEGIN
+            INSERT OR IGNORE INTO graph_offer_revisions(application_id,revision)
+                SELECT id,0 FROM applications WHERE candidate_id=NEW.id;
+            UPDATE graph_offer_revisions SET revision=revision+1 WHERE application_id IN
+                (SELECT id FROM applications WHERE candidate_id=NEW.id);
+        END""")
+        for table in ('applications', 'interviews', 'job_offers'):
+            for event, alias in (('INSERT','NEW'), ('UPDATE','NEW'), ('DELETE','OLD')):
+                if table == 'applications':
+                    if event != 'UPDATE':
+                        continue
+                    columns = ' OF status,candidate_id,job_id'
+                    identifier = alias + '.id'
+                else:
+                    columns = ''
+                    identifier = alias + '.application_id'
+                old_identifier = 'OLD.application_id' if event == 'UPDATE' and table != 'applications' else identifier
+                db.execute(f"""CREATE TRIGGER IF NOT EXISTS graph_offer_{table}_{event.lower()}
+                    AFTER {event}{columns} ON {table} BEGIN
+                    INSERT OR IGNORE INTO graph_offer_revisions(application_id,revision)
+                        SELECT id,0 FROM applications WHERE id IN ({identifier},{old_identifier});
+                    UPDATE graph_offer_revisions SET revision=revision+1 WHERE application_id IN ({identifier},{old_identifier});
+                END""")
+        for event, alias in (('INSERT','NEW'), ('UPDATE','NEW'), ('DELETE','OLD')):
+            old_interview = 'OLD.interview_id' if event == 'UPDATE' else alias + '.interview_id'
+            db.execute(f"""CREATE TRIGGER IF NOT EXISTS graph_offer_completion_{event.lower()}
+                AFTER {event} ON interview_completions BEGIN
+                INSERT OR IGNORE INTO graph_offer_revisions(application_id,revision)
+                    SELECT application_id,0 FROM interviews WHERE id IN ({alias}.interview_id,{old_interview});
+                UPDATE graph_offer_revisions SET revision=revision+1 WHERE application_id IN
+                    (SELECT application_id FROM interviews WHERE id IN ({alias}.interview_id,{old_interview}));
+            END""")
+
+
+def _offer_snapshot(db, application_id: int, draft_id: str, owner_id: int):
+    draft = db.execute('SELECT * FROM graph_offer_drafts WHERE thread_id=? AND application_id=? AND owner_id=?',
+                       (draft_id, application_id, owner_id)).fetchone()
+    if draft is None or draft['expires_at'] <= int(time.time()):
+        raise HTTPException(status_code=409, detail='Offer draft unavailable or expired; start a new review')
+    application = validate_offer_eligibility(db, application_id)
+    candidate = db.execute('SELECT username,display_name FROM users WHERE id=?', (application['candidate_id'],)).fetchone()
+    job = db.execute('SELECT title FROM jobs WHERE id=?', (application['job_id'],)).fetchone()
+    if candidate is None or job is None:
+        raise HTTPException(status_code=409, detail='Candidate or job unavailable; start a new review')
+    identity = {'candidate_id': application['candidate_id'], 'candidate_name': candidate['display_name'],
+                'candidate_username': candidate['username'], 'job_id': application['job_id'], 'job_title': job['title']}
+    revision = db.execute('SELECT revision FROM graph_offer_revisions WHERE application_id=?', (application_id,)).fetchone()
+    data = {'application_id': application_id, **identity, 'status': application['status'],
+            'offer_revision': revision['revision'] if revision else 0,
+            'details_sha256': hashlib.sha256(draft['details'].encode('utf-8')).hexdigest(),
+            'expires_at': draft['expires_at']}
+    digest = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return draft['details'], identity, digest
+
+
 def _interview_completion_snapshot(db, application_id: int, interview_id: int):
     """Bind completion approval to the exact interview and monotonic revisions."""
     row = validate_interview_completion(db, interview_id)
@@ -335,6 +407,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             'scheduling': ['scheduler', 'human_review'],
             'status': ['status', 'human_review'],
             'complete_interview': ['status', 'prepare_completion', 'human_review', 'execute_completion'],
+            'present_offer': ['status', 'prepare_offer', 'human_review', 'execute_offer'],
             'create_slot': ['prepare_slot', 'human_review', 'execute_slot'],
             'create_private_slot': ['prepare_slot', 'human_review', 'execute_slot'],
             'advance_application': ['parser', 'matching', 'status', 'prepare_advance', 'human_review', 'execute_advance'],
@@ -522,6 +595,31 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             created['application_id'] = state['application_id']
         return {'action_result': {'status': 'created', 'slot': created}}
 
+    def prepare_offer(state: ReviewState):
+        if authorize is None or user is None:
+            raise HTTPException(status_code=403, detail='HR access required')
+        authorize()
+        with connect(path) as db:
+            db.execute('BEGIN')
+            _, _, fingerprint = _offer_snapshot(db, state['application_id'], state['offer_draft_id'], user.id)
+        authorize()
+        return {'action_proposal': {'type': 'present_offer', 'application_id': state['application_id'],
+                                    'approval_fingerprint': fingerprint,
+                                    'notice': 'Present this offer locally only after HR approval; no message is sent.'}}
+
+    def execute_offer(state: ReviewState):
+        if action_db is None or user is None:
+            raise RuntimeError('An authorized resume transaction is required')
+        if not state['reviewed']:
+            action_db.execute('DELETE FROM graph_offer_drafts WHERE thread_id=?', (state['offer_draft_id'],))
+            return {'action_result': {'status': 'declined'}}
+        details, _, fingerprint = _offer_snapshot(action_db, state['application_id'], state['offer_draft_id'], user.id)
+        if not secrets.compare_digest(fingerprint, state['action_proposal']['approval_fingerprint']):
+            raise HTTPException(status_code=409, detail='Offer or application changed; start a new review')
+        offer = record_offer(action_db, state['application_id'], details, user.id)
+        action_db.execute('DELETE FROM graph_offer_drafts WHERE thread_id=?', (state['offer_draft_id'],))
+        return {'action_result': {'status': 'offer_presented', 'offer_id': offer['id']}}
+
     def prepare_completion(state: ReviewState):
         if authorize is None or user is None:
             raise HTTPException(status_code=403, detail='HR access required')
@@ -650,7 +748,9 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         return {'action_result': {'status': 'advanced'}}
 
     def human_review(state: ReviewState):
-        notice = ('Confirm this interview took place. No message is sent.'
+        notice = ('Present this offer locally. No message is sent.'
+                  if state.get('intent') == 'present_offer' else
+                  'Confirm this interview took place. No message is sent.'
                   if state.get('intent') == 'complete_interview' else
                   'Approve recording this keyword screening. No hiring decision or message is made.'
                   if state.get('intent') == 'screen_application' else
@@ -675,7 +775,8 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
              "human_review": human_review, "prepare_slot": prepare_slot, "execute_slot": execute_slot,
              "prepare_advance": prepare_advance, "execute_advance": execute_advance,
              "prepare_screen": prepare_screen, "execute_screen": execute_screen,
-             "prepare_completion": prepare_completion, "execute_completion": execute_completion}
+             "prepare_completion": prepare_completion, "execute_completion": execute_completion,
+             "prepare_offer": prepare_offer, "execute_offer": execute_offer}
     def guarded(node):
         def execute(state):
             if state.get('intent') != 'adaptive':
@@ -702,15 +803,16 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             steps = state['plan']
             return steps[0] if name == 'plan' else steps[steps.index(name) + 1]
         return route
-    choices = ['parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'prepare_screen', 'prepare_completion', 'human_review', 'execute_slot', 'execute_advance', 'execute_screen', 'execute_completion']
-    for name in ['plan', 'parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'prepare_screen', 'prepare_completion']:
+    choices = ['parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'prepare_screen', 'prepare_completion', 'prepare_offer', 'human_review', 'execute_slot', 'execute_advance', 'execute_screen', 'execute_completion', 'execute_offer']
+    for name in ['plan', 'parser', 'matching', 'semantic', 'policy', 'scheduler', 'status', 'agent_review', 'prepare_slot', 'prepare_advance', 'prepare_screen', 'prepare_completion', 'prepare_offer']:
         builder.add_conditional_edges(name, next_after(name), choices)
-    builder.add_conditional_edges('human_review', lambda state: 'execute_completion' if state.get('intent') == 'complete_interview' else 'execute_screen' if state.get('intent') == 'screen_application' else 'execute_advance' if state.get('intent') in ('advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or state.get('adaptive_goal') == 'advance_and_reserve' else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
-                                  {'execute_slot': 'execute_slot', 'execute_advance': 'execute_advance', 'execute_screen': 'execute_screen', 'execute_completion': 'execute_completion', END: END})
+    builder.add_conditional_edges('human_review', lambda state: 'execute_offer' if state.get('intent') == 'present_offer' else 'execute_completion' if state.get('intent') == 'complete_interview' else 'execute_screen' if state.get('intent') == 'screen_application' else 'execute_advance' if state.get('intent') in ('advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or state.get('adaptive_goal') == 'advance_and_reserve' else 'execute_slot' if state.get('intent') in ('create_slot', 'create_private_slot') or state.get('adaptive_goal') == 'schedule_interview' else END,
+                                  {'execute_slot': 'execute_slot', 'execute_advance': 'execute_advance', 'execute_screen': 'execute_screen', 'execute_completion': 'execute_completion', 'execute_offer': 'execute_offer', END: END})
     builder.add_edge('execute_slot', END)
     builder.add_edge('execute_advance', END)
     builder.add_edge('execute_screen', END)
     builder.add_edge('execute_completion', END)
+    builder.add_edge('execute_offer', END)
     return builder.compile(checkpointer=checkpointer)
 
 
@@ -802,7 +904,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     selected = state.get('intent', 'full')
     scoped_fields = {'parsed': 'full', 'matching': 'full', 'agent_review': 'full',
                      'policy': 'policy', 'scheduling': 'scheduling', 'status': 'status'}
-    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application', 'complete_interview'}:
+    if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application', 'complete_interview', 'present_offer'}:
         selected = 'invalid'
     for field, scope in scoped_fields.items():
         adaptive_fields = {'parsed': 'parser', 'matching': 'matching', 'scheduling': 'scheduler', 'status': 'status'}
@@ -854,6 +956,15 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                         'Live queue information, not part of the reviewed graph snapshot. '
                         'A provisional keyword score is not verified ability or an HR decision. '
                         'The current threshold and source review status determine prioritization.')
+                if selected == 'present_offer' and snapshot.next:
+                    try:
+                        details, identity, fingerprint = _offer_snapshot(db, state['application_id'], state['offer_draft_id'], actor['id'])
+                        if not secrets.compare_digest(fingerprint, state['action_proposal']['approval_fingerprint']):
+                            raise HTTPException(status_code=409, detail='Offer changed')
+                        state['offer_preview'] = {'status': 'current', 'details': details, **identity,
+                                                  'notice': 'Review exact offer details before approval.'}
+                    except (HTTPException, KeyError):
+                        state['offer_preview'] = {'status': 'stale', 'notice': 'Offer or application changed; start a new review.'}
                 if selected == 'complete_interview' and snapshot.next:
                     try:
                         interview, fingerprint = _interview_completion_snapshot(db, state['application_id'], state['interview_id'])
@@ -968,6 +1079,13 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
                     available = _authorized_sources(fresh, 'hr')
                 if any(ref['id'] not in available or _digest(available[ref['id']]) != ref['digest'] for ref in refs):
                     raise HTTPException(status_code=409, detail='Policy sources changed; reload the review')
+            if selected == 'present_offer' and snapshot.next and state.get('offer_preview', {}).get('status') == 'current':
+                try:
+                    _, _, fingerprint = _offer_snapshot(fresh, state['application_id'], state['offer_draft_id'], user.id)
+                    if not secrets.compare_digest(fingerprint, state['action_proposal']['approval_fingerprint']):
+                        raise HTTPException(status_code=409, detail='Offer changed')
+                except (HTTPException, KeyError):
+                    raise HTTPException(status_code=409, detail='Offer changed; reload the review') from None
             if selected == 'complete_interview' and snapshot.next and state.get('interview_preview', {}).get('status') == 'current':
                 try:
                     _, fingerprint = _interview_completion_snapshot(fresh, state['application_id'], state['interview_id'])
@@ -994,8 +1112,14 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
     thread_id = secrets.token_urlsafe(24)
     with connect(path) as db:
         get_application(db, payload.application_id)
+        _require_current_role(db, request, user, 'hr')
         db.execute("INSERT INTO graph_review_owners (thread_id, application_id, owner_id) VALUES (?, ?, ?)",
                    (thread_id, payload.application_id, user.id))
+        if payload.intent == 'present_offer':
+            db.execute('DELETE FROM graph_offer_drafts WHERE expires_at<=?', (int(time.time()),))
+            db.execute('INSERT INTO graph_offer_drafts(thread_id,application_id,owner_id,details,expires_at) VALUES(?,?,?,?,?)',
+                       (thread_id, payload.application_id, user.id, payload.offer_details.strip(), int(time.time()) + 86400))
+        _require_current_role(db, request, user, 'hr')
     try:
         with SqliteSaver.from_conn_string(str(path)) as saver:
             def authorize():
@@ -1008,6 +1132,8 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
                                        enable_agent=os.environ.get('TAWZEEF_ENABLE_GROQ') == '1', request=request)
             config = _config(thread_id)
             initial = {"application_id": payload.application_id, "intent": payload.intent}
+            if payload.intent == 'present_offer':
+                initial['offer_draft_id'] = thread_id
             if payload.interview_id is not None:
                 initial['interview_id'] = payload.interview_id
             if payload.allow_semantic:
@@ -1028,6 +1154,7 @@ def start_review(payload: ReviewRequest, request: Request, user: HR):
             logger.exception("Could not remove checkpoints after review start failed")
         try:
             with connect(path) as db:
+                db.execute("DELETE FROM graph_offer_drafts WHERE thread_id = ?", (thread_id,))
                 db.execute("DELETE FROM graph_review_owners WHERE thread_id = ?", (thread_id,))
         except Exception:
             logger.exception("Could not remove owner record after review start failed")
@@ -1070,7 +1197,7 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             if (snapshot.values.get('intent') == 'adaptive' and
                     context_for(db, snapshot.values['application_id'])[1] != snapshot.values.get('context_digest')):
                 raise HTTPException(status_code=409, detail='Application changed; start a new review')
-            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview') or snapshot.values.get('adaptive_goal') in ('schedule_interview', 'advance_and_reserve')) and payload.reviewed:
+            if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview', 'present_offer') or snapshot.values.get('adaptive_goal') in ('schedule_interview', 'advance_and_reserve')) and payload.reviewed:
                 expected = snapshot.values.get('action_proposal', {}).get('approval_fingerprint', '')
                 if (not expected or not payload.approval_fingerprint or
                         not secrets.compare_digest(expected.encode('utf-8'), payload.approval_fingerprint.encode('utf-8'))):

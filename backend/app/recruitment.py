@@ -508,6 +508,33 @@ def list_offers(application_id: int, request: Request, user: Authenticated):
         return [_offer_view(row) for row in rows]
 
 
+def validate_offer_eligibility(db, application_id: int):
+    """Recheck offer eligibility in the caller's transaction."""
+    application = get_application(db, application_id)
+    if application['status'] != 'advanced':
+        raise HTTPException(status_code=409, detail='Application is not ready for an offer')
+    if not db.execute("SELECT 1 FROM users WHERE id=? AND role='candidate' AND active=1",
+                      (application['candidate_id'],)).fetchone():
+        raise HTTPException(status_code=409, detail='An active candidate account is required')
+    if not db.execute('''SELECT 1 FROM interviews i JOIN interview_completions c ON c.interview_id=i.id
+                         WHERE i.application_id=? AND i.candidate_id=? LIMIT 1''',
+                      (application_id, application['candidate_id'])).fetchone():
+        raise HTTPException(status_code=409, detail='A completed interview is required')
+    if _upcoming_interview(db, application_id):
+        raise HTTPException(status_code=409, detail='Resolve active interviews before presenting an offer')
+    return application
+
+
+def record_offer(db, application_id: int, details: str, actor_id: int):
+    """Present one recipient-bound local offer in the caller's transaction."""
+    application = validate_offer_eligibility(db, application_id)
+    cursor = db.execute("INSERT INTO job_offers(application_id,recipient_id,details,status,created_by) VALUES (?,?,?,'presented',?)",
+                        (application_id, application['candidate_id'], details, actor_id))
+    db.execute("UPDATE applications SET status='offered',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (application_id,))
+    _offer_audit(db, application_id, actor_id, 'offer_presented', cursor.lastrowid)
+    return _offer_view(db.execute('SELECT * FROM job_offers WHERE id=?', (cursor.lastrowid,)).fetchone())
+
+
 @router.post('/applications/{application_id}/offers', status_code=201)
 def create_offer(application_id: int, payload: OfferCreate, request: Request, user: HR):
     details = payload.details.strip()
@@ -516,21 +543,9 @@ def create_offer(application_id: int, payload: OfferCreate, request: Request, us
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN IMMEDIATE')
         _require_current_role(db, request, user, 'hr')
-        application = get_application(db, application_id)
-        if application['status'] != 'advanced':
-            raise HTTPException(status_code=409, detail='Application is not ready for an offer')
-        if not db.execute('''SELECT 1 FROM interviews i JOIN interview_completions c ON c.interview_id=i.id
-                             WHERE i.application_id=? AND i.candidate_id=? LIMIT 1''',
-                          (application_id, application['candidate_id'])).fetchone():
-            raise HTTPException(status_code=409, detail='A completed interview is required')
-        if _upcoming_interview(db, application_id):
-            raise HTTPException(status_code=409, detail='Resolve active interviews before presenting an offer')
-        cursor = db.execute("INSERT INTO job_offers(application_id,recipient_id,details,status,created_by) VALUES (?,?,?,'presented',?)",
-                            (application_id, application['candidate_id'], details, user.id))
-        db.execute("UPDATE applications SET status='offered',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (application_id,))
-        _offer_audit(db, application_id, user.id, 'offer_presented', cursor.lastrowid)
+        offer = record_offer(db, application_id, details, user.id)
         _require_current_role(db, request, user, 'hr')
-        return _offer_view(db.execute('SELECT * FROM job_offers WHERE id=?', (cursor.lastrowid,)).fetchone())
+        return offer
 
 
 @router.post('/offers/{offer_id}/respond')
