@@ -27,7 +27,7 @@ def test_graph_rejects_large_resume_or_job_without_scoring(graph_app, monkeypatc
     def unexpected(*args):
         raise AssertionError('oversized inputs must not be scored')
     monkeypatch.setattr(graph_orchestrator, 'score_masked_resume', unexpected)
-    for source in ('x' * 4001, '\x00' + 'x' * 20000):
+    for source in ('x' * 12001, '\x00' + 'x' * 20000):
         with connect(path) as db:
             db.execute('UPDATE applications SET resume_text=? WHERE id=?', (source, application))
         response = client.post('/api/graph-reviews', json={'application_id': application, 'intent': 'screen_application'})
@@ -70,7 +70,7 @@ def test_graph_rechecks_inputs_and_hr_after_scoring_without_write_lock(graph_app
 def test_graph_scores_exact_limits_without_truncation(graph_app):
     client, path, application = graph_app
     with connect(path) as db:
-        db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('x' * 3993 + ' Python', application))
+        db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('x' * 11993 + ' Python', application))
         db.execute('UPDATE jobs SET required_skills=?,preferred_skills=? WHERE id=?',
                    (json.dumps(['Python'] + [f'skill{i}' for i in range(19)]), '[]', 'job-backend-python'))
     response = client.post('/api/graph-reviews', json={'application_id': application, 'intent': 'screen_application'})
@@ -81,10 +81,45 @@ def test_graph_scores_exact_limits_without_truncation(graph_app):
     assert response.json()['awaiting_review']
 
 
+def test_graph_screens_long_resume_after_approval_without_checkpointing_text(graph_app):
+    client, path, application = graph_app
+    source = ('Built reliable services for synthetic projects.\n' * 150) + 'Developed Python APIs. private-marker-bx7'
+    assert 4000 < len(source) < graph_orchestrator.MAX_GRAPH_SOURCE_CHARS
+    with connect(path) as db:
+        db.execute('UPDATE applications SET resume_text=? WHERE id=?', (source, application))
+    response = client.post('/api/graph-reviews', json={'application_id': application, 'intent': 'screen_application'})
+    assert response.status_code == 201, response.text
+    review = response.json()
+    preview = review['state']['screening_preview']['score']
+    assert preview['required'][0]['mentioned']
+    with connect(path) as db:
+        for table in ('checkpoints', 'writes'):
+            for row in db.execute(f'SELECT * FROM {table}'):
+                assert all(b'private-marker-bx7' not in value if isinstance(value, bytes)
+                           else 'private-marker-bx7' not in str(value) for value in row)
+    result = client.post(f"/api/graph-reviews/{review['id']}/resume", json={
+        'reviewed': True, 'approval_fingerprint': review['state']['action_proposal']['approval_fingerprint']})
+    assert result.status_code == 200, result.text
+    with connect(path) as db:
+        assert json.loads(db.execute('SELECT score_json FROM applications WHERE id=?', (application,)).fetchone()[0]) == preview
+
+
+def test_graph_rejects_normalization_expansion_before_scoring(graph_app, monkeypatch):
+    client, path, application = graph_app
+    with connect(path) as db:
+        db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('\ufb03' * 6000, application))
+    def unexpected(*args):
+        raise AssertionError('expanded input must not be scored')
+    monkeypatch.setattr(graph_orchestrator, 'score_masked_resume', unexpected)
+    response = client.post('/api/graph-reviews', json={'application_id': application, 'intent': 'screen_application'})
+    assert response.status_code == 422
+    assert response.json()['detail']['code'] == 'graph_matching_work_limit'
+
+
 def test_full_review_survives_work_limit_without_scoring_and_resume(graph_app, monkeypatch):
     client, path, application = graph_app
     with connect(path) as db:
-        db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('x' * 4001, application))
+        db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('x' * 12001, application))
     def unexpected(*args):
         raise AssertionError('oversized inputs must not be scored')
     monkeypatch.setattr(graph_orchestrator, 'score_masked_resume', unexpected)
@@ -109,14 +144,14 @@ def test_full_review_survives_work_limit_without_scoring_and_resume(graph_app, m
 def test_unavailable_marker_becomes_stale_after_change_and_revert(graph_app, change):
     client, path, application = graph_app
     with connect(path) as db:
-        db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('x' * 4001, application))
+        db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('x' * 12001, application))
     created = client.post('/api/graph-reviews', json={'application_id': application})
     assert created.status_code == 201, created.text
     review_id = created.json()['id']
     with connect(path) as db:
         if change == 'source':
             db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('temporary', application))
-            db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('x' * 4001, application))
+            db.execute('UPDATE applications SET resume_text=? WHERE id=?', ('x' * 12001, application))
         else:
             job = db.execute("SELECT title FROM jobs WHERE id='job-backend-python'").fetchone()[0]
             db.execute("UPDATE jobs SET title='temporary' WHERE id='job-backend-python'")

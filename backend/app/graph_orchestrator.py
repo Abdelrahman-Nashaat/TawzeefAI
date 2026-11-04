@@ -44,8 +44,6 @@ from app.interview_guide import guide_from_matching
 from app.matching_specialist import matching_snapshot
 from app.policy_agent import POLICY_CONTACT_HR, authorized_policy_sources, run_policy_agent
 from app.provisional_queue import (
-    MAX_SOURCE_BYTES,
-    MAX_SOURCE_CHARS,
     _assignment_revision,
     _bounded_job,
     _job_revision,
@@ -55,6 +53,7 @@ from app.provisional_queue import (
 from app.recruitment import (
     _require_current_role,
     get_application,
+    normalize,
     record_hire,
     record_offer,
     record_rejection,
@@ -75,6 +74,11 @@ router = APIRouter(prefix="/api/graph-reviews")
 HR = Annotated[User, Depends(require_roles("hr"))]
 logger = logging.getLogger(__name__)
 _matching_workers = BoundedSemaphore(2)
+# Graph matching recomputes a score within the atomic approval transaction.
+# Keep its budget tighter than direct screening while supporting longer CVs.
+MAX_GRAPH_SOURCE_CHARS = 12_000
+MAX_GRAPH_SOURCE_BYTES = MAX_GRAPH_SOURCE_CHARS * 4
+MAX_GRAPH_MASKED_CHARS = 16_000
 
 
 class ReviewRequest(BaseModel):
@@ -166,11 +170,11 @@ def _bounded_matching_inputs(db, application_id: int):
     if row is None:
         raise HTTPException(status_code=404, detail='Application not found')
     too_large = {'code': 'graph_matching_work_limit',
-                 'message': 'Graph matching supports resumes up to 4,000 characters and at most 20 job skills of 80 characters each. Review larger inputs manually.'}
-    if row['source_bytes'] > MAX_SOURCE_BYTES:
+                 'message': 'Graph matching supports resumes up to 12,000 characters, bounded redacted text and at most 20 job skills of 80 characters each. Review larger inputs manually.'}
+    if row['source_bytes'] > MAX_GRAPH_SOURCE_BYTES:
         raise HTTPException(status_code=422, detail=too_large)
     raw = db.execute('SELECT resume_text FROM applications WHERE id=?', (application_id,)).fetchone()[0]
-    if len(raw) > MAX_SOURCE_CHARS:
+    if len(raw) > MAX_GRAPH_SOURCE_CHARS:
         raise HTTPException(status_code=422, detail=too_large)
     try:
         job = _bounded_job(db, row['job_id'])
@@ -178,7 +182,11 @@ def _bounded_matching_inputs(db, application_id: int):
         if exc.status_code == 422:
             raise HTTPException(status_code=422, detail=too_large) from exc
         raise
-    return row['job_id'], job, masked_source(db, application_id)
+    source = masked_source(db, application_id)
+    if (len(source['text']) > MAX_GRAPH_MASKED_CHARS or
+            len(normalize(source['text'])) > MAX_GRAPH_MASKED_CHARS):
+        raise HTTPException(status_code=422, detail=too_large)
+    return row['job_id'], job, source
 
 
 def _screen_snapshot(db, application_id: int):

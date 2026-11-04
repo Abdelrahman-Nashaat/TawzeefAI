@@ -111,7 +111,7 @@ function setupLogout() {
 
 const statusLabels = { submitted: "تم التقديم", advanced: "المرحلة التالية", offered: "عرض توظيف", rejected: "مرفوض", hired: "تم التوظيف" };
 const documentErrors = {
-  graph_matching_work_limit: "Graph matching supports resumes up to 4,000 characters and at most 20 job skills of 80 characters each. Review larger inputs manually.",
+  graph_matching_work_limit: "Graph matching supports resumes up to 12,000 characters, bounded redacted text and at most 20 job skills of 80 characters each. Review larger inputs manually.",
   unsupported_type: "صيغة الملف غير مدعومة. ارفع PDF نصيًا أو DOCX.",
   empty_file: "الملف فارغ.", file_too_large: "حجم الملف أكبر من 5 ميجابايت.",
   document_too_large: "المستند يتجاوز الحد المسموح للمعالجة.",
