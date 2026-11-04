@@ -3,6 +3,7 @@
 import streamlit as st
 
 from streamlit_client import ApiError, ApiUnavailable
+from streamlit_graph_rejection import render_graph_rejection
 from streamlit_graph_screen import render_graph_screen
 from streamlit_hr_lifecycle import render_hr_lifecycle
 
@@ -82,6 +83,7 @@ def render_hr_review(call, local_api, clear_session):
         item = by_id[selected]
         hire_ready = render_hr_lifecycle(call, local_api, clear_session, item)
         render_graph_screen(local_api(), clear_session, selected, job_id)
+        render_graph_rejection(local_api(), clear_session, selected, job_id)
         st.text(f"Provisional status: {item['recommendation']}")
         preview = st.session_state.get("hr_review_preview")
         if preview and (preview["application_id"] != selected or preview["job_id"] != job_id):

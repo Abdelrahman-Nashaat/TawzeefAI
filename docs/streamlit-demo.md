@@ -28,6 +28,13 @@ need external coordination and directs candidates to contact HR. A successful
 cancellation creates a local notice that HR can view and mark read in their own
 inbox. It sends no email and does not change Google Calendar.
 
+HR can also start a graph rejection review with a reason, inspect the candidate,
+role, affected interviews, private slots and offer, then explicitly approve or
+discard it. A changed review cannot be approved and may be discarded. The API
+rechecks current permissions and context; approval records local changes only
+and sends no message. If a response is uncertain, check the application before
+retrying.
+
 On Windows, run the API and the Streamlit UI in separate PowerShell windows:
 
 ```powershell
