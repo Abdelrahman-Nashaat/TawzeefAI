@@ -114,7 +114,7 @@ def test_session_expiry_before_commit_rolls_back(setup, monkeypatch):
 
 
 def test_newer_interview_and_final_decision_take_precedence(setup):
-    app, client, app_id, interview_id = setup
+    _app, client, app_id, interview_id = setup
     login(client, 'hr')
     assert client.post(f'/api/interviews/{interview_id}/complete').status_code == 200
     start = datetime.now(UTC) + timedelta(days=1)
@@ -131,8 +131,14 @@ def test_newer_interview_and_final_decision_take_precedence(setup):
     assert client.post(f'/api/interviews/{next_id}/cancel').status_code == 200
     login(client, 'candidate')
     assert client.get(f'/api/workflows/{app_id}/progress').json()['stage'] == 'interviewed'
-    with connect(app.state.database_path) as db:
-        db.execute("UPDATE applications SET status='hired' WHERE id=?", (app_id,))
+    login(client, 'hr')
+    offer = client.post(f'/api/applications/{app_id}/offers', json={'details': 'Synthetic offer'})
+    assert offer.status_code == 201
+    login(client, 'candidate')
+    assert client.post(f"/api/offers/{offer.json()['id']}/respond", json={'decision': 'accepted'}).status_code == 200
+    login(client, 'hr')
+    assert client.post(f'/api/applications/{app_id}/decision', json={'decision': 'hire'}).status_code == 200
+    login(client, 'candidate')
     assert client.get(f'/api/workflows/{app_id}/progress').json()['stage'] == 'hired'
 
 
