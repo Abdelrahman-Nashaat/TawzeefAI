@@ -15,6 +15,12 @@ active; the API rechecks eligibility. After the candidate accepts, HR can
 explicitly record a reviewed hiring decision. If a write's result is uncertain, inspect
 the current application or interview before attempting another action.
 
+Candidates can request cancellation of an eligible locally booked future
+interview after confirming the action. The server refuses cancellations that
+need external coordination and directs candidates to contact HR. A successful
+cancellation creates a local notice that HR can view and mark read in their own
+inbox. It sends no email and does not change Google Calendar.
+
 On Windows, run the API and the Streamlit UI in separate PowerShell windows:
 
 ```powershell

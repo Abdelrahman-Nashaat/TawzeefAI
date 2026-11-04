@@ -116,6 +116,22 @@ def render_candidate(call, local_api, clear_session):
     if own_interviews:
         for interview in own_interviews:
             st.text(f"{interview['start_at']} – {interview['end_at']} | {interview['interviewer']} | {interview['status']}")
+            if application['status'] == 'advanced' and interview['status'] == 'scheduled':
+                with st.form(f"candidate_cancel_{interview['id']}"):
+                    st.caption("For eligible future interviews, cancellation is local and notifies HR in the app. Contact HR for externally coordinated interviews.")
+                    confirmed = st.checkbox("I want to cancel this interview", key=f"confirm_candidate_cancel_{interview['id']}")
+                    cancel = st.form_submit_button("Cancel interview")
+                if cancel:
+                    if not confirmed:
+                        st.error("Confirm the cancellation before submitting.")
+                    else:
+                        result = _write(local_api(), f"/api/interviews/{interview['id']}/candidate-cancel",
+                            on_auth_failure=clear_session,
+                            conflict_message="This interview cannot be cancelled here. Refresh or contact HR for assistance.",
+                            uncertain_message="Cancellation could not be confirmed. Refresh and check the interview before trying again.")
+                        if result is not None:
+                            st.session_state['candidate_message'] = "Interview cancelled locally. HR has an in-app notice."
+                            st.rerun()
     else:
         st.info("No interviews have been recorded for this application.")
     if application["status"] == "advanced":
