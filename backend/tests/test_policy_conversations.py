@@ -20,6 +20,22 @@ def ask(client, chat_id, question, **extra):
     return client.post(f'/api/conversations/{chat_id}/messages', json={'question': question, **extra})
 
 
+def test_prefixed_arabic_negation_abstains_in_conversation(tmp_path, monkeypatch):
+    monkeypatch.delenv('TAWZEEF_ENABLE_GROQ', raising=False)
+    path = tmp_path / 'arabic-negation.sqlite3'
+    with TestClient(create_app(path, seed_demo=True)) as client:
+        login(client, 'hr')
+        add_document(client, '\u0633\u064a\u0627\u0633\u0629 \u0631\u0633\u0648\u0645 \u0627\u0644\u0633\u0641\u0631',
+                     '\u062a\u0633\u0631\u064a \u0633\u064a\u0627\u0633\u0629 \u0631\u0633\u0648\u0645 \u0627\u0644\u0633\u0641\u0631 \u0648\u0644\u0627 \u064a\u062a\u0645 \u062a\u0639\u0648\u064a\u0636\u0647\u0627.')
+        login(client, 'employee')
+        conversation = client.post('/api/conversations', json={'title': 'Policy'}).json()['id']
+        response = ask(client, conversation, '\u0631\u0633\u0648\u0645 \u0627\u0644\u0633\u0641\u0631', mode='policy')
+        assert response.status_code == 201
+        assert response.json()['mode'] == 'abstain'
+        assert response.json()['sources'] == []
+        assert 'Negation' in response.json()['notice']
+
+
 def test_policy_mode_respects_collection_role_and_revoked_history(tmp_path, monkeypatch):
     monkeypatch.delenv('TAWZEEF_ENABLE_GROQ', raising=False)
     path = tmp_path / 'policy-chat.sqlite3'

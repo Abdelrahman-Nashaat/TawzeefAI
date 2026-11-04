@@ -69,6 +69,37 @@ def test_negated_questions_with_contractions_do_not_return_positive_policy(polic
     assert 'Negation' in result.answer.notice
 
 
+@pytest.mark.parametrize('negator', ['\u0648\u0644\u0627', '\u0641\u0644\u0627', '\u0648\u0644\u0645', '\u0641\u0644\u0646', '\u0648\u0644\u064a\u0633', '\u0648\u064e\u0644\u064e\u0627'])
+def test_prefixed_arabic_negation_is_not_returned_as_supported_answer(policy_setup, negator):
+    path, users, _ = policy_setup
+    with connect(path) as db:
+        db.execute('''INSERT INTO knowledge_documents(title,audience,text,created_by,collection)
+            VALUES (?,?,?,?,?)''', ('Travel reimbursement', 'staff',
+                                  f'Travel reimbursement {negator} eligible for staff.',
+                                  users['hr'].id, 'handbook'))
+    result = policy_agent.run_policy_agent(path, users['employee'], 'travel reimbursement')
+    assert result.answer.mode == 'abstain'
+    assert result.answer.sources == []
+    assert 'Negation' in result.answer.notice
+
+
+@pytest.mark.parametrize('negator', ['\u0648\u0644\u0627', '\u0641\u0644\u0627', '\u0648\u0644\u0645', '\u0641\u0644\u0646', '\u0648\u0644\u064a\u0633', '\u0648\u064e\u0644\u064e\u0627'])
+def test_prefixed_arabic_negation_in_question_does_not_return_positive_policy(policy_setup, negator):
+    path, users, _ = policy_setup
+    result = policy_agent.run_policy_agent(path, users['employee'], f'Annual leave, {negator} available?')
+    assert result.answer.mode == 'abstain'
+    assert result.answer.sources == []
+    assert 'Negation' in result.answer.notice
+
+
+@pytest.mark.parametrize('ordinary_word', ['\u0648\u0644\u0627\u062f\u0629', '\u0648\u0644\u0627\u064a\u0629', '\u0641\u0644\u0627\u062d\u0629'])
+def test_arabic_words_with_same_prefix_are_not_negators(policy_setup, ordinary_word):
+    path, users, _ = policy_setup
+    result = policy_agent.run_policy_agent(path, users['employee'], f'Annual leave {ordinary_word}')
+    assert not policy_agent._has_explicit_negation(ordinary_word)
+    assert 'Negation' not in (result.answer.notice or '')
+
+
 def test_search_rate_limit_falls_back_without_another_model_call(policy_setup, monkeypatch):
     path, users, _ = policy_setup
     monkeypatch.setenv('GROQ_API_KEY', 'private-test-key')
