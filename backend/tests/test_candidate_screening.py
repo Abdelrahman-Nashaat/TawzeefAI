@@ -56,6 +56,18 @@ def test_only_candidate_owner_can_read(preview):
         assert client.get(f'/api/applications/{app_id}/candidate-screening').status_code == 403
 
 
+def test_candidate_preview_shows_actual_long_sentence_match(preview):
+    client, path, app_id, _ = preview
+    with connect(path) as db:
+        db.execute('UPDATE applications SET resume_text=? WHERE id=?',
+                   ('Built ' + 'x' * 260 + ' Python services.', app_id))
+    login(client, 'candidate', 'candidate-demo-only')
+    response = client.get(f'/api/applications/{app_id}/candidate-screening')
+    assert response.status_code == 200
+    python = next(item for item in response.json()['required'] if item['skill'] == 'Python')
+    assert python['mentioned'] and any('python' in text for text in python['evidence'])
+
+
 def test_expired_session_before_response_is_rejected(preview, monkeypatch):
     from fastapi import HTTPException
 

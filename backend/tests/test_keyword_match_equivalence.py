@@ -29,7 +29,15 @@ def old_score(job, blind):
 def check(job, text):
     blind = BlindText(text=text, masked=False)
     actual = _score_blind(job, blind)
-    assert {key: actual[key] for key in ('score', 'required', 'preferred', 'evidence_status')} == old_score(job, blind)
+    expected = old_score(job, blind)
+    assert actual['score'] == expected['score']
+    assert actual['evidence_status'] == expected['evidence_status']
+    for category in ('required', 'preferred'):
+        for result, previous in zip(actual[category], expected[category], strict=True):
+            assert (result['skill'], result['mentioned']) == (previous['skill'], previous['mentioned'])
+            # Compound evidence deliberately changed to include both terms.
+            if normalize(result['skill']) != 'html and css':
+                assert result['evidence'] == previous['evidence']
 
 
 @pytest.mark.parametrize('text,skills', [

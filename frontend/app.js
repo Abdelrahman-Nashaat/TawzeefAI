@@ -1903,6 +1903,7 @@ async function loadCandidateScreening(target, applicationId) {
       for (const skill of result[key] || []) {
         const item = element("li");
         item.append(element("strong", "", skill.skill), element("p", "", skill.mentioned ? "Mention found; review context." : "No reliable mention found; this does not prove a lack of skill."));
+        if (skill.evidence_partial) item.append(element("p", "subtle-note", "This excerpt shows only part of a long matched phrase; review the full source."));
         for (const excerpt of skill.evidence || []) item.append(element("p", "", excerpt));
         list.append(item);
       }
@@ -2122,6 +2123,7 @@ function setupScreeningHistory(target, applicationId) {
             const evidence = element("ul", "evidence-list");
             for (const item of items || []) {
               const row = element("li", "", `${item.skill}: ${item.mentioned ? "mentioned" : "not found"}`);
+              if (item.evidence_partial) row.append(element("p", "subtle-note", "This excerpt shows only part of a long matched phrase; review the full source."));
               for (const excerpt of item.evidence || []) row.append(element("p", "", String(excerpt)));
               evidence.append(row);
             }
@@ -2158,6 +2160,7 @@ function renderScore(target, score) {
   const list = element("ul", "evidence-list");
   for (const entry of score.required || []) {
     const item = element("li", "", `${entry.skill}: ${entry.mentioned ? "مذكورة" : "لم يُعثر على ذكرها"}`);
+    if (entry.evidence_partial) item.append(element("p", "subtle-note", "This excerpt shows only part of a long matched phrase; review the full source."));
     if (Array.isArray(entry.evidence) && entry.evidence.length) {
       const quotes = element("ul", "evidence-list");
       for (const quote of entry.evidence) quotes.append(element("li", "", String(quote)));

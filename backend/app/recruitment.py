@@ -177,8 +177,48 @@ def _score_blind(job: dict, blind: BlindText) -> dict:
         matches = [matching_segments(term) for term in alternatives]
         # Both HTML and CSS must be present for the combined requirement.
         found = all(matches) if key == "html and css" else any(matches)
-        indices = sorted({index for group in matches for index in group})[:2] if found else []
-        return {"skill": skill, "mentioned": found, "evidence": [usable[index][:240] for index in indices]}
+        if not found:
+            return {"skill": skill, "mentioned": False, "evidence": []}
+
+        def occurrence(index: int, term: str):
+            boundary = r"[a-z0-9_]" if term.isascii() else r"\w"
+            return re.search(rf"(?<!{boundary})" + re.escape(term) + rf"(?!{boundary})", usable[index])
+
+        def excerpt(index: int, start: int, end: int) -> str:
+            segment = usable[index]
+            # The UI supports at most 240 characters per excerpt. Center the
+            # matched phrase so long sentences do not hide the actual evidence.
+            left = max(0, start - max(0, 240 - (end - start)) // 2)
+            left = min(left, max(0, len(segment) - 240))
+            return segment[left:left + 240]
+
+        if key == "html and css":
+            locations = []
+            for term, group in zip(alternatives, matches, strict=True):
+                index = group[0]
+                match = occurrence(index, term)
+                locations.append((index, match.start(), match.end()))
+            locations.sort()
+            first, second = locations
+            if first[0] == second[0] and second[2] - first[1] <= 240:
+                evidence = [excerpt(first[0], first[1], second[2])]
+            else:
+                evidence = [excerpt(index, start, end) for index, start, end in locations]
+            partial = False
+        else:
+            indices = sorted({index for group in matches for index in group})[:2]
+            evidence = []
+            partial = False
+            for index in indices:
+                occurrences = [occurrence(index, term) for term, group in zip(alternatives, matches, strict=True)
+                               if index in group]
+                match = min(occurrences, key=lambda item: item.start())
+                partial = partial or match.end() - match.start() > 240
+                evidence.append(excerpt(index, match.start(), match.end()))
+        result = {"skill": skill, "mentioned": True, "evidence": evidence}
+        if partial:
+            result['evidence_partial'] = True
+        return result
 
     required = [assess(skill) for skill in job["required_skills"]]
     preferred = [assess(skill) for skill in job["preferred_skills"]]
