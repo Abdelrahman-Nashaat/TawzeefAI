@@ -85,6 +85,8 @@ def initialize_google_outbox(path: str | Path) -> None:
                 db.execute(f'ALTER TABLE google_deliveries ADD COLUMN {name} TEXT')
         if 'retry_generation' not in columns:
             db.execute('ALTER TABLE google_deliveries ADD COLUMN retry_generation INTEGER NOT NULL DEFAULT 0 CHECK (retry_generation >= 0)')
+        if 'context_changed_during_send' not in columns:
+            db.execute('ALTER TABLE google_deliveries ADD COLUMN context_changed_during_send INTEGER NOT NULL DEFAULT 0 CHECK (context_changed_during_send IN (0, 1))')
         db.execute('''CREATE TABLE IF NOT EXISTS google_context_revisions (
             interview_id INTEGER PRIMARY KEY REFERENCES interviews(id), revision INTEGER NOT NULL DEFAULT 0)''')
         db.execute('''CREATE TABLE IF NOT EXISTS google_delivery_context (
@@ -269,8 +271,10 @@ def _audit(db, application_id: int, actor_id: int, delivery_id: int, kind: str, 
 
 
 def _public(row) -> dict:
-    return {key: row[key] for key in ('id', 'interview_id', 'kind', 'recipient', 'event_id',
-                                       'start_at', 'end_at', 'state', 'provider_id', 'created_at', 'updated_at', 'retry_generation')}
+    result = {key: row[key] for key in ('id', 'interview_id', 'kind', 'recipient', 'event_id',
+                                        'start_at', 'end_at', 'state', 'provider_id', 'created_at', 'updated_at', 'retry_generation')}
+    result['context_changed_during_send'] = bool(row['context_changed_during_send'])
+    return result
 
 
 def _proposal(db, interview_id: int, recipient: str, reviewer_id: int) -> dict:
@@ -613,10 +617,22 @@ def send_delivery(delivery_id: int, payload: SendConfirm, request: Request, user
         state, provider_id, etag = 'uncertain', None, None
     with connect(path) as db:
         db.execute('BEGIN IMMEDIATE')
+        # The monotonic revision also detects changes that were later reversed.
+        # Keep the provider outcome truthful and separately flag the changed
+        # context; a confirmed request cannot be made unsent retroactively.
+        try:
+            _check_delivery_context(db, row, _interview(db, row['interview_id']))
+        except HTTPException:
+            context_changed = True
+        else:
+            context_changed = False
         db.execute('''UPDATE google_deliveries SET state=?,provider_id=?,calendar_etag=?,
+            context_changed_during_send=MAX(context_changed_during_send,?),
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND state='sending' ''',
-            (state, provider_id, etag, delivery_id))
+            (state, provider_id, etag, int(context_changed), delivery_id))
         _audit(db, row['application_id'], user.id, row['id'], row['kind'], 'google_delivery_result')
+        if context_changed:
+            _audit(db, row['application_id'], user.id, row['id'], row['kind'], 'google_delivery_context_changed_during_send')
         result = _public(db.execute('SELECT * FROM google_deliveries WHERE id=?', (delivery_id,)).fetchone())
     # Record the provider result even if access was revoked while it was in
     # flight, but don't reveal the recipient or result to a revoked session.

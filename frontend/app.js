@@ -2963,6 +2963,7 @@ function setupGoogleDeliveries(card, interview) {
       const entry = element("section", "google-delivery-entry");
       const type = delivery.kind === "calendar" ? "حدث التقويم" : "رسالة التأكيد";
       entry.append(element("h5", "", type), element("p", "", `الحالة: ${stateLabels[delivery.state] || "غير معروفة؛ راجع السجل"}.`));
+      if (delivery.context_changed_during_send) entry.append(element("p", "form-error", "Candidate or interview details changed while a delivery attempt was in progress. Review the provider result and audit record before further action."));
       if (delivery.kind === "email" && delivery.recipient) entry.append(element("p", "", `المستلم: ${delivery.recipient}`));
       entry.append(element("p", "subtle-note", `الموعد: من ${displayDate(delivery.start_at)} إلى ${displayDate(delivery.end_at)}`));
       if (delivery.kind === "calendar") entry.append(element("p", "subtle-note", "عنوان الحدث: TawzeefAI interview · خاص وبدون مدعوين."));

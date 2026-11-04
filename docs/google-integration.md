@@ -17,6 +17,16 @@ immediately after the last validation can race a provider call. Application
 ownership changes are not a supported UI operation. Do not use this demo for
 real candidate data.
 
+After a provider call returns, the server checks the delivery's recorded
+candidate and interview context against its monotonic revision in the same
+transaction that saves the outcome. If it changed, even temporarily, the
+delivery retains the actual provider outcome and shows an HR warning; an audit
+event records the change without storing address or message contents. The
+warning remains on that delivery across later attempts. This detects changes
+that commit before result recording, not every possible race. If the process
+stops after claiming a send, the result can remain `sending` and this warning
+may not be written; manual provider reconciliation remains necessary.
+
 This is an unfinished local integration. OAuth credentials can be authorized on
 Windows, and provider calls and a durable delivery outbox are covered by tests
 with fake Google responses. An explicitly enabled Windows host can configure a
