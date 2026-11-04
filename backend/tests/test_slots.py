@@ -65,6 +65,138 @@ def test_authorization_and_candidate_booking_are_audited(state):
     assert client.get('/api/slots', params={'application_id': first}).status_code == 403
 
 
+def test_candidate_can_cancel_rebook_and_hr_gets_local_notice(state):
+    app, client, first, _ = state
+    login(client, 'hr')
+    slot_id = slot(client)
+    login(client, 'candidate')
+    interview = client.post(f'/api/slots/{slot_id}/book', json={'application_id': first}).json()['id']
+    assert client.get('/api/hr/interview-cancellations').status_code == 403
+    response = client.post(f'/api/interviews/{interview}/candidate-cancel')
+    assert response.status_code == 200 and response.json()['status'] == 'cancelled'
+    assert client.post(f'/api/interviews/{interview}/candidate-cancel').status_code == 409
+    assert [item['id'] for item in client.get('/api/slots', params={'application_id': first}).json()] == [slot_id]
+    assert client.post(f'/api/slots/{slot_id}/book', json={'application_id': first}).status_code == 201
+    login(client, 'hr')
+    notices = client.get('/api/hr/interview-cancellations').json()['items']
+    assert len(notices) == 1 and notices[0]['interview_id'] == interview and not notices[0]['is_read']
+    assert client.post(f"/api/hr/interview-cancellations/{notices[0]['id']}/read").status_code == 200
+    assert client.get('/api/hr/interview-cancellations').json()['items'][0]['is_read']
+    with connect(app.state.database_path) as db:
+        assert db.execute("SELECT count(*) FROM audit_events WHERE action='interview_cancelled' AND application_id=?", (first,)).fetchone()[0] == 1
+        assert db.execute('SELECT count(*) FROM google_deliveries').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('kind,delivery_state', [('email','confirmed'), ('email','uncertain'), ('calendar','confirmed'), ('calendar','sending')])
+def test_candidate_cannot_cancel_externally_coordinated_interview(state, kind, delivery_state):
+    app, client, first, _ = state
+    login(client, 'hr')
+    slot_id = slot(client)
+    login(client, 'candidate')
+    interview = client.post(f'/api/slots/{slot_id}/book', json={'application_id': first}).json()['id']
+    with connect(app.state.database_path) as db:
+        row = db.execute('SELECT * FROM interviews WHERE id=?', (interview,)).fetchone()
+        db.execute('''INSERT INTO google_deliveries(interview_id,application_id,kind,recipient,event_id,start_at,end_at,state,created_by)
+            VALUES (?,?,?,?,?,?,?,?,?)''', (interview, first, kind, 'synthetic@example.test' if kind == 'email' else None,
+            'synthetic-event' if kind == 'calendar' else None, row['start_at'], row['end_at'], delivery_state, row['created_by']))
+    response = client.post(f'/api/interviews/{interview}/candidate-cancel')
+    assert response.status_code == 409 and 'Contact HR' in response.json()['detail']
+    with connect(app.state.database_path) as db:
+        assert db.execute('SELECT status FROM interviews WHERE id=?', (interview,)).fetchone()[0] == 'scheduled'
+        assert db.execute('SELECT count(*) FROM candidate_interview_cancellations').fetchone()[0] == 0
+
+
+def test_cancellation_checks_owner_and_rolls_back_if_hr_notice_fails(state):
+    app, client, first, _ = state
+    login(client, 'hr')
+    slot_id = slot(client)
+    login(client, 'candidate')
+    interview = client.post(f'/api/slots/{slot_id}/book', json={'application_id': first}).json()['id']
+    login(client, 'other', 'other-password')
+    assert client.post(f'/api/interviews/{interview}/candidate-cancel').status_code == 404
+    login(client, 'candidate')
+    with connect(app.state.database_path) as db:
+        db.execute("CREATE TRIGGER fail_cancel_notice BEFORE INSERT ON candidate_interview_cancellations BEGIN SELECT RAISE(ABORT,'failure'); END")
+    with pytest.raises(sqlite3.IntegrityError):
+        client.post(f'/api/interviews/{interview}/candidate-cancel')
+    with connect(app.state.database_path) as db:
+        assert db.execute('SELECT status FROM interviews WHERE id=?', (interview,)).fetchone()[0] == 'scheduled'
+        assert db.execute("SELECT count(*) FROM audit_events WHERE action='interview_cancelled'").fetchone()[0] == 0
+
+
+def test_candidate_cancellation_session_expiry_rolls_back(state, monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    from app import scheduling
+
+    app, client, first, _ = state
+    login(client, 'hr')
+    slot_id = slot(client)
+    login(client, 'candidate')
+    interview = client.post(f'/api/slots/{slot_id}/book', json={'application_id': first}).json()['id']
+    times = iter([time.time(), time.time() + 365 * 24 * 60 * 60])
+    monkeypatch.setattr(scheduling, 'time', SimpleNamespace(time=lambda: next(times)))
+    assert client.post(f'/api/interviews/{interview}/candidate-cancel').status_code == 401
+    with connect(app.state.database_path) as db:
+        assert db.execute('SELECT status FROM interviews WHERE id=?', (interview,)).fetchone()[0] == 'scheduled'
+        assert db.execute('SELECT count(*) FROM candidate_interview_cancellations').fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM audit_events WHERE action='interview_cancelled'").fetchone()[0] == 0
+
+
+def test_concurrent_cancellations_create_one_notice_and_audit(state):
+    app, client, first, _ = state
+    login(client, 'hr')
+    slot_id = slot(client)
+    login(client, 'candidate')
+    interview = client.post(f'/api/slots/{slot_id}/book', json={'application_id': first}).json()['id']
+    with TestClient(app) as other_session:
+        login(other_session, 'candidate')
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = [executor.submit(session.post, f'/api/interviews/{interview}/candidate-cancel')
+                         for session in (client, other_session)]
+            assert sorted(result.result().status_code for result in responses) == [200, 409]
+    with connect(app.state.database_path) as db:
+        assert db.execute('SELECT count(*) FROM candidate_interview_cancellations').fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM audit_events WHERE action='interview_cancelled'").fetchone()[0] == 1
+
+
+def test_cancellation_notices_are_per_hr_and_paginated(state):
+    app, client, first, _ = state
+    login(client, 'hr')
+    with connect(app.state.database_path) as db:
+        db.execute("INSERT INTO users(username,display_name,role,password_hash) VALUES ('hr2','Second HR','hr',?)",
+                   (hash_password('hr2-password'),))
+    slot_id = slot(client)
+    login(client, 'candidate')
+    for _ in range(2):
+        interview = client.post(f'/api/slots/{slot_id}/book', json={'application_id': first}).json()['id']
+        assert client.post(f'/api/interviews/{interview}/candidate-cancel').status_code == 200
+    login(client, 'hr')
+    first_page = client.get('/api/hr/interview-cancellations?limit=1').json()
+    assert len(first_page['items']) == 1 and first_page['next_before'] == first_page['items'][0]['id']
+    second_page = client.get('/api/hr/interview-cancellations', params={'limit': 1, 'before': first_page['next_before']}).json()
+    assert len(second_page['items']) == 1 and second_page['next_before'] is None
+    notice = first_page['items'][0]['id']
+    assert client.post(f'/api/hr/interview-cancellations/{notice}/read').status_code == 200
+    login(client, 'hr2', 'hr2-password')
+    assert not client.get('/api/hr/interview-cancellations?limit=1').json()['items'][0]['is_read']
+
+
+def test_reassigned_application_cannot_transfer_cancellation_right(state):
+    app, client, first, second = state
+    login(client, 'hr')
+    slot_id = slot(client)
+    login(client, 'candidate')
+    interview = client.post(f'/api/slots/{slot_id}/book', json={'application_id': first}).json()['id']
+    with connect(app.state.database_path) as db:
+        other = db.execute('SELECT candidate_id FROM applications WHERE id=?', (second,)).fetchone()[0]
+        db.execute('UPDATE applications SET candidate_id=? WHERE id=?', (other, first))
+    assert client.post(f'/api/interviews/{interview}/candidate-cancel').status_code == 404
+    login(client, 'other', 'other-password')
+    assert client.post(f'/api/interviews/{interview}/candidate-cancel').status_code == 404
+
+
 def test_application_must_be_advanced_and_rejected_candidates_cannot_book(state):
     app, client, first, _ = state
     login(client, 'hr')

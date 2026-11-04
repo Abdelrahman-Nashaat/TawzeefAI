@@ -635,9 +635,39 @@ function renderApplications(applications, jobs, role) {
     const inbox = element("div", "application-detail");
     const open = element("button", "outline-button", "Open submission notifications"); open.type = "button";
     open.addEventListener("click", () => loadHrNotifications(inbox));
-    box.append(open, inbox);
+    const cancellations = element("div", "application-detail");
+    const openCancellations = element("button", "outline-button", "Open candidate cancellations"); openCancellations.type = "button";
+    openCancellations.addEventListener("click", () => loadCandidateCancellations(cancellations));
+    box.append(open, inbox, openCancellations, cancellations);
   }
   box.append(list); target.replaceChildren(box);
+}
+
+async function loadCandidateCancellations(target, before = null) {
+  target.replaceChildren(element("p", "subtle-note", "Loading local notices..."));
+  try {
+    const data = await api(`/api/hr/interview-cancellations${before === null ? "" : `?before=${encodeURIComponent(before)}`}`);
+    if (!target.isConnected) return;
+    target.replaceChildren(element("h4", "", "Candidate interview cancellations"), element("p", "subtle-note", data.notice));
+    if (!data.items.length) target.append(element("p", "subtle-note", "No cancellation notices."));
+    for (const item of data.items) {
+      const line = element("div", "application-detail");
+      line.append(element("p", "", `Application #${item.application_id}, interview #${item.interview_id}: ${displayDate(item.start_at)} to ${displayDate(item.end_at)}. ${item.is_read ? "Read" : "Unread"}`));
+      if (!item.is_read) {
+        const read = element("button", "outline-button", "Mark read"); read.type = "button";
+        read.addEventListener("click", async () => {
+          read.disabled = true;
+          try { await api(`/api/hr/interview-cancellations/${encodeURIComponent(item.id)}/read`, {method: "POST"}); if (target.isConnected) await loadCandidateCancellations(target, before); }
+          catch (error) { if (!isStale(error) && target.isConnected) target.append(element("p", "form-error", "Could not acknowledge notice.")); }
+          finally { read.disabled = false; }
+        });
+        line.append(read);
+      }
+      target.append(line);
+    }
+    if (data.next_before !== null) { const next = element("button", "outline-button", "Older notices"); next.type = "button"; next.addEventListener("click", () => loadCandidateCancellations(target, data.next_before)); target.append(next); }
+    if (before !== null) { const first = element("button", "outline-button", "Newest notices"); first.type = "button"; first.addEventListener("click", () => loadCandidateCancellations(target)); target.append(first); }
+  } catch (error) { if (!isStale(error) && target.isConnected) target.replaceChildren(element("p", "form-error", "Could not load cancellation notices.")); }
 }
 
 async function loadHrNotifications(target, before = null) {
@@ -3107,6 +3137,19 @@ function renderInterviews(interviews, role, applications, slots) {
         finally { calendar.disabled = false; }
       });
       card.append(calendar);
+    }
+    if (role === "candidate" && interview.status === "scheduled" && !interview.completed && new Date(interview.start_at).valueOf() > Date.now()) {
+      const cancel = element("button", "outline-button", "Cancel local interview"); cancel.type = "button";
+      cancel.addEventListener("click", async () => {
+        if (!window.confirm("Cancel this interview? HR will receive a local notice. Contact HR for externally coordinated interviews.")) return;
+        cancel.disabled = true;
+        try {
+          await api(`/api/interviews/${encodeURIComponent(interview.id)}/candidate-cancel`, {method: "POST"});
+          if (await loadOperations(role)) operationsMessage("Interview cancelled locally. You can select another available slot; HR received a local notice.");
+        } catch (error) { if (!isStale(error)) operationsMessage(error instanceof TypeError ? "Could not confirm the result. Refresh before retrying." : error.message, true); }
+        finally { cancel.disabled = false; }
+      });
+      card.append(cancel);
     }
     if (role === "hr" && interview.status === "scheduled") {
       if (!interview.completed && new Date(interview.end_at).valueOf() <= Date.now()) {

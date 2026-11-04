@@ -51,6 +51,8 @@ The [policy-answer review procedure](docs/policy-human-review.md) prepares the r
 
 The application stores appointments locally and checks conflicts when booking. HR can cancel a future interview. Booking itself does not create an external event or send email; optional Google actions are separate and reviewed manually when the Windows integration is enabled.
 
+Candidates can cancel their own future interview while their application is advanced and then choose another available slot. The cancellation creates an in-app HR notice and audit event in the same transaction. Interviews with a confirmed email or unresolved external delivery require HR assistance; cancellation does not send email or alter Google Calendar.
+
 HR can review and release a batch of interview windows targeted to specific applications. Each window is bound to the application and candidate at creation; the candidate chooses their own time. Permissions and conflicts are rechecked before the batch is released, and invitations are not sent automatically.
 
 After an interview ends, HR can record that it took place. The action and actor are recorded, and the candidate sees the stage without HR assessment details. The interview is not assumed to have occurred merely because time passed. Another interview can be scheduled after the previous one is confirmed complete.
