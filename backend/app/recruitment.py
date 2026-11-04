@@ -658,6 +658,45 @@ class Decision(BaseModel):
     review_reference: str | None = Field(default=None, min_length=32, max_length=32, pattern=r'^[0-9a-f]{32}$')
 
 
+def validate_hire_eligibility(db, application_id: int):
+    """Validate the same hiring prerequisites for every entry point."""
+    application = get_application(db, application_id)
+    if application['status'] != 'offered':
+        raise HTTPException(status_code=409, detail='Decision is not allowed from current status')
+    if not db.execute("SELECT 1 FROM users WHERE id=? AND role='candidate' AND active=1",
+                      (application['candidate_id'],)).fetchone():
+        raise HTTPException(status_code=409, detail='An active candidate account is required')
+    offer = db.execute("SELECT * FROM job_offers WHERE application_id=? AND recipient_id=? AND status='accepted'",
+                       (application_id, application['candidate_id'])).fetchone()
+    if offer is None:
+        raise HTTPException(status_code=409, detail='Candidate must accept an offer before hiring')
+    if _upcoming_interview(db, application_id):
+        raise HTTPException(status_code=409, detail='Resolve active interviews before hiring')
+    return application, offer
+
+
+def _release_finalized_slots(db, application_id: int, actor_id: int):
+    now = utc_text(datetime.now(UTC))
+    slots = db.execute("""SELECT s.id FROM interview_slots s
+        LEFT JOIN interviews i ON i.id=s.interview_id
+        WHERE s.target_application_id=? AND s.withdrawn=0 AND s.start_at>?
+          AND (s.interview_id IS NULL OR i.status='cancelled')""", (application_id, now)).fetchall()
+    for slot in slots:
+        db.execute('UPDATE interview_slots SET withdrawn=1 WHERE id=?', (slot['id'],))
+        db.execute('INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (?,?,?)',
+                   (slot['id'], actor_id, 'slot_withdrawn'))
+
+
+def record_hire(db, application_id: int, actor_id: int, note: str = ''):
+    """Atomically hire after rechecking the application and accepted offer."""
+    validate_hire_eligibility(db, application_id)
+    db.execute("UPDATE applications SET status='hired', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?", (application_id,))
+    details = json.dumps({'decision': 'hire', 'note': note}, ensure_ascii=False)
+    db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,'decision',?)",
+               (application_id, actor_id, details))
+    _release_finalized_slots(db, application_id, actor_id)
+
+
 @router.post("/applications/{application_id}/decision")
 def decide(application_id: int, payload: Decision, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
@@ -687,11 +726,9 @@ def decide(application_id: int, payload: Decision, request: Request, user: HR):
         if payload.decision not in permitted.get(application["status"], set()):
             raise HTTPException(status_code=409, detail="Decision is not allowed from current status")
         if payload.decision == 'hire':
-            if not db.execute("SELECT 1 FROM job_offers WHERE application_id=? AND recipient_id=? AND status='accepted'",
-                              (application_id, application['candidate_id'])).fetchone():
-                raise HTTPException(status_code=409, detail='Candidate must accept an offer before hiring')
-            if _upcoming_interview(db, application_id):
-                raise HTTPException(status_code=409, detail='Resolve active interviews before hiring')
+            record_hire(db, application_id, user.id, payload.note)
+            _require_current_role(db, request, user, 'hr')
+            return application_view(get_application(db, application_id), user)
         if payload.decision == 'reject':
             offered = db.execute("SELECT id FROM job_offers WHERE application_id=? AND status='presented'", (application_id,)).fetchone()
             if offered:
@@ -715,21 +752,8 @@ def decide(application_id: int, payload: Decision, request: Request, user: HR):
                     "INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",
                     (application_id, user.id, "interview_cancelled", json.dumps({"interview_id": interview["id"], "reason": "application_rejected"})),
                 )
-        if payload.decision in ('hire', 'reject'):
-            # Private availability for a finalized application cannot be booked.
-            # Release only future, unbooked (or already cancelled) windows;
-            # keep general slots and scheduled interviews under their existing
-            # cancellation/Google reconciliation rules.
-            now = utc_text(datetime.now(UTC))
-            private_slots = db.execute("""SELECT s.id FROM interview_slots s
-                LEFT JOIN interviews i ON i.id=s.interview_id
-                WHERE s.target_application_id=? AND s.withdrawn=0 AND s.start_at>?
-                  AND (s.interview_id IS NULL OR i.status='cancelled')""",
-                (application_id, now)).fetchall()
-            for slot in private_slots:
-                db.execute('UPDATE interview_slots SET withdrawn=1 WHERE id=?', (slot['id'],))
-                db.execute('INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (?,?,?)',
-                           (slot['id'], user.id, 'slot_withdrawn'))
+        if payload.decision == 'reject':
+            _release_finalized_slots(db, application_id, user.id)
         _require_current_role(db, request, user, 'hr')
         return application_view(get_application(db, application_id), user)
 

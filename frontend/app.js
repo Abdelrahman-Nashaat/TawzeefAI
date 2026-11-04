@@ -986,7 +986,7 @@ function renderRubric(target, jobPath, base, criteria, source, evidence, assessm
   });
 }
 
-function setupGraphReview(target, application) {
+function setupGraphReview(target, application, refreshWorkflow) {
   const storageKey = `tawzeef-graph-${currentUserId}-${application.id}`;
   const title = element("h4", "", "مراجعة متعددة المراحل باستخدام LangGraph");
   const note = element("p", "subtle-note", "تجمع المراجعة نتائج أدوات محلية وتتوقف لتأكيد بشري. يمكن اقتراح موعد عام متاح بعد مراجعة تفاصيله والموافقة عليه؛ يمكن لأي مرشح مؤهل اختياره. لا ينشئ هذا المسار حدث Google أو يرسل دعوة. المواعيد لقطة قد تتغير.");
@@ -1014,6 +1014,7 @@ function setupGraphReview(target, application) {
   screenActionOption.value = "screen_application"; intent.append(screenActionOption);
   const completionOption = element("option", "", "Review completed interview"); completionOption.value = "complete_interview"; intent.append(completionOption);
   const offerOption = element("option", "", "Review and present an offer"); offerOption.value = "present_offer"; intent.append(offerOption);
+  const hireOption = element("option", "", "Review accepted offer and finalize hiring"); hireOption.value = "finalize_hire"; intent.append(hireOption);
   intentLabel.append(intent);
   const interviewLabel = element("label", "", "Interview ID"); const interviewId = element("input"); interviewId.type = "number"; interviewId.min = "1"; interviewId.step = "1"; interviewId.disabled = true; interviewLabel.hidden = true; interviewLabel.append(interviewId);
   const offerLabel = element("label", "", "Offer details"); const offerDetails = element("textarea"); offerDetails.maxLength = 4000; offerDetails.disabled = true; offerLabel.hidden = true; offerLabel.append(offerDetails);
@@ -1059,6 +1060,7 @@ function setupGraphReview(target, application) {
   labels.semantic = "Find résumé passages for human review";
   labels.prepare_completion = "Prepare interview completion for HR review"; labels.execute_completion = "Record completion after HR approval";
   labels.prepare_offer = "Prepare offer for HR review"; labels.execute_offer = "Present offer after HR approval";
+  labels.prepare_hire = "Prepare accepted offer for HR review"; labels.execute_hire = "Finalize hiring after HR approval";
   labels.prepare_screen = "Prepare screening for HR review";
   labels.execute_screen = "Record approved screening";
   function report(text, error = false) { message.textContent = text; message.className = error ? "form-error" : "subtle-note"; }
@@ -1212,6 +1214,11 @@ function setupGraphReview(target, application) {
       if (v?.status === "current") output.append(element("h4", "", "Offer preview"), element("p", "", `Candidate #${v.candidate_id}: ${v.candidate_name} (${v.candidate_username})`), element("p", "", `Role: ${v.job_title} (${v.job_id})`), element("pre", "resume-preview", v.details), element("p", "subtle-note", "Approval presents this offer in the local application. No message is sent."));
       else output.append(element("p", "form-error", "Offer or application changed; start a new review."));
     }
+    if (proposal?.type === "finalize_hire" && review.awaiting_review) {
+      const v = review.state.hire_preview;
+      if (v?.status === "current") output.append(element("h4", "", "Accepted offer"), element("p", "", `Candidate #${v.candidate_id}: ${v.candidate_name} (${v.candidate_username})`), element("p", "", `Role: ${v.job_title} (${v.job_id})`), element("p", "", `Offer #${v.offer_id}: accepted`), element("pre", "resume-preview", v.details), element("p", "subtle-note", "Approval records a hire locally. No message is sent."));
+      else output.append(element("p", "form-error", "Offer or application changed; start a new review."));
+    }
     if (proposal?.type === "screen_application") output.append(element("p", "subtle-note", `Approval records the reviewed keyword screening for application #${proposal.application_id}, candidate #${proposal.candidate_id}. It does not advance, reject, or hire the candidate.`));
     if (["create_slot", "create_private_slot"].includes(proposal?.type) && proposal.slot) {
       output.append(element("h4", "", "تفاصيل الموعد المقترح"),
@@ -1235,6 +1242,7 @@ function setupGraphReview(target, application) {
     else if (result?.status === "advanced") output.append(element("p", "result-badge", "The application was advanced after HR approval."));
     else if (result?.status === "advanced_and_reserved") output.append(element("p", "result-badge", "The application was advanced and its private slot reserved after HR approval."));
     else if (result?.status === "interview_completed") output.append(element("p", "result-badge", "Interview completion recorded after HR approval."));
+    else if (result?.status === "hired") output.append(element("p", "result-badge", "The candidate was hired after HR approval."));
     else if (result?.status === "offer_presented") output.append(element("p", "result-badge", "The offer was presented after HR approval."));
     else if (result?.status === "screened") output.append(element("p", "result-badge", "The reviewed keyword screening was recorded."));
     else if (result?.status === "declined") output.append(element("p", "result-badge", "The proposal was declined; no action was taken."));
@@ -1246,14 +1254,16 @@ function setupGraphReview(target, application) {
       const validCombined = proposal?.type === "advance_and_reserve_slot" && proposal.availability_scope === "selected_application_only" && proposal.current_status === "submitted" && proposal.target_status === "advanced" && Number.isInteger(proposal.candidate_id) && proposal.candidate_id > 0 && Number.isInteger(proposal.assessment_id) && proposal.assessment_id > 0 && proposal.slot?.start_at && proposal.slot?.end_at && proposal.slot?.interviewer;
       const validScreen = proposal?.type === "screen_application" && Number.isInteger(proposal.candidate_id) && proposal.candidate_id > 0 && screeningPreview?.status === "current";
       const validCompletion = proposal?.type === "complete_interview" && review.state.interview_preview?.status === "current" && proposal.interview_id === review.state.interview_preview.id;
+      const hirePreview = review.state.hire_preview;
+      const validHire = proposal?.type === "finalize_hire" && hirePreview?.status === "current" && proposal.offer_id === hirePreview.offer_id && Number.isInteger(hirePreview.candidate_id) && hirePreview.candidate_id > 0 && hirePreview.candidate_name && hirePreview.candidate_username && hirePreview.job_id && hirePreview.job_title && hirePreview.details;
       const offerPreview = review.state.offer_preview;
       const validOffer = proposal?.type === "present_offer" && offerPreview?.status === "current" && Number.isInteger(offerPreview.candidate_id) && offerPreview.candidate_id > 0 && offerPreview.candidate_name && offerPreview.candidate_username && offerPreview.job_id && offerPreview.job_title && offerPreview.details;
-      const discardOnly = proposal?.type === "present_offer" && review.state.intent === "present_offer" && proposal.application_id === application.id && offerPreview?.status === "stale";
-      if ((!validSlot && !validAdvance && !validCombined && !validScreen && !validCompletion && !validOffer && !discardOnly) || proposal.application_id !== application.id || (!proposal.approval_fingerprint && !discardOnly)) {
+      const discardOnly = proposal.application_id === application.id && ((proposal.type === "present_offer" && review.state.intent === "present_offer" && offerPreview?.status === "stale") || (proposal.type === "finalize_hire" && review.state.intent === "finalize_hire" && hirePreview?.status === "stale"));
+      if ((!validSlot && !validAdvance && !validCombined && !validScreen && !validCompletion && !validOffer && !validHire && !discardOnly) || proposal.application_id !== application.id || (!proposal.approval_fingerprint && !discardOnly)) {
         output.append(element("p", "form-error", "تعذّرت مراجعة تفاصيل المقترح بأمان. أعد تحميل المراجعة."));
         return;
       }
-      const approve = element("button", "small-button", validOffer ? "Approve and present offer" : validCompletion ? "Confirm interview took place" : validScreen ? "Approve and record screening" : validCombined ? "Approve advancement and private slot" : validAdvance ? "Approve advancement" : "Approve this slot"); approve.type = "button";
+      const approve = element("button", "small-button", validHire ? "Approve and finalize hiring" : validOffer ? "Approve and present offer" : validCompletion ? "Confirm interview took place" : validScreen ? "Approve and record screening" : validCombined ? "Approve advancement and private slot" : validAdvance ? "Approve advancement" : "Approve this slot"); approve.type = "button";
       const decline = element("button", "outline-button", "أرفض المقترح"); decline.type = "button";
       const staleSemantic = (review.state.intent === "semantic_advance_and_reserve_slot" || (review.state.intent === "adaptive" && review.state.plan?.includes("semantic"))) && semantic?.status !== "current";
       if (discardOnly || review.state.plan_stale || staleSemantic) approve.disabled = true;
@@ -1264,7 +1274,10 @@ function setupGraphReview(target, application) {
         try {
           const body = reviewed ? { reviewed: true, approval_fingerprint: proposal.approval_fingerprint } : { reviewed: false };
           const updated = await api(`/api/graph-reviews/${encodeURIComponent(review.id)}/resume`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-          if (target.isConnected) { display(updated); report(""); }
+          if (target.isConnected) {
+            display(updated); report("");
+            if (updated.state?.action_result && updated.state.action_result.status !== "declined") await refreshWorkflow();
+          }
         } catch (error) {
           uncertain = error instanceof TypeError;
           if (!isStale(error) && target.isConnected) report(uncertain ? "تعذّر الاتصال بالخادم. أعد تحميل المراجعة للتحقق من حالة القرار قبل المحاولة مجددًا." : error.message, true);
@@ -1272,7 +1285,7 @@ function setupGraphReview(target, application) {
       }
       approve.addEventListener("click", () => decide(true)); decline.addEventListener("click", () => decide(false));
       if (discardOnly) {
-        decline.textContent = "Discard offer review";
+        decline.textContent = proposal.type === "finalize_hire" ? "Discard hire review" : "Discard offer review";
         output.append(decline);
       } else output.append(approve, decline);
     } else if (review.awaiting_review) {
@@ -1562,7 +1575,7 @@ function renderApplicationDetail(target, application, role) {
     const graphPanel = element("section", "application-detail");
     graphPanel.setAttribute("aria-label", "مراجعة LangGraph");
     panel.append(graphPanel);
-    setupGraphReview(graphPanel, application);
+    setupGraphReview(graphPanel, application, () => loadWorkflow(workflowPanel, application.id, target, role));
     const interviewGuidePanel = element("section", "application-detail");
     interviewGuidePanel.setAttribute("aria-label", "Interview preparation guide");
     panel.append(interviewGuidePanel);
