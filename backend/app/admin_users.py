@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from app.auth import COOKIE_NAME, User, get_current_user, hash_password, token_digest
+from app.auth_store import reset_password_and_revoke
 from app.db import connect, initialize
 
 router = APIRouter(prefix='/api/admin')
@@ -203,8 +204,7 @@ def reset_password(user_id: int, payload: PasswordReset, request: Request, user:
         db.execute('BEGIN IMMEDIATE')
         _actor(db, request, user)
         _user(db, user_id)
-        db.execute('UPDATE users SET password_hash=? WHERE id=?', (password_hash, user_id))
-        db.execute('DELETE FROM sessions WHERE user_id=?', (user_id,))
+        reset_password_and_revoke(db, dialect='sqlite', user_id=user_id, password_hash=password_hash)
         _audit(db, user.id, user_id, 'password_reset', {})
         return {'status': 'updated'}
 

@@ -27,3 +27,12 @@ inside an explicitly configured disposable database. Set
 `TAWZEEF_TEST_POSTGRES_DSN` privately and run
 `pytest -q tests/test_postgres_session_store.py tests/test_auth.py` to exercise
 both implementations. With no test DSN, PostgreSQL tests are skipped.
+
+The shared store also implements current-session lookup and password reset with
+session revocation. The SQLite authentication and administrator endpoints use
+those operations already. The PostgreSQL reset updates the account row before
+deleting its sessions in the caller's transaction, so it follows the same lock
+order as session issuance. Test coverage includes expiry and account status,
+transaction rollback, and both orderings of the password reset and issuance
+race. PostgreSQL support for the remaining endpoints, account administration,
+and a complete application schema is still required before switching databases.

@@ -9,7 +9,7 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 
-from app.auth_store import InvalidAccount, issue_session
+from app.auth_store import InvalidAccount, issue_session, session_user
 from app.db import connect
 
 COOKIE_NAME = "tawzeef_session"
@@ -64,12 +64,7 @@ def get_current_user(request: Request) -> User:
     token = request.cookies.get(COOKIE_NAME)
     if token:
         with connect(request.app.state.database_path) as db:
-            row = db.execute(
-                """SELECT u.id, u.username, u.display_name, u.role
-                   FROM sessions s JOIN users u ON u.id = s.user_id
-                   WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1""",
-                (token_digest(token), int(time.time())),
-            ).fetchone()
+            row = session_user(db, dialect='sqlite', token_hash=token_digest(token), now=int(time.time()))
         if row:
             return User(**dict(row))
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")

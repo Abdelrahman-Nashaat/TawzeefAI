@@ -10,7 +10,7 @@ psycopg = pytest.importorskip('psycopg')
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from app.auth_store import InvalidAccount, issue_session
+from app.auth_store import InvalidAccount, issue_session, reset_password_and_revoke, session_user
 
 
 @pytest.fixture
@@ -22,9 +22,9 @@ def database():
     with psycopg.connect(dsn, autocommit=True) as admin:
         admin.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(schema)))
         try:
-            admin.execute(sql.SQL('CREATE TABLE {}.users (id bigint PRIMARY KEY, active smallint NOT NULL, password_hash text NOT NULL)').format(sql.Identifier(schema)))
+            admin.execute(sql.SQL("CREATE TABLE {}.users (id bigint PRIMARY KEY, active smallint NOT NULL, password_hash text NOT NULL, username text NOT NULL DEFAULT 'candidate', display_name text NOT NULL DEFAULT 'Candidate', role text NOT NULL DEFAULT 'candidate')").format(sql.Identifier(schema)))
             admin.execute(sql.SQL('CREATE TABLE {}.sessions (token_hash text PRIMARY KEY, user_id bigint NOT NULL REFERENCES {}.users(id), expires_at bigint NOT NULL)').format(sql.Identifier(schema), sql.Identifier(schema)))
-            admin.execute(sql.SQL("INSERT INTO {}.users VALUES (1, 1, 'hash-v1')").format(sql.Identifier(schema)))
+            admin.execute(sql.SQL("INSERT INTO {}.users (id, active, password_hash) VALUES (1, 1, 'hash-v1')").format(sql.Identifier(schema)))
             yield dsn, schema
         finally:
             admin.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(schema)))
@@ -93,8 +93,7 @@ def test_password_reset_serializes_and_revokes_new_session(database):
         try:
             with connection(database) as db:
                 started.set()
-                db.execute("UPDATE users SET password_hash='hash-v2' WHERE id=1")
-                db.execute('DELETE FROM sessions WHERE user_id=1')
+                reset_password_and_revoke(db, dialect='postgres', user_id=1, password_hash='hash-v2')
         except Exception as error:  # noqa: BLE001 - surface failures from the worker thread
             errors.append(error)
         finally:
@@ -137,8 +136,7 @@ def test_reset_locked_first_causes_waiting_issuance_to_recheck_account(database)
             finished.set()
 
     with connection(database) as first:
-        first.execute("UPDATE users SET password_hash='hash-v2' WHERE id=1")
-        first.execute('DELETE FROM sessions WHERE user_id=1')
+        reset_password_and_revoke(first, dialect='postgres', user_id=1, password_hash='hash-v2')
         thread = threading.Thread(target=attempt_issue, daemon=True)
         thread.start()
         assert started.wait(10)
@@ -149,3 +147,29 @@ def test_reset_locked_first_causes_waiting_issuance_to_recheck_account(database)
     assert outcomes == ['invalid']
     with connection(database) as db:
         assert db.execute('SELECT count(*) AS n FROM sessions').fetchone()['n'] == 0
+
+
+def test_session_lookup_enforces_expiry_active_and_role(database):
+    with connection(database) as db:
+        issue(db)
+    with connection(database) as db:
+        row = session_user(db, dialect='postgres', token_hash='digest', now=199)
+        assert (row['id'], row['role']) == (1, 'candidate')
+        assert session_user(db, dialect='postgres', token_hash='digest', now=200) is None
+        db.execute("UPDATE users SET role='employee' WHERE id=1")
+        assert session_user(db, dialect='postgres', token_hash='digest', now=199)['role'] == 'employee'
+        db.execute('UPDATE users SET active=0 WHERE id=1')
+        assert session_user(db, dialect='postgres', token_hash='digest', now=199) is None
+
+
+def test_reset_and_revocation_rollback_together(database):
+    with connection(database) as db:
+        issue(db)
+    with connection(database) as db:
+        with pytest.raises(RuntimeError), db.transaction():
+            reset_password_and_revoke(db, dialect='postgres', user_id=1, password_hash='hash-v2')
+            raise RuntimeError('force rollback')
+        assert db.execute('SELECT password_hash FROM users WHERE id=1').fetchone()['password_hash'] == 'hash-v1'
+        assert session_user(db, dialect='postgres', token_hash='digest', now=199) is not None
+        reset_password_and_revoke(db, dialect='postgres', user_id=1, password_hash='hash-v2')
+        assert session_user(db, dialect='postgres', token_hash='digest', now=199) is None
