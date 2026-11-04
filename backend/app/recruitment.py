@@ -285,19 +285,14 @@ async def apply(request: Request, user: Candidate, job_id: str, filename: str,
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN IMMEDIATE')
         _require_current_role(db, request, user, 'candidate')
-        if db.execute('SELECT 1 FROM jobs WHERE id = ?', (job_id,)).fetchone() is None:
-            raise HTTPException(status_code=404, detail='Job not found')
-        cursor = db.execute(
-            "INSERT INTO applications (candidate_id, job_id, filename, resume_text, extraction_json) VALUES (?, ?, ?, ?, ?)",
-            (user.id, job_id, filename, text, json.dumps(extraction) if extraction is not None else None),
-        )
-        application_id = cursor.lastrowid
-        db.execute("INSERT INTO hr_notifications(application_id,submitted_job_id) VALUES (?,?)", (application_id, job_id))
-        db.execute("INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",
-                   (application_id, user.id, "submitted", "{}"))
-        from app.provisional_queue import create_pending_snapshot
+        from app.application_store import submit_application
 
-        create_pending_snapshot(db, application_id, job_id, user.id)
+        application_id = submit_application(
+            db, dialect='sqlite', candidate_id=user.id, job_id=job_id, filename=filename,
+            resume_text=text, extraction_json=json.dumps(extraction) if extraction is not None else None,
+        )
+        if application_id is None:
+            raise HTTPException(status_code=404, detail='Job not found')
         return application_view(get_application(db, application_id), user)
 
 

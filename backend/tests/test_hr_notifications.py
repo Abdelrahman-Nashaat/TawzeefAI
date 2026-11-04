@@ -56,7 +56,7 @@ def test_submission_inbox_is_atomic_private_per_actor_and_paginated(tmp_path):
 
 
 def test_legacy_and_rolled_back_uploads_do_not_create_alerts(tmp_path, monkeypatch):
-    import app.provisional_queue as queue
+    import app.application_store as store
 
     path = tmp_path / 'notifications.sqlite3'
     with TestClient(create_app(path, seed_demo=True)) as client:
@@ -64,9 +64,9 @@ def test_legacy_and_rolled_back_uploads_do_not_create_alerts(tmp_path, monkeypat
             candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
             db.execute("INSERT INTO applications(candidate_id,job_id,filename,resume_text) VALUES (?,'job-backend-python','old.docx','old')", (candidate,))
         login(client, 'candidate')
-        def fail(*args):
+        def fail(*args, **kwargs):
             raise RuntimeError('synthetic rollback')
-        monkeypatch.setattr(queue, 'create_pending_snapshot', fail)
+        monkeypatch.setattr(store, 'create_pending_snapshot', fail)
         try:
             client.post('/api/applications', params={'job_id':'job-backend-python','filename':'synthetic.docx'}, content=resume())
         except RuntimeError:

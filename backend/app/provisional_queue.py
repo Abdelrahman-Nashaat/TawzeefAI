@@ -83,11 +83,8 @@ def _source_revisions(db, application_id: int) -> tuple[int, int]:
 
 def create_pending_snapshot(db, application_id: int, job_id: str, actor_id: int) -> int:
     """Enqueue an upload without reading, redacting, or scoring its resume."""
-    row = db.execute('''INSERT INTO provisional_snapshots
-        (application_id,job_id,job_revision,assignment_revision,source_review_status,snapshot_kind,created_by)
-        VALUES (?,?,?,?,?,?,?)''', (application_id, job_id, _job_revision(db, job_id),
-        _assignment_revision(db, application_id), 'unreviewed', 'pending', actor_id))
-    return row.lastrowid
+    from app.application_store import create_pending_snapshot as store_pending_snapshot
+    return store_pending_snapshot(db, application_id, job_id, actor_id)
 
 
 def _bounded_job(db, job_id: str) -> dict:
