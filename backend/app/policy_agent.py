@@ -510,7 +510,9 @@ def run_policy_agent(path: str | Path, user: User, question: str, *, enabled: bo
             if not answer:
                 return PolicyAgentResult(KnowledgeAnswer('No supported policy answer was found.', [], 'abstain',
                     'The model did not select a relevant source paragraph.'), ['search_policy'])
-            return PolicyAgentResult(KnowledgeAnswer(answer, sources, 'groq',
+            selected_ids = {item['source_id'] for item in json.loads(selection)['quotes']}
+            selected_sources = [source for source in sources if source.id in selected_ids]
+            return PolicyAgentResult(KnowledgeAnswer(answer, selected_sources, 'groq',
                 ' '.join(filter(None, (notice, 'Model-selected exact paragraphs; their relevance and completeness are not verified. Review the sources.')))), ['search_policy'])
         except ValueError:
             notice = ' '.join(filter(None, (notice, 'Model selection could not be verified; showing source excerpts.')))

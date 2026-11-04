@@ -123,6 +123,103 @@ def test_model_tool_and_citations_are_validated(policy_setup, monkeypatch):
     assert 'Fake' not in result.answer.answer
 
 
+def test_lexical_model_answer_only_returns_selected_citations(policy_setup, monkeypatch):
+    path, users, staff = policy_setup
+    with connect(path) as db:
+        db.execute('UPDATE knowledge_settings SET include_sample_policies=0 WHERE id=1')
+        other = db.execute('''INSERT INTO knowledge_documents(title,audience,text,created_by,collection)
+            VALUES (?,?,?,?,?)''', ('Annual leave rules', 'staff',
+            'Annual leave requests require manager approval.', users['hr'].id, 'handbook')).lastrowid
+    monkeypatch.setenv('GROQ_API_KEY', 'test-key')
+    monkeypatch.setattr(policy_agent, '_request_search', lambda *_: tool('annual leave'))
+    calls = []
+    def select(_question, passages):
+        calls.extend(passages)
+        selected = next(item for item in passages if item['id'].startswith(f'db-doc-{staff}-'))
+        return json.dumps({'quotes': [{'source_id': selected['id'], 'quote': selected['text']}]})
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', select)
+    result = policy_agent.run_policy_agent(path, users['employee'], 'annual leave', enabled=True)
+    assert {item['id'].split('-p')[0] for item in calls} == {f'db-doc-{staff}', f'db-doc-{other}'}
+    assert result.answer.mode == 'groq'
+    assert [source.id for source in result.answer.sources] == [next(item['id'] for item in calls if item['id'].startswith(f'db-doc-{staff}-'))]
+    assert 'manager approval' not in result.answer.answer
+
+
+def test_repeated_quotes_from_one_source_yield_one_citation(policy_setup, monkeypatch):
+    path, users, staff = policy_setup
+    with connect(path) as db:
+        db.execute('UPDATE knowledge_settings SET include_sample_policies=0 WHERE id=1')
+        db.execute("UPDATE knowledge_documents SET text=? WHERE id=?",
+                   ('Annual leave starts in January.\nAnnual leave is approved by managers.', staff))
+    monkeypatch.setenv('GROQ_API_KEY', 'test-key')
+    monkeypatch.setattr(policy_agent, '_request_search', lambda *_: tool('annual leave'))
+    def select(_question, passages):
+        source = next(item for item in passages if item['id'].startswith(f'db-doc-{staff}-'))
+        return json.dumps({'quotes': [{'source_id': source['id'], 'quote': line} for line in source['text'].splitlines()]})
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', select)
+    result = policy_agent.run_policy_agent(path, users['employee'], 'annual leave', enabled=True)
+    assert result.answer.mode == 'groq'
+    assert [source.id for source in result.answer.sources] == [f'db-doc-{staff}-p1']
+    assert result.answer.answer.count(f'[db-doc-{staff}-p1]') == 2
+
+
+def test_selection_keeps_only_the_selected_page_of_a_document(policy_setup, monkeypatch):
+    path, users, staff = policy_setup
+    pages = [{'page': 1, 'text': 'Annual leave accrues twenty days.'},
+             {'page': 2, 'text': 'Annual leave requests require approval.'}]
+    with connect(path) as db:
+        db.execute('UPDATE knowledge_settings SET include_sample_policies=0 WHERE id=1')
+        db.execute('UPDATE knowledge_documents SET text=?,pages_json=? WHERE id=?',
+                   ('\n'.join(page['text'] for page in pages), json.dumps(pages), staff))
+    monkeypatch.setenv('GROQ_API_KEY', 'test-key')
+    monkeypatch.setattr(policy_agent, '_request_search', lambda *_: tool('annual leave'))
+    seen = []
+    def select(_question, passages):
+        seen.extend(passages)
+        selected = next(item for item in passages if item['id'] == f'db-doc-{staff}-p2')
+        return json.dumps({'quotes': [{'source_id': selected['id'], 'quote': selected['text']}]})
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', select)
+    result = policy_agent.run_policy_agent(path, users['employee'], 'annual leave', enabled=True)
+    assert {item['id'] for item in seen} == {f'db-doc-{staff}-p1', f'db-doc-{staff}-p2'}
+    assert [(source.id, source.page) for source in result.answer.sources] == [(f'db-doc-{staff}-p2', 2)]
+    assert 'twenty days' not in result.answer.answer
+
+
+def test_selected_lexical_citation_is_preserved_and_reauthorized_on_replay(policy_setup, monkeypatch):
+    path, users, selected_id = policy_setup
+    with connect(path) as db:
+        db.execute('UPDATE knowledge_settings SET include_sample_policies=0 WHERE id=1')
+        other_id = db.execute('''INSERT INTO knowledge_documents(title,audience,text,created_by,collection)
+            VALUES (?,?,?,?,?)''', ('Annual leave rules', 'staff',
+            'Annual leave requests require manager approval.', users['hr'].id, 'handbook')).lastrowid
+    monkeypatch.setenv('TAWZEEF_ENABLE_GROQ', '1')
+    monkeypatch.setenv('GROQ_API_KEY', 'test-only')
+    monkeypatch.setattr(policy_agent, '_request_search', lambda *_: tool('annual leave'))
+    def select(_question, passages):
+        selected = next(item for item in passages if item['id'].startswith(f'db-doc-{selected_id}-'))
+        return json.dumps({'quotes': [{'source_id': selected['id'], 'quote': selected['text']}]})
+    monkeypatch.setattr(policy_agent, '_request_quote_selection', select)
+    with TestClient(create_app(path, seed_demo=True)) as client:
+        assert client.post('/api/auth/login', json={'username': 'employee', 'password': 'employee-demo-only'}).status_code == 200
+        conversation = client.post('/api/conversations', json={'title': 'Policy'}).json()['id']
+        response = client.post(f'/api/conversations/{conversation}/messages', json={'question': 'annual leave', 'mode': 'policy'})
+        assert response.status_code == 201
+        message = response.json()
+        assert message['mode'] == 'groq'
+        assert [source['id'] for source in message['sources']] == [f'db-doc-{selected_id}-p1']
+        assert 'manager approval' not in json.dumps(message, ensure_ascii=False)
+        with connect(path) as db:
+            db.execute("UPDATE knowledge_documents SET audience='hr' WHERE id=?", (other_id,))
+        replay = client.get(f'/api/conversations/{conversation}').json()['messages'][0]
+        assert replay['mode'] == 'groq'
+        assert [source['id'] for source in replay['sources']] == [f'db-doc-{selected_id}-p1']
+        with connect(path) as db:
+            db.execute("UPDATE knowledge_documents SET audience='hr' WHERE id=?", (selected_id,))
+        replay = client.get(f'/api/conversations/{conversation}').json()['messages'][0]
+        assert replay['mode'] == 'unavailable' and replay['sources'] == []
+        assert 'twenty paid days' not in replay['answer']
+
+
 def test_invalid_tool_and_added_search_words_fall_back_locally(policy_setup, monkeypatch):
     path, users, _ = policy_setup
     monkeypatch.setenv('GROQ_API_KEY', 'test-key')
