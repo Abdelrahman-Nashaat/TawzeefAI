@@ -1,5 +1,6 @@
 """Exercise graph screening in Streamlit through the real local API."""
 
+import json
 from pathlib import Path
 
 import httpx
@@ -14,7 +15,7 @@ from app.main import create_app
 from streamlit_client import LocalApi
 
 
-@pytest.mark.parametrize('scenario', ['approved', 'changed', 'job_title_reverted', 'candidate_reverted', 'revoked', 'uncertain'])
+@pytest.mark.parametrize('scenario', ['approved', 'partial', 'changed', 'job_title_reverted', 'candidate_reverted', 'revoked', 'uncertain'])
 def test_graph_screen_review_real_api(tmp_path, scenario):
     path = tmp_path / 'graph-screen.sqlite3'
     with TestClient(create_app(path, seed_demo=True)) as server:
@@ -49,7 +50,12 @@ def test_graph_screen_review_real_api(tmp_path, scenario):
             user = hr.request('POST', '/api/auth/login', json={'username': 'hr', 'password': 'hr-demo-only'})
             with connect(path) as db:
                 candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
-                app_id = db.execute("INSERT INTO applications(candidate_id,job_id,filename,resume_text) VALUES (?,'job-backend-python','synthetic.pdf','Python SQL')", (candidate,)).lastrowid
+                source = 'Python SQL'
+                if scenario == 'partial':
+                    skill = '\u337f' * 61
+                    source = 'Built ' + skill
+                    db.execute("UPDATE jobs SET required_skills=?,preferred_skills='[]' WHERE id='job-backend-python'", (json.dumps([skill]),))
+                app_id = db.execute("INSERT INTO applications(candidate_id,job_id,filename,resume_text) VALUES (?,'job-backend-python','synthetic.pdf',?)", (candidate, source)).lastrowid
             ui = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'streamlit_app.py'), default_timeout=60)
             ui.session_state['local_api'] = hr
             ui.session_state['current_user'] = user
@@ -63,6 +69,8 @@ def test_graph_screen_review_real_api(tmp_path, scenario):
             assert proposal['job_id'] == 'job-backend-python'
             assert any(proposal['job_title'] in item.value for item in ui.text)
             assert ui.json
+            if scenario == 'partial':
+                assert any('only part of a long matched phrase' in item.value for item in ui.caption)
             next(button for button in ui.button if button.label == 'Approve and record graph screening').click().run()
             assert calls == []
             assert any('Confirm that you reviewed' in item.value for item in ui.error)
@@ -73,7 +81,7 @@ def test_graph_screen_review_real_api(tmp_path, scenario):
             with connect(path) as db:
                 score = db.execute('SELECT score_json FROM applications WHERE id=?', (app_id,)).fetchone()[0]
                 count = db.execute("SELECT count(*) FROM audit_events WHERE application_id=? AND action='screened'", (app_id,)).fetchone()[0]
-            if scenario == 'approved':
+            if scenario in ('approved', 'partial'):
                 assert score is not None and count == 1
                 assert any('Screening recorded locally' in item.value for item in ui.success)
             else:
