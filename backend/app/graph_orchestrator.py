@@ -718,7 +718,9 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
                     state.get('matching_specialist_ref') != matching_digest or state.get('matching') != projected):
                 raise HTTPException(status_code=409, detail='A current, unscreened submitted application is required')
             proposal = {'type': 'screen_application', 'application_id': state['application_id'],
-                        'candidate_id': application['candidate_id'], 'current_status': 'submitted',
+                        'candidate_id': application['candidate_id'], 'job_id': application['job_id'],
+                        'job_title': db.execute('SELECT title FROM jobs WHERE id=?', (application['job_id'],)).fetchone()['title'],
+                        'current_status': 'submitted',
                         'notice': 'Approval records the reviewed keyword screening. No hiring decision or message is made.'}
             encoded = json.dumps({'proposal': proposal, 'context': context_digest, 'revision': revision,
                                   'score': score_digest}, ensure_ascii=False, sort_keys=True,

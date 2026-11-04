@@ -1,5 +1,12 @@
 # Optional local Streamlit interface
 
+HR can start a graph keyword-screening review from the application queue. The
+interface reloads the current server preview before approval, displays the
+candidate ID and scoring details, and requires explicit confirmation. Approval
+records only a screening; it does not advance, reject, hire, or send a message.
+Changed inputs invalidate the approval. This keyword score is provisional and
+does not establish qualifications.
+
 The presentation proposes Streamlit for chat and the HR dashboard. This optional
 interface uses the existing FastAPI server and covers saved knowledge
 conversations, HR metrics, and candidate application submission, status,
