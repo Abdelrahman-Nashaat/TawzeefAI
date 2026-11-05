@@ -12,6 +12,12 @@ interview completion; offer actions are available through the API. Graph
 workflows, calendar and email delivery, policy chat, and the dashboard remain
 unavailable in this mode.
 
+HR may reject a submitted, advanced, or offered application with a nonempty
+reason. The decision atomically withdraws a presented offer and cancels future
+interviews, creating candidate notices and audit entries. An accepted offer
+blocks rejection because this experimental mode has no accepted-offer
+resolution workflow. No email or external calendar action is sent.
+
 HR can call `POST /api/applications/{id}/screen` for a submitted application.
 The score, screening history, and audit record are saved together. This applies
 automatic identity masking, which is incomplete and has not been reviewed by a

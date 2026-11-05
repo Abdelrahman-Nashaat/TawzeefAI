@@ -98,8 +98,9 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 user: Annotated[User, Depends(authenticate)]):
         if user.role != 'hr':
             raise HTTPException(status_code=403, detail='Access denied')
-        if payload.decision not in {'advance', 'hire'} or len(payload.note) > 2000:
-            raise HTTPException(status_code=422, detail='Only advance or hire is available in this mode')
+        if (payload.decision not in {'advance', 'hire', 'reject'} or len(payload.note) > 2000
+                or (payload.decision == 'reject' and not payload.note.strip())):
+            raise HTTPException(status_code=422, detail='Invalid decision or missing rejection reason')
         with connect() as db:
             authorize_locked(db, request, user, 'hr')
             guard(db)
@@ -110,6 +111,29 @@ def install_routes(app, connect, authenticate, authorize_locked):
             row = db.execute('SELECT * FROM applications WHERE id=%s FOR UPDATE', (application_id,)).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail='Application not found')
+            if payload.decision == 'reject':
+                if row['status'] not in ('submitted', 'advanced', 'offered'):
+                    raise HTTPException(status_code=409, detail='Decision is not allowed from current status')
+                if db.execute("SELECT 1 FROM job_offers WHERE application_id=%s AND status='accepted'", (application_id,)).fetchone():
+                    raise HTTPException(status_code=409, detail='An accepted offer must be resolved before rejection')
+                offer = db.execute("UPDATE job_offers SET status='withdrawn',responded_at=clock_timestamp() WHERE application_id=%s AND status='presented' RETURNING id", (application_id,)).fetchone()
+                if offer:
+                    db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'offer_withdrawn',%s)",
+                               (application_id, user.id, json.dumps({'offer_id': offer['id']})))
+                interviews = db.execute("SELECT id,candidate_id FROM interviews WHERE application_id=%s AND status='scheduled' AND start_at>clock_timestamp() FOR UPDATE", (application_id,)).fetchall()
+                for interview in interviews:
+                    if interview['candidate_id'] != row['candidate_id']:
+                        raise HTTPException(status_code=409, detail='Interview ownership changed')
+                    db.execute("UPDATE interviews SET status='cancelled' WHERE id=%s", (interview['id'],))
+                    db.execute('INSERT INTO hr_interview_cancellations(interview_id,candidate_id) VALUES (%s,%s)', (interview['id'], row['candidate_id']))
+                    db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'interview_cancelled',%s)",
+                               (application_id, user.id, json.dumps({'interview_id': interview['id'], 'reason': 'application_rejected'})))
+                db.execute("UPDATE applications SET status='rejected', updated_at=to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') WHERE id=%s", (application_id,))
+                db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'decision',%s)",
+                           (application_id, user.id, json.dumps({'decision': 'reject', 'note': payload.note.strip()}, ensure_ascii=False)))
+                result = application_view(db.execute('SELECT * FROM applications WHERE id=%s', (application_id,)).fetchone(), user)
+                authorize_locked(db, request, user, 'hr')
+                return result
             if row['status'] != 'submitted' or row['score_json'] is None:
                 raise HTTPException(status_code=409, detail='A submitted, screened application is required')
             if not db.execute('''SELECT 1 FROM screening_history h JOIN audit_events e ON e.id=h.audit_event_id
