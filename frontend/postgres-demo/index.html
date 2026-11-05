@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TawzeefAI - PostgreSQL demo</title>
+  <link rel="stylesheet" href="/postgres-demo.css">
+  <script src="/postgres-demo.js" defer></script>
+</head>
+<body>
+  <header><div><strong>TawzeefAI</strong><span>PostgreSQL demo</span></div><button id="logout" hidden>Sign out</button></header>
+  <main>
+    <p class="notice">Experimental local demo. Use synthetic data only. Booking does not send email or create a calendar event.</p>
+    <p id="message" role="status" aria-live="polite"></p>
+    <section id="login-panel">
+      <h1>Sign in</h1>
+      <form id="login-form">
+        <label>Username <input id="username" autocomplete="username" required></label>
+        <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+        <button>Sign in</button>
+      </form>
+      <p>Use the local demo accounts documented in the project README.</p>
+    </section>
+    <section id="workspace" hidden>
+      <div class="heading"><div><h1 id="welcome"></h1><p id="role-description"></p></div><button id="refresh">Refresh</button></div>
+      <section id="candidate-upload" hidden>
+        <h2>Apply for a job</h2>
+        <form id="upload-form">
+          <label>Job <select id="job" required></select></label>
+          <label>Synthetic CV (PDF or DOCX) <input id="resume" type="file" accept=".pdf,.docx" required></label>
+          <button>Submit application</button>
+        </form>
+      </section>
+      <section id="hr-slots" hidden>
+        <h2>Create an interview slot</h2>
+        <p>Times use your browser's local time zone.</p>
+        <form id="slot-form">
+          <label>Start <input id="slot-start" type="datetime-local" required></label>
+          <label>End <input id="slot-end" type="datetime-local" required></label>
+          <label>Interviewer <input id="interviewer" maxlength="120" required></label>
+          <button>Create slot</button>
+        </form>
+      </section>
+      <section><h2>Applications</h2><div id="applications"></div></section>
+      <section><h2>Interviews</h2><div id="interviews"></div></section>
+      <section><h2>Cancellation notices</h2><div id="notices"></div><button id="more-notices" hidden>Load older notices</button></section>
+    </section>
+  </main>
+</body>
+</html>

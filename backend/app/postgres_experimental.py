@@ -11,7 +11,7 @@ import re
 import secrets
 import time
 from contextlib import asynccontextmanager, contextmanager
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from threading import BoundedSemaphore
 from typing import Annotated
 from urllib.parse import urlsplit
@@ -20,7 +20,7 @@ import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from psycopg import sql
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
@@ -145,6 +145,22 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
 
     app = FastAPI(title='TawzeefAI experimental PostgreSQL recruitment API', lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=['localhost', '127.0.0.1', '[::1]', 'testserver'])
+
+    # This interface calls only this application's PostgreSQL API. The main
+    # application assets are intentionally not mounted in this mode.
+    frontend = Path(__file__).resolve().parents[2] / 'frontend' / 'postgres-demo'
+
+    @app.get('/', include_in_schema=False)
+    def demo_page():
+        return FileResponse(frontend / 'index.html', headers={'Cache-Control': 'no-store'})
+
+    @app.get('/postgres-demo.js', include_in_schema=False)
+    def demo_script():
+        return FileResponse(frontend / 'app.js', headers={'Cache-Control': 'no-store'})
+
+    @app.get('/postgres-demo.css', include_in_schema=False)
+    def demo_style():
+        return FileResponse(frontend / 'style.css', headers={'Cache-Control': 'no-store'})
 
     @app.middleware('http')
     async def check_origin(request: Request, call_next):

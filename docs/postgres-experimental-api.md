@@ -5,9 +5,12 @@ application or a migration. It stores demo users, jobs, sessions, applications,
 notices, audit events, screening records, slots, and interviews in one PostgreSQL schema.
 SQLite data is not read or migrated. Only health, login, logout, session identity,
 jobs, application submission and listing, HR keyword screening and advancement,
-local candidate interview booking, cancellation, explicit HR completion, local cancellation notices, and offers with candidate response and explicit HR hire are implemented. Graph
-workflows, calendar and email delivery, policy chat, the dashboard, and browser
-interface remain unavailable in this mode.
+local candidate interview booking, cancellation, explicit HR completion, local
+cancellation notices, and offers with candidate response and explicit HR hire
+are implemented. A dedicated browser interface supports the journey through
+interview completion; offer actions are available through the API. Graph
+workflows, calendar and email delivery, policy chat, and the dashboard remain
+unavailable in this mode.
 
 HR can call `POST /api/applications/{id}/screen` for a submitted application.
 The score, screening history, and audit record are saved together. This applies
@@ -70,7 +73,11 @@ uv run --locked --extra postgres uvicorn app.main:app --host 127.0.0.1 --port 18
 The server uses public demo passwords and must run only on loopback. Do not put
 it behind a proxy or use real candidate data. The application rejects remote
 peers and untrusted Host headers, but network and proxy configuration still
-matter. Unsupported endpoints return 404. Run the real PostgreSQL tests with
+matter. Open `http://127.0.0.1:18080/` for the dedicated demo interface. It
+uses only the PostgreSQL API, not the main SQLite interface, and supports the
+candidate and HR demo accounts. Screening remains provisional: HR must inspect
+the CV and explicitly advance an application. Slot times use the browser's
+local time zone. Unsupported endpoints return 404. Run the real PostgreSQL tests with
 `TAWZEEF_TEST_POSTGRES_DSN` set privately to a disposable test database and
 `pytest -q tests/test_postgres_experimental_api.py tests/test_postgres_scheduling.py tests/test_postgres_cancellation_lifecycle.py tests/test_postgres_interview_completion.py tests/test_postgres_offers.py`. The tests create and remove
 randomly named test schemas. No success claim extends beyond the implemented
