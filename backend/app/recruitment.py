@@ -95,11 +95,40 @@ def contains(text: str, phrase: str) -> bool:
 
 
 ALIASES = {
+    "go": ["go", "golang"],
+    "golang": ["go", "golang"],
     "http apis": ["http api", "http apis", "rest api", "rest apis", "backend api", "backend apis"],
     "etl pipelines": ["etl", "etl pipeline", "etl pipelines"],
     "html and css": ["html", "css"],
     "automated testing": ["automated testing", "automated tests", "unit tests"],
 }
+
+
+_GO_BEFORE = re.compile(r"\b(?:using|used|with|in|coded in|written in|programmed in)\s*$")
+_GO_AFTER = re.compile(r"^\s+(?:language|programming|developer|development|code|compiler|runtime|services?|apis?|backend|framework)\b")
+_GO_LIST = re.compile(r"^\s*(?:technical\s+)?(?:skills|languages|programming languages|tech stack|technologies)\s*[:\-]")
+_GO_TECH_LIST_BEFORE = re.compile(r"\b(?:python|java|rust|javascript|typescript|sql|c\+\+|c#)\s*[,/|]\s*$")
+_GO_TECH_LIST_AFTER = re.compile(r"^\s*[,/|]\s*(?:python|java|rust|javascript|typescript|sql|c\+\+|c#)(?![a-z0-9_])")
+_GO_VERBAL_AFTER = re.compile(r"^\s*(?:-\s*)?(?:to|beyond|home|live|forward|through|above|over|ahead)\b")
+
+
+def _go_language_mention(raw: str, text: str):
+    """Require context for ambiguous 'go'; this is not qualification proof."""
+    list_header = _GO_LIST.match(text)
+    for match in re.finditer(_mention_pattern('go'), text):
+        before = text[max(0, match.start() - 80):match.start()]
+        after = text[match.end():match.end() + 80]
+        if _GO_VERBAL_AFTER.match(after):
+            continue
+        first_item = bool(list_header and 0 <= match.start() - list_header.end() <= 80
+                          and not text[list_header.end():match.start()].strip())
+        is_list_item = bool(list_header and re.match(r"\s*(?:[,/|]|$)", after)
+                            and (first_item or re.search(r"[,/|]\s*$", before)))
+        if (raw.strip() == 'Go' or _GO_BEFORE.search(before) or _GO_AFTER.match(after)
+                or is_list_item or _GO_TECH_LIST_BEFORE.search(before)
+                or _GO_TECH_LIST_AFTER.match(after)):
+            return match
+    return None
 
 
 # Conservative heuristics: skip an entire sentence with an explicit negative
@@ -189,7 +218,10 @@ def _score_blind(job: dict, blind: BlindText) -> dict:
     def matching_segments(term: str) -> tuple[int, ...]:
         if term in matches_by_term:
             return matches_by_term[term]
-        if not term:
+        if term == 'go':
+            result = tuple(islice((index for index, (raw, segment) in enumerate(safe)
+                                   if _go_language_mention(raw, segment)), 2))
+        elif not term:
             # Preserve the legacy zero-width behavior on each actual segment;
             # separators must not create additional matches for an empty term.
             result = tuple(islice((index for index, segment in enumerate(usable) if contains(segment, term)), 2))
@@ -220,6 +252,8 @@ def _score_blind(job: dict, blind: BlindText) -> dict:
             return {"skill": skill, "mentioned": False, "evidence": []}
 
         def occurrence(index: int, term: str):
+            if term == 'go':
+                return _go_language_mention(safe[index][0], usable[index])
             return re.search(_mention_pattern(term), usable[index])
 
         def excerpt(index: int, start: int, end: int):
