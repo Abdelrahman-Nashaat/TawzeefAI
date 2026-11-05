@@ -37,7 +37,7 @@ def default_steps(facts: dict) -> list[str]:
         return ['parser', 'matching', 'semantic', 'status'] if facts.get('semantic_available') else ['parser', 'matching', 'status']
     if facts['status'] in ('hired', 'rejected'):
         return ['status']
-    if not facts['has_screening']:
+    if facts['status'] == 'submitted' or not facts['has_screening']:
         return ['parser', 'matching', 'semantic', 'status'] if facts.get('semantic_available') else ['parser', 'matching', 'status']
     if facts['status'] == 'advanced':
         return ['status', 'scheduler']
@@ -67,9 +67,10 @@ def validate_steps(proposal: object, facts: dict) -> list[str]:
     if 'semantic' in steps and (not facts.get('semantic_available') or 'parser' not in steps or
                                 'matching' not in steps or not steps.index('parser') < steps.index('matching') < steps.index('semantic')):
         raise ValueError('Semantic review requires enabled screening and prior parsing and matching')
-    if (facts['status'] not in ('hired', 'rejected') and not facts['has_screening'] and
+    if (facts['status'] not in ('hired', 'rejected') and
+            (facts['status'] == 'submitted' or not facts['has_screening']) and
             ('parser' not in steps or 'matching' not in steps)):
-        raise ValueError('Unscreened applications require parsing and matching')
+        raise ValueError('Submitted or unscreened applications require parsing and matching')
     return list(steps)
 
 
@@ -87,7 +88,7 @@ def _request_model(facts: dict, key: str) -> object:
             {'role': 'system', 'content': 'Return JSON only: {"steps":[...]} using only parser, matching, semantic, status, scheduler. '
              'Use status always; never use scheduler unless advanced and after status. '
              'Use semantic only when semantic_available is true and after parser then matching. '
-             'For unscreened nonterminal applications use parser then matching. '
+             'For submitted or unscreened nonterminal applications use parser then matching. '
              'For hired or rejected use only status. No additional keys or arguments.'},
             {'role': 'user', 'content': json.dumps(facts)},
         ]}).encode('utf-8')

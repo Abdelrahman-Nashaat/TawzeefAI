@@ -53,6 +53,46 @@ def test_dynamic_plan_checkpoint_resume_and_stale_guard(setup):
         assert db.execute('SELECT count(*) FROM interview_slots').fetchone()[0] == 0
 
 
+def test_screened_submitted_application_still_gets_matching_review(setup):
+    path, client, application, _ = setup
+    assert client.post(f'/api/applications/{application}/screen').status_code == 200
+    response = start(client, application)
+    assert response.status_code == 201, response.text
+    review = response.json()
+    assert review['state']['plan'] == ['parser', 'matching', 'status', 'human_review']
+    assert review['state']['matching']['required']
+    assert review['awaiting_review']
+    assert client.post(f"/api/graph-reviews/{review['id']}/resume", json={'reviewed': True}).status_code == 200
+    with connect(path) as db:
+        assert db.execute('SELECT status FROM applications WHERE id=?', (application,)).fetchone()[0] == 'submitted'
+        assert db.execute('SELECT count(*) FROM interview_slots').fetchone()[0] == 0
+
+
+def test_model_cannot_omit_matching_from_screened_submitted_review():
+    with pytest.raises(ValueError):
+        adaptive_planner.validate_steps({'steps': ['status']}, {'status': 'submitted', 'has_screening': True})
+
+
+@pytest.mark.parametrize('change', ['resume', 'role'])
+def test_screened_review_rechecks_changes_during_matching(setup, monkeypatch, change):
+    path, client, application, _ = setup
+    assert client.post(f'/api/applications/{application}/screen').status_code == 200
+    original = graph_orchestrator.score_masked_resume
+
+    def change_during_matching(job, source):
+        result = original(job, source)
+        with connect(path) as db:
+            if change == 'resume':
+                db.execute("UPDATE applications SET resume_text='Changed' WHERE id=?", (application,))
+            else:
+                db.execute("UPDATE users SET role='employee' WHERE username='hr'")
+        return result
+
+    monkeypatch.setattr(graph_orchestrator, 'score_masked_resume', change_during_matching)
+    response = start(client, application)
+    assert response.status_code == (409 if change == 'resume' else 403), response.text
+
+
 def test_model_plan_is_bounded_and_invalid_output_falls_back(setup, monkeypatch):
     _, client, _, advanced = setup
     monkeypatch.setenv('TAWZEEF_ENABLE_GROQ', '1')
