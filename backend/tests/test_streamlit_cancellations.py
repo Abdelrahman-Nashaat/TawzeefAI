@@ -11,7 +11,7 @@ from streamlit.testing.v1 import AppTest
 
 from app.db import connect
 from app.main import create_app
-from streamlit_client import LocalApi
+from streamlit_client import ApiError, LocalApi
 
 
 @pytest.fixture
@@ -49,7 +49,11 @@ def test_candidate_cancels_and_hr_acknowledges_in_streamlit(cancellation_case):
     path, hr, hr_user, candidate, user, application, interview = cancellation_case
     ui = ui_for(candidate, user)
     assert not ui.exception
-    assert not any('Interview cancellation notices' in item.value for item in ui.subheader)
+    assert any(item.value == 'Interview cancellation notices' for item in ui.subheader)
+    assert not any(item.label == 'Mark cancellation read' for item in ui.button)
+    with pytest.raises(ApiError) as error:
+        candidate.request('GET', '/api/hr/interview-cancellations')
+    assert error.value.status == 403
     next(item for item in ui.button if item.label == 'Cancel interview').click().run()
     assert any('Confirm the cancellation' in item.value for item in ui.error)
     assert candidate.request('GET', '/api/interviews')[0]['status'] == 'scheduled'
@@ -58,6 +62,8 @@ def test_candidate_cancels_and_hr_acknowledges_in_streamlit(cancellation_case):
     assert not ui.exception
     assert any('Interview cancelled locally' in item.value for item in ui.success)
     assert candidate.request('GET', '/api/interviews')[0]['status'] == 'cancelled'
+    assert candidate.request('GET', '/api/candidate/interview-cancellations')['items'] == []
+    assert not any(item.label == 'Mark cancellation read' for item in ui.button)
     assert candidate.request('GET', '/api/slots', params={'application_id': application})
     with connect(path) as db:
         assert db.execute('SELECT count(*) FROM google_deliveries').fetchone()[0] == 0
