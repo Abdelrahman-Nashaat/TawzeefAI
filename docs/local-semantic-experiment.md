@@ -20,7 +20,11 @@ The PostgreSQL path (`app/postgres_retrieval.py`) computes local embeddings,
 stores vectors and opaque source identifiers in pgvector, ranks only IDs and
 content revisions authorized by the current SQLite state, combines vector and
 BM25 ranks, and rechecks active sources before returning their text. It rebuilds
-the role-, optional collection- and optional job-specific index on each search and is bounded to 100 passages. Embeddings
+the role-, optional collection-, job- and section-specific index on each search.
+Up to 500 authorized and filtered passages may be searched. The top 100 vector
+and top 100 lexical candidates are fused, so a lexical hit outside the vector
+window can still be returned. All selected passages are embedded again on each
+query: larger collections can be slow and this is not a scalable index. Embeddings
 can persist in PostgreSQL until the corresponding index is refreshed, even after a document
 is disabled; database storage still needs protection. Account revocation is
 checked again before the endpoint returns. This is a local demo, not a general

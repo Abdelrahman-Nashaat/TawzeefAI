@@ -15,7 +15,8 @@ from app.knowledge import ROLE_AUDIENCES, _document_passages, _rank_lexical, _to
 from app.knowledge_documents import fetch_authorized_documents
 from app.postgres_vectors import PostgresVectorIndex
 
-MAX_PASSAGES = 100
+MAX_PASSAGES = 500
+MAX_CANDIDATES_PER_RANKER = 100
 COLLECTIONS = frozenset(('legacy_unclassified', 'handbook', 'job_description', 'past_hire_patterns'))
 
 
@@ -87,9 +88,14 @@ def search_postgres(path, role, question, embedder, connection, *, min_similarit
                if live.get(doc['id']) == doc]
     index.replace([(source.id, _revision(source), vector) for _, source, vector in current])
     allowed = {source.id: _revision(source) for _, source, _ in current}
-    nearest = index.search(allowed, query[0], limit=max(1, len(allowed)))
+    nearest = index.search(allowed, query[0], limit=max(1, min(len(allowed), MAX_CANDIDATES_PER_RANKER)))
     lexical = _rank_lexical(_tokens(question), [source for _, source, _ in current])
-    lexical_ranks = {source.id: rank for rank, (_, source) in enumerate(lexical, 1)}
+    lexical_ranks = {source.id: rank for rank, (_, source) in enumerate(lexical[:MAX_CANDIDATES_PER_RANKER], 1)}
+    nearest_ids = {row['source_id'] for row in nearest}
+    # A lexical hit outside the vector window still belongs in the union. Ask
+    # the index for its similarity without counting it as a top-vector hit.
+    lexical_only = {source_id: allowed[source_id] for source_id in lexical_ranks if source_id not in nearest_ids}
+    other = index.search(lexical_only, query[0], limit=len(lexical_only)) if lexical_only else []
     candidates = []
     for rank, row in enumerate(nearest, 1):
         source_id = row['source_id']
@@ -100,7 +106,12 @@ def search_postgres(path, role, question, embedder, connection, *, min_similarit
         if source_id in lexical_ranks:
             fusion += 1 / (60 + lexical_ranks[source_id])
         candidates.append((fusion, similarity, source_id))
-    candidates.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    for row in other:
+        source_id = row['source_id']
+        candidates.append((1 / (60 + lexical_ranks[source_id]), 1 - row['distance'], source_id))
+    # Prefer a lexical match on a fusion tie; similarity remains a
+    # secondary ordering signal and is not a factual-support score.
+    candidates.sort(key=lambda item: (-item[0], -int(item[2] in lexical_ranks), -item[1], item[2]))
     by_id = {source.id: (doc, source) for doc, source, _ in current}
     live = {document['id']: document for document in fetch_authorized_documents(path, role)}
     result = []
