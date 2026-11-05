@@ -16,7 +16,7 @@ You can also run a local demonstration with Docker Desktop using `& .\start-dock
 
 An optional [Streamlit interface](docs/streamlit-demo.md) uses the same local API for saved knowledge chat, HR metrics and review, and candidate applications, local interview booking, and offer responses. The main interface provides additional recruitment and administrative workflows.
 
-An [experimental PostgreSQL submission API](docs/postgres-experimental-api.md) supports only a small synthetic-data candidate journey; it does not replace the SQLite application or migrate its data.
+An [experimental PostgreSQL API](docs/postgres-experimental-api.md) supports a small synthetic-data journey from application and HR screening to local interview booking; it does not replace the SQLite application or migrate its data.
 
 To try local résumé passage suggestions for job criteria on Windows, prepare the local embedding model as described in [experiment details](docs/local-semantic-experiment.md), then run `& .\start-demo.ps1 -SemanticScreening`. This can be combined with `-Google`. Suggestions are experimental, do not verify experience, and do not replace human review; use synthetic data only.
 

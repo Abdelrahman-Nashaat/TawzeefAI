@@ -1,12 +1,28 @@
-# Experimental PostgreSQL submission API
+# Experimental PostgreSQL API
 
 This opt-in development slice is for synthetic data only. It is not the full
 application or a migration. It stores demo users, jobs, sessions, applications,
-notices, audit events, and pending screening records in one PostgreSQL schema.
+notices, audit events, screening records, slots, and interviews in one PostgreSQL schema.
 SQLite data is not read or migrated. Only health, login, logout, session identity,
-jobs, application submission, and application listing are implemented. Graph
-workflows, screening, scheduling, policy chat, the dashboard, and browser
+jobs, application submission and listing, HR keyword screening and advancement,
+and local candidate interview booking are implemented. Graph
+workflows, calendar and email delivery, policy chat, the dashboard, and browser
 interface remain unavailable in this mode.
+
+HR can call `POST /api/applications/{id}/screen` for a submitted application.
+The score, screening history, and audit record are saved together. This applies
+automatic identity masking, which is incomplete and has not been reviewed by a
+human in this mode. It is not a blind-screening guarantee or a hiring decision.
+Candidates cannot run screening or see its score. Use synthetic data only.
+
+HR can explicitly advance a submitted application with a recorded current score
+using `POST /api/applications/{id}/decision` and `{"decision":"advance"}`; the
+score does not itself decide advancement. HR can create future slots with
+`POST /api/slots`. An advanced candidate can list available slots with
+`GET /api/slots?application_id=...` and book one with
+`POST /api/slots/{id}/book`. Booking is recorded locally; no invitation or
+notification is delivered. This mode exposes no job or resume editing, and does
+not detect direct database changes to previously screened inputs.
 
 Use a disposable database and a PostgreSQL user allowed to create schemas.
 Configure the DSN privately in the process environment; never commit credentials.
@@ -30,6 +46,6 @@ it behind a proxy or use real candidate data. The application rejects remote
 peers and untrusted Host headers, but network and proxy configuration still
 matter. Unsupported endpoints return 404. Run the real PostgreSQL tests with
 `TAWZEEF_TEST_POSTGRES_DSN` set privately to a disposable test database and
-`pytest -q tests/test_postgres_experimental_api.py`. The tests create and remove
+`pytest -q tests/test_postgres_experimental_api.py tests/test_postgres_scheduling.py`. The tests create and remove
 randomly named test schemas. No success claim extends beyond the implemented
 routes and tested scenarios.

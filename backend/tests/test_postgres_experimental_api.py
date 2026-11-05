@@ -57,7 +57,7 @@ def login(client, username):
 def test_candidate_submission_and_hr_read_are_postgresql_only(mode):
     app = create_app(seed_demo=True)
     with TestClient(app) as candidate, TestClient(app) as other, TestClient(app) as hr:
-        assert candidate.get('/api/health').json()['mode'] == 'postgres-experimental-submission-only'
+        assert candidate.get('/api/health').json()['mode'] == 'postgres-experimental-recruitment'
         assert candidate.get('/api/jobs').status_code == 401
         login(candidate, 'candidate')
         jobs = candidate.get('/api/jobs').json()
@@ -70,7 +70,7 @@ def test_candidate_submission_and_hr_read_are_postgresql_only(mode):
         assert len(candidate.get('/api/applications').json()) == 1
         login(other, 'candidate2')
         assert other.get('/api/applications').json() == []
-        assert other.post('/api/applications/1/decision', json={'decision':'hire'}).status_code == 404
+        assert other.post('/api/applications/1/decision', json={'decision':'hire'}).status_code == 403
         login(hr, 'hr')
         assert hr.post('/api/applications', params={'job_id':jobs[0]['id'], 'filename':'r.docx'}, content=resume_bytes()).status_code == 403
         assert 'Synthetic candidate' in hr.get('/api/applications').json()[0]['resume_text']
@@ -166,3 +166,123 @@ def test_unknown_engine_does_not_fall_back_to_sqlite(monkeypatch):
     monkeypatch.setenv('TAWZEEF_DATABASE_ENGINE', 'postgres-experimantal')
     with pytest.raises(RuntimeError, match='Unsupported database engine'):
         create_app(seed_demo=True)
+
+
+def test_hr_screen_is_atomic_and_owner_protected(mode):
+    app = create_app(seed_demo=True)
+    with TestClient(app) as candidate, TestClient(app) as hr:
+        login(candidate, 'candidate')
+        job = candidate.get('/api/jobs').json()[0]['id']
+        created = candidate.post('/api/applications', params={'job_id': job, 'filename': 'resume.docx'},
+                                 content=resume_bytes())
+        assert created.status_code == 201
+        application_id = created.json()['id']
+        assert candidate.post(f'/api/applications/{application_id}/screen').status_code == 403
+        login(hr, 'hr')
+        response = hr.post(f'/api/applications/{application_id}/screen')
+        assert response.status_code == 200, response.text
+        assert 'required' in response.json()
+        assert 'score' not in candidate.get('/api/applications').json()[0]
+        assert hr.post('/api/applications/999999/screen').status_code == 404
+        with db_for(mode) as db:
+            row = db.execute('SELECT status,score_json FROM applications WHERE id=%s', (application_id,)).fetchone()
+            assert row['status'] == 'submitted' and row['score_json']
+            assert db.execute("SELECT count(*) AS n FROM audit_events WHERE application_id=%s AND action='screened'", (application_id,)).fetchone()['n'] == 1
+            assert db.execute('SELECT count(*) AS n FROM screening_history').fetchone()['n'] == 1
+
+
+def test_failed_screen_rolls_back_result_and_audit(mode):
+    app = create_app(seed_demo=True)
+    with TestClient(app) as candidate, TestClient(app) as hr:
+        login(candidate, 'candidate')
+        job = candidate.get('/api/jobs').json()[0]['id']
+        application_id = candidate.post('/api/applications', params={'job_id': job, 'filename':'resume.docx'},
+                                        content=resume_bytes()).json()['id']
+        with db_for(mode) as db:
+            db.execute("ALTER TABLE screening_history ADD CONSTRAINT refuse_test CHECK (score_json = 'never')")
+            db.commit()
+        login(hr, 'hr')
+        # A database failure must abort every change in the screening transaction.
+        with pytest.raises(psycopg.errors.CheckViolation):
+            hr.post(f'/api/applications/{application_id}/screen')
+        with db_for(mode) as db:
+            assert db.execute('SELECT score_json FROM applications WHERE id=%s', (application_id,)).fetchone()['score_json'] is None
+            assert db.execute("SELECT count(*) AS n FROM audit_events WHERE action='screened'").fetchone()['n'] == 0
+
+
+def test_expired_session_during_screen_rolls_back(mode, monkeypatch):
+    import time
+
+    from app import postgres_experimental
+
+    app = create_app(seed_demo=True)
+    with TestClient(app) as candidate, TestClient(app) as hr:
+        login(candidate, 'candidate')
+        job = candidate.get('/api/jobs').json()[0]['id']
+        application_id = candidate.post('/api/applications', params={'job_id': job, 'filename': 'resume.docx'},
+                                        content=resume_bytes()).json()['id']
+        login(hr, 'hr')
+        original = postgres_experimental.score_resume
+        later = time.time() + 60 * 60 * 24 * 365
+        def expire_after_score(job_data, source):
+            result = original(job_data, source)
+            monkeypatch.setattr(postgres_experimental.time, 'time', lambda: later)
+            return result
+        monkeypatch.setattr(postgres_experimental, 'score_resume', expire_after_score)
+        assert hr.post(f'/api/applications/{application_id}/screen').status_code == 401
+        with db_for(mode) as db:
+            assert db.execute('SELECT score_json FROM applications WHERE id=%s', (application_id,)).fetchone()['score_json'] is None
+            assert db.execute("SELECT count(*) AS n FROM audit_events WHERE action='screened'").fetchone()['n'] == 0
+            assert db.execute('SELECT count(*) AS n FROM screening_history').fetchone()['n'] == 0
+
+
+def test_existing_schema_gains_screening_history_without_losing_data(mode):
+    with TestClient(create_app(seed_demo=True)) as candidate:
+        login(candidate, 'candidate')
+        job = candidate.get('/api/jobs').json()[0]['id']
+        application_id = candidate.post('/api/applications', params={'job_id': job, 'filename': 'resume.docx'},
+                                        content=resume_bytes()).json()['id']
+    with db_for(mode) as db:
+        db.execute('DROP TABLE screening_history')
+    with TestClient(create_app(seed_demo=True)) as hr:
+        login(hr, 'hr')
+        assert hr.post(f'/api/applications/{application_id}/screen').status_code == 200
+        with db_for(mode) as db:
+            assert db.execute('SELECT count(*) AS n FROM screening_history').fetchone()['n'] == 1
+            assert db.execute('SELECT count(*) AS n FROM applications').fetchone()['n'] == 1
+
+
+def test_concurrent_user_revocation_waits_for_screen_transaction(mode, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from app import postgres_experimental
+
+    entered, release = Event(), Event()
+    original = postgres_experimental.score_resume
+
+    def pause_screen(job_data, source):
+        entered.set()
+        assert release.wait(10)
+        return original(job_data, source)
+
+    monkeypatch.setattr(postgres_experimental, 'score_resume', pause_screen)
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
+        login(candidate, 'candidate')
+        job = candidate.get('/api/jobs').json()[0]['id']
+        application_id = candidate.post('/api/applications', params={'job_id': job, 'filename': 'resume.docx'},
+                                        content=resume_bytes()).json()['id']
+        login(hr, 'hr')
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            result = executor.submit(hr.post, f'/api/applications/{application_id}/screen')
+            try:
+                assert entered.wait(10)
+                with pytest.raises(psycopg.errors.LockNotAvailable), db_for(mode) as db:
+                    db.execute("SET LOCAL lock_timeout = '250ms'")
+                    db.execute("UPDATE users SET active=0 WHERE username='hr'")
+            finally:
+                release.set()
+            assert result.result(timeout=10).status_code == 200
+        with db_for(mode) as db:
+            db.execute("UPDATE users SET active=0 WHERE username='hr'")
+        assert hr.post(f'/api/applications/{application_id}/screen').status_code == 401
