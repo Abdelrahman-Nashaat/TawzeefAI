@@ -3,6 +3,9 @@
 const $ = (id) => document.getElementById(id);
 let user = null;
 let noticeCursor = null;
+let sessionGeneration = 0;
+class StaleSession extends Error {}
+function ensureCurrent(generation) { if (generation !== sessionGeneration) throw new StaleSession(); }
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -13,18 +16,29 @@ function element(tag, text, className) {
 
 function message(text) { $("message").textContent = text; }
 function signedOut() {
+  sessionGeneration++;
   user = null;
   noticeCursor = null;
   $("workspace").hidden = true;
   $("login-panel").hidden = false;
   $("logout").hidden = true;
   $("password").value = "";
+  $("resume").value = "";
+  $("slot-form").reset();
   for (const id of ["applications", "interviews", "notices"]) $(id).replaceChildren();
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, { credentials: "same-origin", ...options });
-  const data = response.status === 204 ? null : await response.json();
+  const generation = sessionGeneration;
+  let response, data;
+  try {
+    response = await fetch(path, { credentials: "same-origin", ...options });
+    data = response.status === 204 ? null : await response.json();
+  } catch (error) {
+    if (generation !== sessionGeneration) throw new StaleSession();
+    throw error;
+  }
+  if (generation !== sessionGeneration) throw new StaleSession();
   if (!response.ok) {
     if (response.status === 401) signedOut();
     const detail = data?.detail;
@@ -40,7 +54,7 @@ function jsonPost(body) {
 async function action(button, work) {
   button.disabled = true;
   message("");
-  try { await work(); } catch (error) { message(error.message || "Request failed"); }
+  try { await work(); } catch (error) { if (!(error instanceof StaleSession)) message(error.message || "Request failed"); }
   finally { button.disabled = false; }
 }
 
@@ -54,14 +68,17 @@ function button(text, work) {
 function date(value) { return new Date(value).toLocaleString(); }
 
 async function showSlots(application, container) {
+  const generation = sessionGeneration;
   const slots = await api(`/api/slots?application_id=${encodeURIComponent(application.id)}`);
+  ensureCurrent(generation);
   const list = element("div");
   if (!slots.length) list.append(element("p", "No available slots."));
   for (const slot of slots) {
     const line = element("p", `${date(slot.start_at)} - ${date(slot.end_at)} | ${slot.interviewer} `);
     line.append(button("Book", async () => {
+      const generation = sessionGeneration;
       await api(`/api/slots/${slot.id}/book`, jsonPost({ application_id: application.id }));
-      await refresh(); message("Interview booked locally.");
+      ensureCurrent(generation); await refresh(); ensureCurrent(generation); message("Interview booked locally.");
     }));
     list.append(line);
   }
@@ -88,12 +105,14 @@ function renderApplications(applications, jobs) {
       card.append(details);
       if (application.status === "submitted") {
         card.append(button("Run provisional screening", async () => {
+          const generation = sessionGeneration;
           await api(`/api/applications/${application.id}/screen`, { method: "POST" });
-          await refresh(); message("Screening recorded for HR review.");
+          ensureCurrent(generation); await refresh(); ensureCurrent(generation); message("Screening recorded for HR review.");
         }));
         if (application.score) card.append(button("Advance to scheduling", async () => {
+          const generation = sessionGeneration;
           await api(`/api/applications/${application.id}/decision`, jsonPost({ decision: "advance" }));
-          await refresh(); message("Application advanced by HR.");
+          ensureCurrent(generation); await refresh(); ensureCurrent(generation); message("Application advanced by HR.");
         }));
       }
     }
@@ -111,14 +130,16 @@ function renderInterviews(interviews) {
     if (interview.status === "scheduled" && !interview.completed && new Date(interview.start_at) > new Date()) {
       const suffix = user.role === "hr" ? "cancel" : "candidate-cancel";
       card.append(button("Cancel interview", async () => {
+        const generation = sessionGeneration;
         await api(`/api/interviews/${interview.id}/${suffix}`, { method: "POST" });
-        await refresh(); message("Interview cancelled locally.");
+        ensureCurrent(generation); await refresh(); ensureCurrent(generation); message("Interview cancelled locally.");
       }));
     }
     if (user.role === "hr" && interview.status === "scheduled" && !interview.completed && new Date(interview.end_at) <= new Date()) {
       card.append(button("Confirm interview took place", async () => {
+        const generation = sessionGeneration;
         await api(`/api/interviews/${interview.id}/complete`, { method: "POST" });
-        await refresh(); message("Interview completion recorded.");
+        ensureCurrent(generation); await refresh(); ensureCurrent(generation); message("Interview completion recorded.");
       }));
     }
     target.append(card);
@@ -126,9 +147,11 @@ function renderInterviews(interviews) {
 }
 
 async function loadNotices(append = false) {
+  const generation = sessionGeneration;
   const base = user.role === "hr" ? "/api/hr/interview-cancellations" : "/api/candidate/interview-cancellations";
   const query = append && noticeCursor ? `?before=${noticeCursor}` : "";
   const data = await api(base + query);
+  ensureCurrent(generation);
   const target = $("notices");
   if (!append) target.replaceChildren();
   if (!append && !data.items.length) target.append(element("p", "No cancellation notices."));
@@ -136,8 +159,9 @@ async function loadNotices(append = false) {
     const card = element("article");
     card.append(element("p", `Application ${item.application_id}, interview ${date(item.start_at)}: ${item.is_read ? "Read" : "Unread"}`));
     if (!item.is_read) card.append(button("Mark read", async () => {
+      const generation = sessionGeneration;
       await api(`${base}/${item.id}/read`, { method: "POST" });
-      await loadNotices(); message("Notice marked read.");
+      ensureCurrent(generation); await loadNotices(); ensureCurrent(generation); message("Notice marked read.");
     }));
     target.append(card);
   }
@@ -146,16 +170,19 @@ async function loadNotices(append = false) {
 }
 
 async function refresh() {
+  const generation = sessionGeneration;
   const [jobs, applications, interviews] = await Promise.all([api("/api/jobs"), api("/api/applications"), api("/api/interviews")]);
+  ensureCurrent(generation);
   const select = $("job"); select.replaceChildren();
   for (const job of jobs) { const option = element("option", job.title); option.value = job.id; select.append(option); }
   renderApplications(applications, jobs); renderInterviews(interviews); await loadNotices();
 }
 
 async function openWorkspace(account) {
+  const generation = sessionGeneration;
   user = account;
   if (!["candidate", "hr"].includes(user.role)) {
-    await api("/api/auth/logout", { method: "POST" }); signedOut();
+    await api("/api/auth/logout", { method: "POST" }); ensureCurrent(generation); signedOut();
     throw new Error("This demo interface supports candidate and HR accounts only.");
   }
   $("login-panel").hidden = true; $("workspace").hidden = false; $("logout").hidden = false;
@@ -168,30 +195,36 @@ async function openWorkspace(account) {
 $("login-form").addEventListener("submit", (event) => {
   event.preventDefault();
   action(event.submitter, async () => {
+    sessionGeneration++;
+    const generation = sessionGeneration;
     const account = await api("/api/auth/login", jsonPost({ username: $("username").value, password: $("password").value }));
-    $("password").value = ""; await openWorkspace(account); message("Signed in.");
+    ensureCurrent(generation); $("password").value = ""; await openWorkspace(account); ensureCurrent(generation); message("Signed in.");
   });
 });
-$("logout").addEventListener("click", () => action($("logout"), async () => { await api("/api/auth/logout", { method: "POST" }); signedOut(); message("Signed out."); }));
-$("refresh").addEventListener("click", () => action($("refresh"), async () => { await refresh(); message("Refreshed."); }));
+$("logout").addEventListener("click", () => action($("logout"), async () => { const generation = ++sessionGeneration; await api("/api/auth/logout", { method: "POST" }); ensureCurrent(generation); signedOut(); message("Signed out."); }));
+$("refresh").addEventListener("click", () => action($("refresh"), async () => { const generation = sessionGeneration; await refresh(); ensureCurrent(generation); message("Refreshed."); }));
 $("more-notices").addEventListener("click", () => action($("more-notices"), () => loadNotices(true)));
 $("upload-form").addEventListener("submit", (event) => {
   event.preventDefault();
   action(event.submitter, async () => {
+    const generation = sessionGeneration;
     const file = $("resume").files[0];
     if (!file) throw new Error("Choose a PDF or DOCX file.");
     const query = new URLSearchParams({ job_id: $("job").value, filename: file.name });
     await api(`/api/applications?${query}`, { method: "POST", body: file });
-    $("resume").value = ""; await refresh(); message("Application submitted.");
+    ensureCurrent(generation); $("resume").value = ""; await refresh(); ensureCurrent(generation); message("Application submitted.");
   });
 });
 $("slot-form").addEventListener("submit", (event) => {
   event.preventDefault();
   action(event.submitter, async () => {
+    const generation = sessionGeneration;
     const start = new Date($("slot-start").value), end = new Date($("slot-end").value);
     if (Number.isNaN(start.valueOf()) || Number.isNaN(end.valueOf())) throw new Error("Enter valid slot times.");
     await api("/api/slots", jsonPost({ start_at: start.toISOString(), end_at: end.toISOString(), interviewer: $("interviewer").value }));
-    $("slot-form").reset(); message("Slot created.");
+    ensureCurrent(generation); $("slot-form").reset(); message("Slot created.");
   });
 });
-api("/api/auth/me").then(openWorkspace).catch(() => signedOut());
+const initialGeneration = sessionGeneration;
+api("/api/auth/me").then((account) => { ensureCurrent(initialGeneration); return openWorkspace(account); })
+  .catch((error) => { if (!(error instanceof StaleSession) && initialGeneration === sessionGeneration) signedOut(); });
