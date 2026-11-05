@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.db import connect
@@ -9,6 +10,55 @@ from app.rubric_comparison import router
 
 def login(client, role):
     assert client.post('/api/auth/login', json={'username': role, 'password': f'{role}-demo-only'}).status_code == 200
+
+
+def test_expired_session_during_comparison_is_not_returned(tmp_path, monkeypatch):
+    import time
+
+    from app import rubric_comparison
+
+    app = create_app(tmp_path / 'comparison-expiry.sqlite3', seed_demo=True)
+    with TestClient(app) as client:
+        login(client, 'hr')
+        original = rubric_comparison.compare_in_snapshot
+        later = time.time() + 365 * 24 * 60 * 60
+
+        def expire_during_comparison(db, job_id):
+            result = original(db, job_id)
+            monkeypatch.setattr(time, 'time', lambda: later)
+            return result
+
+        monkeypatch.setattr(rubric_comparison, 'compare_in_snapshot', expire_during_comparison)
+        response = client.get('/api/jobs/job-backend-python/rubric/comparison')
+        assert response.status_code == 401
+        assert 'applications' not in response.json()
+
+
+@pytest.mark.parametrize(('change', 'expected'), [
+    ("UPDATE users SET role='employee' WHERE username='hr'", 403),
+    ("UPDATE users SET active=0 WHERE username='hr'", 401),
+    ("DELETE FROM sessions WHERE user_id=(SELECT id FROM users WHERE username='hr')", 401),
+])
+def test_revoked_access_during_comparison_is_not_returned(tmp_path, monkeypatch, change, expected):
+    from app import rubric_comparison
+
+    app = create_app(tmp_path / 'comparison-revocation.sqlite3', seed_demo=True)
+    with TestClient(app) as client:
+        login(client, 'hr')
+        with connect(app.state.database_path) as db:
+            db.execute('PRAGMA journal_mode=WAL')
+        original = rubric_comparison.compare_in_snapshot
+
+        def revoke_during_comparison(db, job_id):
+            result = original(db, job_id)
+            with connect(app.state.database_path) as other:
+                other.execute(change)
+            return result
+
+        monkeypatch.setattr(rubric_comparison, 'compare_in_snapshot', revoke_during_comparison)
+        response = client.get('/api/jobs/job-backend-python/rubric/comparison')
+        assert response.status_code == expected
+        assert 'applications' not in response.json()
 
 
 def test_comparison_is_authorized_uncertainty_aware_and_ignores_outdated(tmp_path):

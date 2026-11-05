@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from app.auth import User, require_roles
 from app.db import connect
+from app.recruitment import _require_current_role
 from app.resume_mask import masked_source
 from app.rubric import (
     Assessment,
@@ -32,7 +33,13 @@ def compare_job_rubrics(job_id: str, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         # A read transaction gives criteria and assessment rows one snapshot.
         db.execute('BEGIN')
-        return compare_in_snapshot(db, job_id)
+        _require_current_role(db, request, user, 'hr')
+        result = compare_in_snapshot(db, job_id)
+    # Recheck using a fresh snapshot so revoked sessions or roles cannot reuse
+    # the snapshot that was opened before the comparison completed.
+    with connect(request.app.state.database_path) as db:
+        _require_current_role(db, request, user, 'hr')
+    return result
 
 
 def compare_in_snapshot(db, job_id: str) -> dict:
