@@ -1098,7 +1098,7 @@ function setupGraphReview(target, application, refreshWorkflow) {
     const adaptiveMode = ["adaptive", "adaptive_schedule", "adaptive_advance"].includes(intent.value);
     adaptiveSemanticLabel.hidden = !adaptiveMode; adaptiveSemantic.disabled = !adaptiveMode;
     if (!adaptiveMode) adaptiveSemantic.checked = false;
-    const supportsPolicy = intent.value === "full" || intent.value === "policy";
+    const supportsPolicy = intent.value === "full" || intent.value === "policy" || intent.value === "adaptive";
     questionLabel.hidden = !supportsPolicy; question.disabled = !supportsPolicy;
     question.required = intent.value === "policy";
     questionLabel.firstChild.textContent = question.required ? "سؤال السياسة المطلوب للبحث المحلي" : "سؤال سياسة اختياري للبحث المحلي";
@@ -1395,7 +1395,7 @@ function setupGraphReview(target, application, refreshWorkflow) {
       if (intent.value === "complete_interview") body.interview_id = Number(interviewId.value);
       if (intent.value === "present_offer") body.offer_details = offerDetails.value.trim();
       if (intent.value === "reject_application") body.rejection_reason = rejectReason.value.trim();
-      if (adaptiveMode) { body.adaptive_goal = intent.value === "adaptive" ? "review_application" : intent.value === "adaptive_schedule" ? "schedule_interview" : "advance_and_reserve"; body.allow_semantic = adaptiveSemantic.checked; }
+      if (adaptiveMode) { body.adaptive_goal = intent.value === "adaptive" ? "review_application" : intent.value === "adaptive_schedule" ? "schedule_interview" : "advance_and_reserve"; body.allow_semantic = adaptiveSemantic.checked; if (intent.value === "adaptive" && question.value.trim()) body.policy_question = question.value.trim(); }
       else body.policy_question = question.value.trim();
       if (["create_slot", "create_private_slot", "advance_and_reserve_slot", "semantic_advance_and_reserve_slot", "adaptive_schedule", "adaptive_advance"].includes(intent.value)) {
         const startTime = new Date(slotStart.value), endTime = new Date(slotEnd.value);

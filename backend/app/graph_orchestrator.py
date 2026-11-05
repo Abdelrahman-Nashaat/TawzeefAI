@@ -102,12 +102,14 @@ class ReviewRequest(BaseModel):
     @classmethod
     def restrict_adaptive_input(cls, data):
         if (isinstance(data, dict) and data.get('intent') == 'adaptive' and
-                set(data) - {'application_id', 'intent', 'adaptive_goal', 'slot', 'allow_semantic'}):
+                set(data) - {'application_id', 'intent', 'adaptive_goal', 'slot', 'allow_semantic', 'policy_question'}):
             raise ValueError('Adaptive review accepts no tools, identity overrides, or extra fields')
         return data
 
     @model_validator(mode='after')
     def check_policy_question(self):
+        if self.intent == 'adaptive' and self.policy_question.strip() and self.adaptive_goal != 'review_application':
+            raise ValueError('Policy questions are supported only for read-only adaptive review')
         if (self.intent == 'reject_application') != bool(self.rejection_reason and self.rejection_reason.strip()):
             raise ValueError('Rejection reason is required only for rejection review')
         if (self.intent == 'present_offer') != bool(self.offer_details and self.offer_details.strip()):
@@ -541,6 +543,10 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             steps, source = make_plan(facts, enabled=enable_agent)
             if state.get('adaptive_goal') == 'schedule_interview' and 'scheduler' not in steps:
                 steps = [*steps, 'scheduler']
+            # Policy lookup is explicitly requested by HR, not selected by the
+            # model planner. The question stays outside graph state/checkpoints.
+            if state.get('adaptive_goal') == 'review_application' and policy_question.strip():
+                steps = [*steps, 'policy']
             authorize()
             with connect(path) as db:
                 if context_for(db, state['application_id'])[1] != digest:
@@ -1004,7 +1010,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
         return execute
 
     for name, node in nodes.items():
-        builder.add_node(name, guarded(node) if name in {'parser', 'matching', 'semantic', 'status', 'scheduler', 'prepare_slot'} else node)
+        builder.add_node(name, guarded(node) if name in {'parser', 'matching', 'semantic', 'policy', 'status', 'scheduler', 'prepare_slot'} else node)
     builder.add_edge(START, 'plan')
     def next_after(name):
         def route(state: ReviewState):
@@ -1037,6 +1043,23 @@ def _owner(path: str | Path, thread_id: str, user: User) -> None:
 
 def _config(thread_id: str) -> dict:
     return {"configurable": {"thread_id": thread_id}}
+
+
+def _adaptive_policy_current(db, policy: object) -> bool:
+    """An acknowledgment must still refer to authorized, unchanged sources."""
+    if not isinstance(policy, dict):
+        return False
+    if policy.get('status') == 'abstain':
+        return True
+    if policy.get('status') != 'source_refs_v2':
+        return False
+    refs = policy.get('refs')
+    if not isinstance(refs, list) or not 1 <= len(refs) <= 3:
+        return False
+    available = {source.id: source for source in authorized_policy_sources(db, 'hr')}
+    return all(isinstance(ref, dict) and set(ref) == {'id', 'digest'}
+               and isinstance(ref['id'], str) and ref['id'] in available
+               and ref['digest'] == _digest(available[ref['id']]) for ref in refs)
 
 
 @contextmanager
@@ -1117,7 +1140,7 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
     if selected not in {'full', 'policy', 'scheduling', 'status', 'create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'adaptive', 'screen_application', 'complete_interview', 'present_offer', 'finalize_hire', 'reject_application'}:
         selected = 'invalid'
     for field, scope in scoped_fields.items():
-        adaptive_fields = {'parsed': 'parser', 'matching': 'matching', 'scheduling': 'scheduler', 'status': 'status'}
+        adaptive_fields = {'parsed': 'parser', 'matching': 'matching', 'policy': 'policy', 'scheduling': 'scheduler', 'status': 'status'}
         if selected == 'adaptive' and adaptive_fields.get(field) in state.get('plan', []):
             continue
         if selected in ('advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'screen_application') and field in {'parsed', 'matching', 'status'}:
@@ -1448,6 +1471,9 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             if (snapshot.values.get('intent') == 'adaptive' and
                     context_for(db, snapshot.values['application_id'])[1] != snapshot.values.get('context_digest')):
                 raise HTTPException(status_code=409, detail='Application changed; start a new review')
+            if (snapshot.values.get('intent') == 'adaptive' and 'policy' in snapshot.values.get('plan', [])
+                    and payload.reviewed and not _adaptive_policy_current(db, snapshot.values.get('policy'))):
+                raise HTTPException(status_code=409, detail='Policy sources changed; start a new review')
             if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview', 'present_offer', 'finalize_hire', 'reject_application') or snapshot.values.get('adaptive_goal') in ('schedule_interview', 'advance_and_reserve')) and payload.reviewed:
                 expected = snapshot.values.get('action_proposal', {}).get('approval_fingerprint', '')
                 if (not expected or not payload.approval_fingerprint or
