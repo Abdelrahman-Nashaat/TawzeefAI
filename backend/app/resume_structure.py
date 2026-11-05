@@ -20,6 +20,7 @@ MAX_ITEMS = 100
 MAX_ITEM_CHARS = 1000
 _MARKDOWN_HEADING = re.compile(r'^\s*#{1,6}[ \t]+')
 _LIST_PREFIX = re.compile(r'^\s*(?:[-+*•▪◦‣]|\d+[.)])[ \t]+')
+_INLINE_DASH = re.compile(r'[ \t]+[-–—][ \t]+')
 
 
 def _label(raw: str) -> str:
@@ -65,9 +66,16 @@ def structure_resume(source: str) -> dict:
         body = line.rstrip('\r\n')
         stripped = body.strip()
         heading = _label(stripped.rstrip(':：').strip())
+        dash = _INLINE_DASH.search(body)
+        dash_label = _label(body[:dash.start()]) if dash else ''
         if heading in headings:
             active = headings[heading]
         elif heading in OTHER_HEADINGS:
+            active = None
+        elif dash and dash_label in headings:
+            active = headings[dash_label]
+            add(active, body[dash.end():], position + dash.end())
+        elif dash and dash_label in OTHER_HEADINGS:
             active = None
         elif ':' in body or '：' in body:
             separator = min((body.find(c) for c in ':：' if c in body), default=-1)
@@ -127,7 +135,7 @@ def extract_skill_candidates(source: str, structure: dict) -> dict:
             continue
         prefix = _LIST_PREFIX.match(line)
         start_index = prefix.end() if prefix else 0
-        for match in re.finditer(r'[^,،;؛]+', line[start_index:]):
+        for match in re.finditer(r'[^,،;؛|]+', line[start_index:]):
             raw = match.group()
             text = raw.strip()
             if not text:

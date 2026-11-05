@@ -13,6 +13,29 @@ def candidates(source):
     return extract_skill_candidates(source, structure_resume(source))
 
 
+def test_inline_bilingual_headings_and_pipe_lists_preserve_exact_source():
+    source = ('Skills - Python | SQL | C++\r\n'
+              'الخبرة – Built services\r\n'
+              'المهارات — تحليل البيانات | Pandas\r\n'
+              'Contact - private@example.test\r\n')
+    result = candidates(source)
+    assert [item['text'] for item in result['items']] == [
+        'Python', 'SQL', 'C++', 'تحليل البيانات', 'Pandas']
+    assert all(source[item['start']:item['end']] == item['text'] for item in result['items'])
+    assert 'private@example.test' not in str(result)
+    assert not candidates('I have Skills - Python | SQL')['items']
+    assert not candidates('A skillset - Python | SQL')['items']
+
+
+def test_pipe_list_respects_existing_fragment_and_count_limits():
+    source = 'Skills - ' + '|'.join('Skill' + str(i) for i in range(101))
+    result = candidates(source)
+    assert len(result['items']) == 100
+    assert result['truncated']
+    assert all(source[item['start']:item['end']] == item['text'] for item in result['items'])
+    assert candidates('Skills - Python | ' + 'x' * 81)['skipped_lines_or_fragments'] == 1
+
+
 def test_unverified_skills_have_exact_unicode_offsets_and_bullet_removal():
     source = 'Skills: Python, C++, SQL؛ تحليل البيانات\r\n- JavaScript؛ React\r\nEducation: Degree\r\n'
     result = candidates(source)
@@ -40,7 +63,7 @@ def test_endpoint_requires_current_hr_and_protects_changed_mask_and_source(tmp_p
     with TestClient(app) as client:
         assert client.post('/api/auth/login', json={'username':'candidate','password':'candidate-demo-only'}).status_code == 200
         document = Document()
-        for line in ('Name: Synthetic Person', 'Skills: Python, SQL'):
+        for line in ('Name: Synthetic Person', 'Skills - Python | SQL'):
             document.add_paragraph(line)
         buf = BytesIO()
         document.save(buf)
