@@ -44,13 +44,10 @@ def test_adaptive_review_includes_authorized_policy_without_checkpointing_text(s
     assert client.post(f"/api/graph-reviews/{review['id']}/resume", json={'reviewed': False}).status_code == 200
 
 
-def test_adaptive_policy_is_read_only_and_hr_scoped(setup):  # noqa: F811
+def test_adaptive_policy_is_hr_scoped(setup):  # noqa: F811
     _, client, application, _ = setup
     base = {'application_id': application, 'intent': 'adaptive',
             'adaptive_goal': 'review_application', 'policy_question': 'What is quasar leave?'}
-    for goal in ('schedule_interview', 'advance_and_reserve'):
-        slot = {'start_at': '2099-01-01T10:00:00Z', 'end_at': '2099-01-01T11:00:00Z', 'interviewer': 'Interviewer'}
-        assert client.post('/api/graph-reviews', json={**base, 'adaptive_goal': goal, 'slot': slot}).status_code == 422
     assert client.post('/api/auth/login', json={'username': 'candidate', 'password': 'candidate-demo-only'}).status_code == 200
     assert client.post('/api/graph-reviews', json=base).status_code == 403
 

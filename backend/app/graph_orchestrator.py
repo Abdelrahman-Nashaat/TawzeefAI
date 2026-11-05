@@ -108,8 +108,6 @@ class ReviewRequest(BaseModel):
 
     @model_validator(mode='after')
     def check_policy_question(self):
-        if self.intent == 'adaptive' and self.policy_question.strip() and self.adaptive_goal != 'review_application':
-            raise ValueError('Policy questions are supported only for read-only adaptive review')
         if (self.intent == 'reject_application') != bool(self.rejection_reason and self.rejection_reason.strip()):
             raise ValueError('Rejection reason is required only for rejection review')
         if (self.intent == 'present_offer') != bool(self.offer_details and self.offer_details.strip()):
@@ -545,7 +543,7 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
                 steps = [*steps, 'scheduler']
             # Policy lookup is explicitly requested by HR, not selected by the
             # model planner. The question stays outside graph state/checkpoints.
-            if state.get('adaptive_goal') == 'review_application' and policy_question.strip():
+            if policy_question.strip():
                 steps = [*steps, 'policy']
             authorize()
             with connect(path) as db:
