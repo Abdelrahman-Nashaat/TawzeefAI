@@ -124,11 +124,26 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 authorize_locked(db, request, user, 'candidate')
                 return []
             rows = db.execute('''SELECT s.id,s.start_at,s.end_at,s.interviewer FROM interview_slots s
-                WHERE s.start_at > now() AND NOT EXISTS (SELECT 1 FROM interviews i WHERE i.status='scheduled'
+                WHERE s.start_at > clock_timestamp() AND NOT EXISTS (SELECT 1 FROM interviews i WHERE i.status='scheduled'
                   AND i.start_at < s.end_at AND i.end_at > s.start_at
                   AND (i.slot_id=s.id OR i.candidate_id=%s OR i.interviewer_key=s.interviewer_key))
                 ORDER BY s.start_at,s.id LIMIT 100''', (application['candidate_id'],)).fetchall()
             authorize_locked(db, request, user, 'candidate')
+            return [dict(row) for row in rows]
+
+    @app.get('/api/interviews')
+    def list_interviews(request: Request, user: Annotated[User, Depends(authenticate)]):
+        with connect() as db:
+            authorize_locked(db, request, user)
+            fields = 'id,application_id,candidate_id,start_at,end_at,interviewer,status'
+            if user.role == 'candidate':
+                rows = db.execute(f'SELECT {fields} FROM interviews WHERE candidate_id=%s ORDER BY start_at,id',
+                                  (user.id,)).fetchall()
+            elif user.role == 'hr':
+                rows = db.execute(f'SELECT {fields} FROM interviews ORDER BY start_at,id').fetchall()
+            else:
+                raise HTTPException(status_code=403, detail='Access denied')
+            authorize_locked(db, request, user)
             return [dict(row) for row in rows]
 
     @app.post('/api/slots/{slot_id}/book', status_code=201)

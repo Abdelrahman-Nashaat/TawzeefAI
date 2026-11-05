@@ -20,8 +20,12 @@ using `POST /api/applications/{id}/decision` and `{"decision":"advance"}`; the
 score does not itself decide advancement. HR can create future slots with
 `POST /api/slots`. An advanced candidate can list available slots with
 `GET /api/slots?application_id=...` and book one with
-`POST /api/slots/{id}/book`. Booking is recorded locally; no invitation or
-notification is delivered. This mode exposes no job or resume editing, and does
+`POST /api/slots/{id}/book`. `GET /api/interviews` lets a candidate retrieve
+their own bookings and HR retrieve all bookings, including after restart.
+Booking is recorded locally; no invitation or notification is delivered.
+Cancellation and interview completion are not implemented in this mode, so a
+scheduled interview continues to block another booking for that application.
+This mode exposes no job or resume editing, and does
 not detect direct database changes to previously screened inputs.
 
 Use a disposable database and a PostgreSQL user allowed to create schemas.
