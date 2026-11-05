@@ -5,7 +5,7 @@ application or a migration. It stores demo users, jobs, sessions, applications,
 notices, audit events, screening records, slots, and interviews in one PostgreSQL schema.
 SQLite data is not read or migrated. Only health, login, logout, session identity,
 jobs, application submission and listing, HR keyword screening and advancement,
-and local candidate interview booking are implemented. Graph
+local candidate interview booking, cancellation, and local cancellation notices are implemented. Graph
 workflows, calendar and email delivery, policy chat, the dashboard, and browser
 interface remain unavailable in this mode.
 
@@ -22,9 +22,16 @@ score does not itself decide advancement. HR can create future slots with
 `GET /api/slots?application_id=...` and book one with
 `POST /api/slots/{id}/book`. `GET /api/interviews` lets a candidate retrieve
 their own bookings and HR retrieve all bookings, including after restart.
-Booking is recorded locally; no invitation or notification is delivered.
-Cancellation and interview completion are not implemented in this mode, so a
-scheduled interview continues to block another booking for that application.
+Booking is recorded locally; no email or calendar invitation is delivered.
+For future interviews, HR may call `POST /api/interviews/{id}/cancel`, or the
+owning candidate may call `POST /api/interviews/{id}/candidate-cancel`. The
+cancellation, audit event, and local notice to the other role are committed in
+one transaction. Candidates may then choose another available slot. The local
+inboxes are `GET /api/candidate/interview-cancellations` and
+`GET /api/hr/interview-cancellations`; each notice can be marked read through
+its corresponding `POST .../{id}/read` endpoint. HR read state is per account.
+No message or external calendar action is sent. Interview completion remains
+unavailable, so an elapsed scheduled interview still blocks further booking.
 This mode exposes no job or resume editing, and does
 not detect direct database changes to previously screened inputs.
 
@@ -50,6 +57,6 @@ it behind a proxy or use real candidate data. The application rejects remote
 peers and untrusted Host headers, but network and proxy configuration still
 matter. Unsupported endpoints return 404. Run the real PostgreSQL tests with
 `TAWZEEF_TEST_POSTGRES_DSN` set privately to a disposable test database and
-`pytest -q tests/test_postgres_experimental_api.py tests/test_postgres_scheduling.py`. The tests create and remove
+`pytest -q tests/test_postgres_experimental_api.py tests/test_postgres_scheduling.py tests/test_postgres_cancellation_lifecycle.py`. The tests create and remove
 randomly named test schemas. No success claim extends beyond the implemented
 routes and tested scenarios.
