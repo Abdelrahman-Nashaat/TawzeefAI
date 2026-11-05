@@ -79,11 +79,19 @@ def normalize(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
-def contains(text: str, phrase: str) -> bool:
+def _mention_pattern(phrase: str) -> str:
     # Latin token boundaries allow an Arabic conjunction attached to HTML while
     # still preventing SQL matching the separate word NoSQL.
     boundary = r"[a-z0-9_]" if phrase.isascii() else r"\w"
-    return re.search(rf"(?<!{boundary})" + re.escape(phrase) + rf"(?!{boundary})", text) is not None
+    # C, C++ and C# are distinct languages. Do not treat the C prefix of
+    # either longer name as independent evidence for C. Restrict whitespace
+    # to horizontal characters so a following sentence remains independent.
+    extension = r"(?![ \t]*(?:\+\+|#))" if phrase == 'c' else ''
+    return rf"(?<!{boundary})" + re.escape(phrase) + rf"(?!{boundary})" + extension
+
+
+def contains(text: str, phrase: str) -> bool:
+    return re.search(_mention_pattern(phrase), text) is not None
 
 
 ALIASES = {
@@ -186,8 +194,7 @@ def _score_blind(job: dict, blind: BlindText) -> dict:
             # separators must not create additional matches for an empty term.
             result = tuple(islice((index for index, segment in enumerate(usable) if contains(segment, term)), 2))
         else:
-            boundary = r"[a-z0-9_]" if term.isascii() else r"\w"
-            pattern = re.compile(rf"(?<!{boundary})" + re.escape(term) + rf"(?!{boundary})")
+            pattern = re.compile(_mention_pattern(term))
             found_indices = []
             offset = 0
             while len(found_indices) < 2:
@@ -213,8 +220,7 @@ def _score_blind(job: dict, blind: BlindText) -> dict:
             return {"skill": skill, "mentioned": False, "evidence": []}
 
         def occurrence(index: int, term: str):
-            boundary = r"[a-z0-9_]" if term.isascii() else r"\w"
-            return re.search(rf"(?<!{boundary})" + re.escape(term) + rf"(?!{boundary})", usable[index])
+            return re.search(_mention_pattern(term), usable[index])
 
         def excerpt(index: int, start: int, end: int):
             segment = safe[index][0]
