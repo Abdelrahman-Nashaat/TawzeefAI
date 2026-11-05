@@ -49,7 +49,7 @@ The [policy-answer review procedure](docs/policy-human-review.md) prepares the r
 2. Sign in as HR, review the application, and choose **Advance to the next stage**. In Interviews, add an available time and interviewer; entered times use the device's time zone.
 3. Return to the candidate account, open the advanced application, and choose an available slot. A successful booking appears under **My interviews**.
 
-The application stores appointments locally and checks conflicts when booking. HR can cancel a future interview. Booking itself does not create an external event or send email; optional Google actions are separate and reviewed manually when the Windows integration is enabled.
+The application stores appointments locally and checks conflicts when booking. Each new candidate booking creates a local HR notice in the same transaction; HR can read and acknowledge notices independently, and the inbox shows the interview's current status. Earlier bookings are not retroactively notified. HR can cancel a future interview. Booking itself does not create an external event or send email; optional Google actions are separate and reviewed manually when the Windows integration is enabled.
 
 Candidates can cancel their own future interview while their application is advanced and then choose another available slot. The cancellation creates an in-app HR notice and audit event in the same transaction. Interviews with a confirmed email or unresolved external delivery require HR assistance; cancellation does not send email or alter Google Calendar.
 

@@ -27,6 +27,31 @@ def render_hr_notifications(call):
         st.rerun()
 
 
+def render_hr_bookings(call):
+    """Show per-HR local interview booking notices."""
+    st.subheader("Interview booking notices")
+    before = st.session_state.get("hr_bookings_before")
+    params = {"before": before} if before is not None else {}
+    data = call("GET", "/api/hr/interview-bookings", optional=True, params=params)
+    if data is None:
+        return
+    st.caption(data['notice'])
+    if not data['items']:
+        st.info("No interview bookings on this page.")
+    for item in data['items']:
+        st.text(f"Application #{item['application_id']} | Interview #{item['interview_id']} | {item['start_at']} – {item['end_at']} | Current status: {item['interview_status']} | {'read' if item['is_read'] else 'unread'}")
+        if not item['is_read'] and st.button("Mark booking read", key=f"booking_{item['id']}"):
+            result = call("POST", f"/api/hr/interview-bookings/{item['id']}/read", optional=True)
+            if result is not None:
+                st.rerun()
+    if data['next_before'] is not None and st.button("Older bookings"):
+        st.session_state['hr_bookings_before'] = data['next_before']
+        st.rerun()
+    if before is not None and st.button("Newest bookings"):
+        st.session_state.pop('hr_bookings_before', None)
+        st.rerun()
+
+
 def render_hr_cancellations(call):
     """Show per-HR local interview cancellation notices."""
     st.subheader("Interview cancellation notices")

@@ -9,7 +9,11 @@ import streamlit as st
 from streamlit_candidate import render_candidate
 from streamlit_client import ApiError, ApiUnavailable, LocalApi
 from streamlit_hr import render_hr_review
-from streamlit_hr_notifications import render_hr_cancellations, render_hr_notifications
+from streamlit_hr_notifications import (
+    render_hr_bookings,
+    render_hr_cancellations,
+    render_hr_notifications,
+)
 
 st.set_page_config(page_title="TawzeefAI local demo", layout="wide")
 st.title("TawzeefAI")
@@ -20,7 +24,7 @@ def clear_session():
     client = st.session_state.pop("local_api", None)
     if client:
         client.close()
-    for key in ("conversation_id", "question", "current_user", "candidate_message", "hr_review_preview", "hr_review_message", "hr_notifications_before", "hr_cancellations_before", "hr_slot_proposal", "hr_lifecycle_message", "graph_screen_review", "graph_screen_notice", "graph_reject_review", "graph_reject_notice", "graph_reject_clear_reason", "graph_offer_review", "graph_offer_notice", "graph_offer_clear_details"):
+    for key in ("conversation_id", "question", "current_user", "candidate_message", "hr_review_preview", "hr_review_message", "hr_notifications_before", "hr_cancellations_before", "hr_bookings_before", "hr_slot_proposal", "hr_lifecycle_message", "graph_screen_review", "graph_screen_notice", "graph_reject_review", "graph_reject_notice", "graph_reject_clear_reason", "graph_offer_review", "graph_offer_notice", "graph_offer_clear_details"):
         st.session_state.pop(key, None)
     for key in list(st.session_state):
         if key.startswith(('graph_reject_reason_', 'graph_reject_confirm_', 'graph_offer_details_', 'graph_offer_confirm_')):
@@ -114,6 +118,7 @@ if user["role"] == "hr":
         st.table(chart_data)
     st.caption("Distinct retained applications with recorded events; later reversals do not erase history. These are not conversion rates.")
     render_hr_notifications(call)
+    render_hr_bookings(call)
     render_hr_cancellations(call)
     render_hr_review(call, local_api, clear_session)
 

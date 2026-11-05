@@ -45,6 +45,18 @@ def initialize_slots(path: str | Path) -> None:
                 action TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
+            CREATE TABLE IF NOT EXISTS candidate_interview_bookings (
+                id INTEGER PRIMARY KEY,
+                interview_id INTEGER NOT NULL UNIQUE REFERENCES interviews(id),
+                candidate_id INTEGER NOT NULL REFERENCES users(id),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            );
+            CREATE TABLE IF NOT EXISTS candidate_interview_booking_reads (
+                booking_id INTEGER NOT NULL REFERENCES candidate_interview_bookings(id),
+                actor_id INTEGER NOT NULL REFERENCES users(id),
+                read_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                PRIMARY KEY(booking_id, actor_id)
+            );
         ''')
         db.execute('BEGIN IMMEDIATE')
         columns = {row['name'] for row in db.execute('PRAGMA table_info(interview_slots)')}
@@ -323,6 +335,8 @@ def book_slot(slot_id: int, payload: BookSlot, request: Request, user: Candidate
             VALUES (?,?,?,?,?,?,?)''', (application['id'], application['candidate_id'], slot['start_at'],
             slot['end_at'], slot['interviewer'], slot['interviewer_key'], user.id))
         db.execute('UPDATE interview_slots SET interview_id = ? WHERE id = ?', (cursor.lastrowid, slot_id))
+        db.execute('INSERT INTO candidate_interview_bookings(interview_id,candidate_id) VALUES (?,?)',
+                   (cursor.lastrowid, user.id))
         db.execute('INSERT INTO audit_events (application_id,actor_id,action,details) VALUES (?, ?, ?, ?)',
                    (application['id'], user.id, 'interview_scheduled', json.dumps({
                        'interview_id': cursor.lastrowid, 'slot_id': slot_id, 'source': 'candidate_selection',
@@ -330,6 +344,41 @@ def book_slot(slot_id: int, payload: BookSlot, request: Request, user: Candidate
         result = interview_view(db.execute('SELECT * FROM interviews WHERE id = ?', (cursor.lastrowid,)).fetchone())
         _require_current_role(db, request, user, 'candidate')
         return result
+
+
+@router.get('/hr/interview-bookings')
+def list_candidate_bookings(request: Request, user: HR, before: int | None = Query(default=None, gt=0),
+                            limit: int = Query(default=20, ge=1, le=50)):
+    """Show bounded booking notices and the current interview status to HR."""
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_role(db, request, user, 'hr')
+        rows = db.execute('''SELECT b.id,b.interview_id,b.created_at,i.application_id,i.start_at,i.end_at,
+            i.status AS interview_status, CASE WHEN r.booking_id IS NULL THEN 0 ELSE 1 END AS is_read
+            FROM candidate_interview_bookings b JOIN interviews i ON i.id=b.interview_id
+            LEFT JOIN candidate_interview_booking_reads r ON r.booking_id=b.id AND r.actor_id=?
+            WHERE (? IS NULL OR b.id<?) ORDER BY b.id DESC LIMIT ?''',
+            (user.id, before, before, limit + 1)).fetchall()
+        more = len(rows) > limit
+        rows = rows[:limit]
+    with connect(request.app.state.database_path) as db:
+        _require_current_role(db, request, user, 'hr')
+    return {'items': [dict(row) | {'is_read': bool(row['is_read'])} for row in rows],
+            'next_before': rows[-1]['id'] if more else None,
+            'notice': 'Local notices only. Interview status can change; no email or calendar action was sent.'}
+
+
+@router.post('/hr/interview-bookings/{booking_id}/read')
+def acknowledge_candidate_booking(booking_id: int, request: Request, user: HR):
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _require_current_role(db, request, user, 'hr')
+        if not db.execute('SELECT 1 FROM candidate_interview_bookings WHERE id=?', (booking_id,)).fetchone():
+            raise HTTPException(status_code=404, detail='Notice not found')
+        db.execute('INSERT OR IGNORE INTO candidate_interview_booking_reads(booking_id,actor_id) VALUES (?,?)',
+                   (booking_id, user.id))
+        _require_current_role(db, request, user, 'hr')
+        return {'id': booking_id, 'is_read': True}
 
 
 @router.post('/slots/{slot_id}/withdraw')

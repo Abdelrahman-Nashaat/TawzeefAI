@@ -30,6 +30,10 @@ active; the API rechecks eligibility. After the candidate accepts, HR can
 explicitly record a reviewed hiring decision. If a write's result is uncertain, inspect
 the current application or interview before attempting another action.
 
+HR can view and acknowledge local candidate-booking notices; each HR account
+has its own read status. Notices show the interview's current status and are
+created for new bookings only. No booking email or calendar event is sent.
+
 Candidates can request cancellation of an eligible locally booked future
 interview after confirming the action. The server refuses cancellations that
 need external coordination and directs candidates to contact HR. A successful

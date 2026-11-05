@@ -65,6 +65,50 @@ def test_authorization_and_candidate_booking_are_audited(state):
     assert client.get('/api/slots', params={'application_id': first}).status_code == 403
 
 
+def test_booking_notices_follow_booking_and_are_private_per_hr(state):
+    app, client, first, _ = state
+    assert client.get('/api/hr/interview-bookings').status_code == 401
+    login(client, 'hr')
+    slot_id = slot(client)
+    with connect(app.state.database_path) as db:
+        db.execute("INSERT INTO users(username,display_name,role,password_hash) VALUES ('hr2','HR 2','hr',?)",
+                   (hash_password('hr2-password'),))
+    login(client, 'candidate')
+    assert client.get('/api/hr/interview-bookings').status_code == 403
+    first_interview = client.post(f'/api/slots/{slot_id}/book', json={'application_id': first}).json()['id']
+    assert client.post(f'/api/interviews/{first_interview}/candidate-cancel').status_code == 200
+    second_interview = client.post(f'/api/slots/{slot_id}/book', json={'application_id': first}).json()['id']
+    login(client, 'hr')
+    page = client.get('/api/hr/interview-bookings', params={'limit': 1}).json()
+    assert page['items'][0]['interview_id'] == second_interview
+    assert page['items'][0]['interview_status'] == 'scheduled' and not page['items'][0]['is_read']
+    old = client.get('/api/hr/interview-bookings', params={'limit': 1, 'before': page['next_before']}).json()
+    assert old['items'][0]['interview_id'] == first_interview and old['items'][0]['interview_status'] == 'cancelled'
+    notice_id = page['items'][0]['id']
+    assert client.post(f'/api/hr/interview-bookings/{notice_id}/read').status_code == 200
+    assert client.post(f'/api/hr/interview-bookings/{notice_id}/read').status_code == 200
+    assert client.get('/api/hr/interview-bookings').json()['items'][0]['is_read']
+    login(client, 'hr2', 'hr2-password')
+    assert not client.get('/api/hr/interview-bookings').json()['items'][0]['is_read']
+    assert client.post('/api/hr/interview-bookings/999999/read').status_code == 404
+
+
+def test_booking_rolls_back_if_hr_notice_insert_fails(state):
+    app, client, first, _ = state
+    login(client, 'hr')
+    slot_id = slot(client)
+    with connect(app.state.database_path) as db:
+        db.execute("CREATE TRIGGER fail_booking_notice BEFORE INSERT ON candidate_interview_bookings BEGIN SELECT RAISE(ABORT,'failure'); END")
+    login(client, 'candidate')
+    with pytest.raises(sqlite3.IntegrityError):
+        client.post(f'/api/slots/{slot_id}/book', json={'application_id': first})
+    with connect(app.state.database_path) as db:
+        assert db.execute('SELECT count(*) FROM interviews').fetchone()[0] == 0
+        assert db.execute('SELECT interview_id FROM interview_slots WHERE id=?', (slot_id,)).fetchone()[0] is None
+        assert db.execute("SELECT count(*) FROM audit_events WHERE action='interview_scheduled'").fetchone()[0] == 0
+        assert db.execute('SELECT count(*) FROM candidate_interview_bookings').fetchone()[0] == 0
+
+
 def test_candidate_can_cancel_rebook_and_hr_gets_local_notice(state):
     app, client, first, _ = state
     login(client, 'hr')
@@ -224,6 +268,7 @@ def test_same_slot_race_only_books_once(state):
             assert sorted([first_request.result().status_code, second_request.result().status_code]) == [201, 409]
     with connect(app.state.database_path) as db:
         assert db.execute("SELECT count(*) FROM interviews WHERE status='scheduled'").fetchone()[0] == 1
+        assert db.execute('SELECT count(*) FROM candidate_interview_bookings').fetchone()[0] == 1
 
 
 def test_interview_cancel_releases_slot_and_failed_audit_rolls_back(state):

@@ -638,9 +638,39 @@ function renderApplications(applications, jobs, role) {
     const cancellations = element("div", "application-detail");
     const openCancellations = element("button", "outline-button", "Open candidate cancellations"); openCancellations.type = "button";
     openCancellations.addEventListener("click", () => loadCandidateCancellations(cancellations));
-    box.append(open, inbox, openCancellations, cancellations);
+    const bookings = element("div", "application-detail");
+    const openBookings = element("button", "outline-button", "Open candidate bookings"); openBookings.type = "button";
+    openBookings.addEventListener("click", () => loadCandidateBookings(bookings));
+    box.append(open, inbox, openBookings, bookings, openCancellations, cancellations);
   }
   box.append(list); target.replaceChildren(box);
+}
+
+async function loadCandidateBookings(target, before = null) {
+  target.replaceChildren(element("p", "subtle-note", "Loading local notices..."));
+  try {
+    const data = await api(`/api/hr/interview-bookings${before === null ? "" : `?before=${encodeURIComponent(before)}`}`);
+    if (!target.isConnected) return;
+    target.replaceChildren(element("h4", "", "Candidate interview bookings"), element("p", "subtle-note", data.notice));
+    if (!data.items.length) target.append(element("p", "subtle-note", "No booking notices."));
+    for (const item of data.items) {
+      const line = element("div", "application-detail");
+      line.append(element("p", "", `Application #${item.application_id}, interview #${item.interview_id}: ${displayDate(item.start_at)} to ${displayDate(item.end_at)}. Current interview status: ${item.interview_status}. ${item.is_read ? "Read" : "Unread"}`));
+      if (!item.is_read) {
+        const read = element("button", "outline-button", "Mark read"); read.type = "button";
+        read.addEventListener("click", async () => {
+          read.disabled = true;
+          try { await api(`/api/hr/interview-bookings/${encodeURIComponent(item.id)}/read`, {method: "POST"}); if (target.isConnected) await loadCandidateBookings(target, before); }
+          catch (error) { if (!isStale(error) && target.isConnected) target.append(element("p", "form-error", "Could not acknowledge notice.")); }
+          finally { read.disabled = false; }
+        });
+        line.append(read);
+      }
+      target.append(line);
+    }
+    if (data.next_before !== null) { const next = element("button", "outline-button", "Older notices"); next.type = "button"; next.addEventListener("click", () => loadCandidateBookings(target, data.next_before)); target.append(next); }
+    if (before !== null) { const first = element("button", "outline-button", "Newest notices"); first.type = "button"; first.addEventListener("click", () => loadCandidateBookings(target)); target.append(first); }
+  } catch (error) { if (!isStale(error) && target.isConnected) target.replaceChildren(element("p", "form-error", "Could not load booking notices.")); }
 }
 
 async function loadCandidateCancellations(target, before = null) {

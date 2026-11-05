@@ -86,3 +86,17 @@ def test_candidate_cancellation_refuses_confirmed_external_delivery(cancellation
     assert candidate.request('GET', '/api/interviews')[0]['status'] == 'scheduled'
     with connect(path) as db:
         assert db.execute('SELECT count(*) FROM candidate_interview_cancellations').fetchone()[0] == 0
+
+
+def test_booking_notice_is_visible_only_to_hr_and_can_be_acknowledged(cancellation_case):
+    _, hr, hr_user, candidate, user, _, interview = cancellation_case
+    candidate_ui = ui_for(candidate, user)
+    assert not candidate_ui.exception
+    assert not any('Interview booking notices' in item.value for item in candidate_ui.subheader)
+    hr_ui = ui_for(hr, hr_user)
+    assert not hr_ui.exception
+    assert any(f"Interview #{interview['id']}" in item.value and 'Current status: scheduled' in item.value
+               and 'unread' in item.value for item in hr_ui.text)
+    next(item for item in hr_ui.button if item.label == 'Mark booking read').click().run()
+    assert not hr_ui.exception
+    assert hr.request('GET', '/api/hr/interview-bookings')['items'][0]['is_read']
