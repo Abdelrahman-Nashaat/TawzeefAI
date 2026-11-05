@@ -42,7 +42,9 @@ DDL = (
         candidate_id bigint NOT NULL REFERENCES users(id),
         created_at timestamptz NOT NULL DEFAULT now())''',
     "CREATE UNIQUE INDEX IF NOT EXISTS active_interview_slot ON interviews(slot_id) WHERE status='scheduled'",
-    "CREATE UNIQUE INDEX IF NOT EXISTS active_interview_application ON interviews(application_id) WHERE status='scheduled'",
+    'ALTER TABLE interviews ADD COLUMN IF NOT EXISTS completed boolean NOT NULL DEFAULT false',
+    'DROP INDEX IF EXISTS active_interview_application',
+    "CREATE UNIQUE INDEX IF NOT EXISTS active_incomplete_interview_application ON interviews(application_id) WHERE status='scheduled' AND NOT completed",
     "CREATE INDEX IF NOT EXISTS active_interview_candidate ON interviews(candidate_id,start_at,end_at) WHERE status='scheduled'",
     "CREATE INDEX IF NOT EXISTS active_interview_interviewer ON interviews(interviewer_key,start_at,end_at) WHERE status='scheduled'",
     'CREATE INDEX IF NOT EXISTS available_slot_time ON interview_slots(start_at,id)',
@@ -136,7 +138,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
         with connect() as db:
             authorize_locked(db, request, user, 'candidate')
             application = owner(db, application_id, user)
-            if db.execute("SELECT 1 FROM interviews WHERE application_id=%s AND status='scheduled'", (application_id,)).fetchone():
+            if db.execute("SELECT 1 FROM interviews WHERE application_id=%s AND status='scheduled' AND NOT completed", (application_id,)).fetchone():
                 authorize_locked(db, request, user, 'candidate')
                 return []
             rows = db.execute('''SELECT s.id,s.start_at,s.end_at,s.interviewer FROM interview_slots s
@@ -151,7 +153,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
     def list_interviews(request: Request, user: Annotated[User, Depends(authenticate)]):
         with connect() as db:
             authorize_locked(db, request, user)
-            fields = 'id,application_id,candidate_id,start_at,end_at,interviewer,status'
+            fields = 'id,application_id,candidate_id,start_at,end_at,interviewer,status,completed'
             if user.role == 'candidate':
                 rows = db.execute(f'SELECT {fields} FROM interviews WHERE candidate_id=%s ORDER BY start_at,id',
                                   (user.id,)).fetchall()
@@ -162,9 +164,33 @@ def install_routes(app, connect, authenticate, authorize_locked):
             authorize_locked(db, request, user)
             return [dict(row) for row in rows]
 
+    @app.post('/api/interviews/{interview_id}/complete')
+    def complete_interview(interview_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
+        """Record HR's confirmation that an ended interview took place."""
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+            guard(db)
+            row = db.execute('''SELECT i.*, a.candidate_id AS application_candidate_id,
+                a.status AS application_status FROM interviews i
+                JOIN applications a ON a.id=i.application_id WHERE i.id=%s FOR UPDATE OF i,a''',
+                (interview_id,)).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail='Interview not found')
+            if (row['status'] != 'scheduled' or row['completed'] or row['end_at'] > datetime.now(UTC)
+                    or row['application_status'] != 'advanced'
+                    or row['candidate_id'] != row['application_candidate_id']):
+                raise HTTPException(status_code=409, detail='Interview cannot be marked completed')
+            updated = db.execute('''UPDATE interviews SET completed=true WHERE id=%s
+                RETURNING id,application_id,candidate_id,start_at,end_at,interviewer,status,completed''',
+                (interview_id,)).fetchone()
+            db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'interview_completed',%s)",
+                       (row['application_id'], user.id, json.dumps({'interview_id': interview_id})))
+            authorize_locked(db, request, user, 'hr')
+            return dict(updated)
+
     def cancel(db, interview_id, user, by_candidate):
         guard(db)
-        row = db.execute('''SELECT i.id,i.application_id,i.candidate_id,i.start_at,i.status,
+        row = db.execute('''SELECT i.id,i.application_id,i.candidate_id,i.start_at,i.status,i.completed,
             a.candidate_id AS application_candidate_id,a.status AS application_status
             FROM interviews i JOIN applications a ON a.id=i.application_id
             WHERE i.id=%s FOR UPDATE OF i,a''', (interview_id,)).fetchone()
@@ -173,11 +199,11 @@ def install_routes(app, connect, authenticate, authorize_locked):
             raise HTTPException(status_code=404, detail='Interview not found')
         if row['candidate_id'] != row['application_candidate_id']:
             raise HTTPException(status_code=409, detail='Interview ownership changed')
-        if (row['status'] != 'scheduled' or row['start_at'] <= datetime.now(UTC)
+        if (row['status'] != 'scheduled' or row['completed'] or row['start_at'] <= datetime.now(UTC)
                 or (by_candidate and row['application_status'] != 'advanced')):
             raise HTTPException(status_code=409, detail='Interview cannot be cancelled')
         updated = db.execute('''UPDATE interviews SET status='cancelled' WHERE id=%s
-            RETURNING id,application_id,candidate_id,start_at,end_at,interviewer,status''', (interview_id,)).fetchone()
+            RETURNING id,application_id,candidate_id,start_at,end_at,interviewer,status,completed''', (interview_id,)).fetchone()
         table = 'candidate_interview_cancellations' if by_candidate else 'hr_interview_cancellations'
         # table is a constant selected internally, never user input.
         db.execute(f'INSERT INTO {table}(interview_id,candidate_id) VALUES (%s,%s)',
@@ -275,12 +301,12 @@ def install_routes(app, connect, authenticate, authorize_locked):
             if slot['start_at'] <= datetime.now(UTC):
                 raise HTTPException(status_code=409, detail='Slot is not available')
             if db.execute('''SELECT 1 FROM interviews WHERE status='scheduled' AND
-                (application_id=%s OR slot_id=%s OR
+                ((application_id=%s AND NOT completed) OR slot_id=%s OR
                  (start_at < %s AND end_at > %s AND (candidate_id=%s OR interviewer_key=%s))) LIMIT 1''',
                 (application['id'], slot_id, slot['end_at'], slot['start_at'], user.id, slot['interviewer_key'])).fetchone():
                 raise HTTPException(status_code=409, detail='Interview or slot conflict')
             row = db.execute('''INSERT INTO interviews(slot_id,application_id,candidate_id,start_at,end_at,interviewer,interviewer_key,status,created_by)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,'scheduled',%s) RETURNING id,application_id,candidate_id,start_at,end_at,interviewer,status''',
+                VALUES (%s,%s,%s,%s,%s,%s,%s,'scheduled',%s) RETURNING id,application_id,candidate_id,start_at,end_at,interviewer,status,completed''',
                 (slot_id,application['id'],user.id,slot['start_at'],slot['end_at'],slot['interviewer'],slot['interviewer_key'],user.id)).fetchone()
             db.execute('INSERT INTO candidate_interview_bookings(interview_id,candidate_id) VALUES (%s,%s)', (row['id'], user.id))
             db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'interview_scheduled',%s)",

@@ -5,7 +5,7 @@ application or a migration. It stores demo users, jobs, sessions, applications,
 notices, audit events, screening records, slots, and interviews in one PostgreSQL schema.
 SQLite data is not read or migrated. Only health, login, logout, session identity,
 jobs, application submission and listing, HR keyword screening and advancement,
-local candidate interview booking, cancellation, and local cancellation notices are implemented. Graph
+local candidate interview booking, cancellation, explicit HR completion, and local cancellation notices are implemented. Graph
 workflows, calendar and email delivery, policy chat, the dashboard, and browser
 interface remain unavailable in this mode.
 
@@ -30,8 +30,13 @@ one transaction. Candidates may then choose another available slot. The local
 inboxes are `GET /api/candidate/interview-cancellations` and
 `GET /api/hr/interview-cancellations`; each notice can be marked read through
 its corresponding `POST .../{id}/read` endpoint. HR read state is per account.
-No message or external calendar action is sent. Interview completion remains
-unavailable, so an elapsed scheduled interview still blocks further booking.
+No message or external calendar action is sent. Once an interview's end time has
+passed, HR can explicitly confirm it took place with
+`POST /api/interviews/{id}/complete`. The confirmation and audit record are
+atomic; the candidate sees `completed` in interview listings and can book a
+later slot. Time passing alone does not record attendance. On startup this mode
+adds a completion flag and replaces the application booking index in its own
+experimental schema; stop all older server versions before upgrading.
 This mode exposes no job or resume editing, and does
 not detect direct database changes to previously screened inputs.
 
@@ -57,6 +62,6 @@ it behind a proxy or use real candidate data. The application rejects remote
 peers and untrusted Host headers, but network and proxy configuration still
 matter. Unsupported endpoints return 404. Run the real PostgreSQL tests with
 `TAWZEEF_TEST_POSTGRES_DSN` set privately to a disposable test database and
-`pytest -q tests/test_postgres_experimental_api.py tests/test_postgres_scheduling.py tests/test_postgres_cancellation_lifecycle.py`. The tests create and remove
+`pytest -q tests/test_postgres_experimental_api.py tests/test_postgres_scheduling.py tests/test_postgres_cancellation_lifecycle.py tests/test_postgres_interview_completion.py`. The tests create and remove
 randomly named test schemas. No success claim extends beyond the implemented
 routes and tested scenarios.
