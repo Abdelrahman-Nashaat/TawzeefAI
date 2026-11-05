@@ -273,3 +273,55 @@ def test_exact_phrase_at_chunk_boundary_does_not_match_inside_identifier(monkeyp
     monkeypatch.setattr(semantic_screening, '_model', lambda _: LowSimilarityModel())
     source = 'x' * 493 + '.' + 'Python' + 'x' * 500
     assert not semantic_screening.suggest(source, [{'label': 'Python'}])[0]['candidates']
+
+
+def test_exact_mentions_do_not_hide_distinct_semantic_passage(monkeypatch):
+    from app import semantic_screening
+
+    monkeypatch.setenv('TAWZEEF_ENABLE_SEMANTIC_SCREENING', '1')
+    monkeypatch.setenv('TAWZEEF_EMBEDDING_MODEL_DIR', 'local-model')
+
+    class MeaningModel:
+        def encode(self, texts, *, query):
+            return [[1., 0.] if query or 'data manipulation' in text else [0., 1.] for text in texts]
+
+    monkeypatch.setattr(semantic_screening, '_model', lambda _: MeaningModel())
+    source = ('Skills\nPandas for cleaning\n\nExperience\nPandas reporting\n\n'
+              'Projects\nPandas dashboards\n\nOther\nData manipulation with tabular data')
+    # Case-insensitive model example; selection is an unverified lead for review.
+    source = source.replace('Data manipulation', 'data manipulation')
+    candidates = semantic_screening.suggest(source, [{'label': 'Pandas'}])[0]['candidates']
+    assert len(candidates) == 3
+    assert [item['retrieval_method'] for item in candidates].count('exact_phrase') == 2
+    semantic = next(item for item in candidates if item['retrieval_method'] == 'semantic')
+    assert 'data manipulation with tabular data' in semantic['excerpt']
+    assert all(source[item['start']:item['end']] == item['excerpt'] for item in candidates)
+
+
+def test_three_exact_mentions_remain_when_no_distinct_semantic_passage(monkeypatch):
+    from app import semantic_screening
+
+    monkeypatch.setenv('TAWZEEF_ENABLE_SEMANTIC_SCREENING', '1')
+    monkeypatch.setenv('TAWZEEF_EMBEDDING_MODEL_DIR', 'local-model')
+
+    class LowSimilarityModel:
+        def encode(self, texts, *, query):
+            return [[1., 0.] if query else [0., 1.] for _ in texts]
+
+    monkeypatch.setattr(semantic_screening, '_model', lambda _: LowSimilarityModel())
+    source = 'Skills\nPandas cleaning\n\nExperience\nPandas reporting\n\nProjects\nPandas dashboards'
+    candidates = semantic_screening.suggest(source, [{'label': 'Pandas'}])[0]['candidates']
+    assert len(candidates) == 3
+    assert all(item['retrieval_method'] == 'exact_phrase' for item in candidates)
+
+
+def test_exact_passage_is_not_relabelled_semantic_to_fill_diversity(monkeypatch):
+    from app import semantic_screening
+
+    monkeypatch.setenv('TAWZEEF_ENABLE_SEMANTIC_SCREENING', '1')
+    monkeypatch.setenv('TAWZEEF_EMBEDDING_MODEL_DIR', 'local-model')
+    monkeypatch.setattr(semantic_screening, '_model', lambda _: FakeLocalModel())
+    source = 'Skills\nPython cleaning\n\nExperience\nPython reporting\n\nProjects\nPython dashboards'
+    candidates = semantic_screening.suggest(source, [{'label': 'Python'}])[0]['candidates']
+    assert len(candidates) == 3
+    assert all(item['retrieval_method'] == 'exact_phrase' for item in candidates)

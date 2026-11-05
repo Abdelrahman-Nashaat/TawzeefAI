@@ -171,6 +171,28 @@ def suggest(source: str, criteria: list[dict]) -> list[dict]:
                         if len(result[index]['candidates']) == 3:
                             break
                 ranked = sorted(range(len(passages)), key=lambda i: (-float(row[i]), passages[i]['start']))
+                # When exact mentions already fill all slots, reserve one for a
+                # distinct high-similarity span without the exact phrase. Keep
+                # all exact mentions when no such model suggestion exists.
+                exact = result[index]['candidates']
+                if pattern and len(exact) == 3:
+                    for item in ranked:
+                        similarity = float(row[item])
+                        if similarity < MIN_SIMILARITY:
+                            break
+                        passage = passages[item]
+                        match = pattern.search(source, passage['start'])
+                        if match and match.end() <= passage['end']:
+                            continue
+                        contextual = _contextual_passage(source, passages, item)
+                        if any(contextual['start'] < prior['end'] and prior['start'] < contextual['end']
+                               for prior in exact):
+                            continue
+                        exact.pop()
+                        exact.append({**contextual, 'similarity': round(similarity, 4),
+                                      'retrieval_method': 'semantic',
+                                      'matched_start': passage['start'], 'matched_end': passage['end']})
+                        break
                 seen_lines = {source.rfind('\n', 0, item['matched_start']) + 1
                               for item in result[index]['candidates']}
                 for require_new_line in (True, False):
