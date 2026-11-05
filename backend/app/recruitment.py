@@ -357,7 +357,7 @@ def get_application(db, application_id: int):
 
 
 def _require_current_role(db, request: Request, user: User, role: str) -> None:
-    """Recheck the authenticated actor inside the write transaction."""
+    """Recheck the authenticated actor in the caller's database snapshot."""
     actor = db.execute('''SELECT u.username, u.role FROM sessions s JOIN users u ON u.id=s.user_id
         WHERE s.user_id=? AND s.token_hash=? AND s.expires_at>? AND u.active=1''',
         (user.id, token_digest(request.cookies.get(COOKIE_NAME, '')), int(time.time()))).fetchone()
@@ -415,22 +415,43 @@ async def apply(request: Request, user: Candidate, job_id: str, filename: str,
 
 @router.get("/applications")
 def list_applications(request: Request, user: Authenticated):
+    if user.role not in ('hr', 'candidate'):
+        raise HTTPException(status_code=403, detail='Access denied')
     with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_role(db, request, user, user.role)
         if user.role == "hr":
             rows = db.execute("SELECT * FROM applications ORDER BY id DESC").fetchall()
-        elif user.role == "candidate":
-            rows = db.execute("SELECT * FROM applications WHERE candidate_id = ? ORDER BY id DESC", (user.id,)).fetchall()
         else:
-            raise HTTPException(status_code=403, detail="Access denied")
-        return [application_view(row, user) for row in rows]
+            rows = db.execute("SELECT * FROM applications WHERE candidate_id = ? ORDER BY id DESC", (user.id,)).fetchall()
+        result = [application_view(row, user) for row in rows]
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_role(db, request, user, user.role)
+        if user.role == 'candidate':
+            current_ids = {row['id'] for row in db.execute(
+                'SELECT id FROM applications WHERE candidate_id = ?', (user.id,))}
+            if any(item['id'] not in current_ids for item in result):
+                raise HTTPException(status_code=409, detail='Application ownership changed; retry request')
+    return result
 
 
 @router.get("/applications/{application_id}")
 def application_detail(application_id: int, request: Request, user: Authenticated):
+    if user.role not in ('hr', 'candidate'):
+        raise HTTPException(status_code=403, detail='Access denied')
     with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_role(db, request, user, user.role)
         row = get_application(db, application_id)
         require_owner_or_hr(user, row["candidate_id"])
-        return application_view(row, user)
+        result = application_view(row, user)
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_role(db, request, user, user.role)
+        if user.role == 'candidate':
+            require_owner_or_hr(user, get_application(db, application_id)['candidate_id'])
+    return result
 
 
 @router.get("/applications/{application_id}/resume/structured")
