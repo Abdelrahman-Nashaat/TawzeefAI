@@ -32,7 +32,8 @@ def test_offer_acceptance_hire_and_persistence(mode):  # noqa: F811
         response = hr.post(endpoint, json={'details': 'Synthetic terms'})
         assert response.status_code == 201, response.text
         offer = response.json()['id']
-        assert other.get(endpoint).status_code == 403
+        assert other.get(endpoint).status_code == 404
+        assert other.get('/api/applications/999999999/offers').status_code == 404
         assert other.post(f'/api/offers/{offer}/respond', json={'decision': 'accepted'}).status_code == 404
         assert candidate.get(endpoint).json()[0]['details'] == 'Synthetic terms'
         assert hr.post(f'/api/applications/{application}/decision', json={'decision': 'hire'}).status_code == 409

@@ -67,13 +67,17 @@ def install_routes(app, connect, authenticate, authorize_locked, guard):
     def list_offers(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
         with connect() as db:
             authorize_locked(db, request, user)
-            application = db.execute('SELECT candidate_id FROM applications WHERE id=%s FOR SHARE', (application_id,)).fetchone()
-            if not application:
-                raise HTTPException(status_code=404, detail='Application not found')
-            if user.role == 'candidate' and application['candidate_id'] == user.id:
+            if user.role == 'candidate':
+                application = db.execute('SELECT id FROM applications WHERE id=%s AND candidate_id=%s FOR SHARE',
+                                         (application_id, user.id)).fetchone()
+                if not application:
+                    raise HTTPException(status_code=404, detail='Application not found')
                 rows = db.execute(f'SELECT {_FIELDS} FROM job_offers WHERE application_id=%s AND recipient_id=%s ORDER BY id DESC FOR SHARE',
                                   (application_id, user.id)).fetchall()
             elif user.role == 'hr':
+                application = db.execute('SELECT id FROM applications WHERE id=%s FOR SHARE', (application_id,)).fetchone()
+                if not application:
+                    raise HTTPException(status_code=404, detail='Application not found')
                 rows = db.execute(f'SELECT {_FIELDS} FROM job_offers WHERE application_id=%s ORDER BY id DESC FOR SHARE',
                                   (application_id,)).fetchall()
             else:
