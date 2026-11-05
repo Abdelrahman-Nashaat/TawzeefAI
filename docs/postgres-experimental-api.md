@@ -12,7 +12,7 @@ workflows, calendar and email delivery, policy chat, and the dashboard remain
 unavailable in this mode.
 
 HR may reject a submitted, advanced, or offered application with a nonempty
-reason. The decision atomically withdraws a presented offer and cancels future
+reason through the browser or API. The decision atomically withdraws a presented offer and cancels future
 interviews, creating candidate notices and audit entries. An accepted offer
 blocks rejection because this experimental mode has no accepted-offer
 resolution workflow. No email or external calendar action is sent.

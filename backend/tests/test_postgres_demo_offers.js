@@ -48,7 +48,7 @@ async function run(){
   assert.equal(JSON.parse(calls.filter(([p])=>p==='/api/offers/9/respond').at(-1)[1].body).decision,'declined');
  vm.runInContext('user={role:"hr"}',context); container=new Node();context.container=container;
   vm.runInContext('renderApplications([{id:7,status:"advanced",job_id:"j",candidate_id:4}],[])',context);
-  let form=descendants(ids.get('applications')).find(n=>n.tag==='form');
+  let form=descendants(ids.get('applications')).find(n=>n.tag==='form' && descendants(n).some(child=>child.textContent==='Present offer'));
   const terms=descendants(form).find(n=>n.tag==='textarea'); terms.value='Synthetic offer';
   const submit=descendants(form).find(n=>n.textContent==='Present offer');
   form.handlers.submit({preventDefault(){},submitter:submit}); await tick(); await tick();

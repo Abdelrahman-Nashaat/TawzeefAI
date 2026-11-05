@@ -140,6 +140,30 @@ function renderApplications(applications, jobs) {
     }
     if (user.role === "hr") {
       card.append(element("p", `Candidate ${application.candidate_id}`));
+      if (["submitted", "advanced", "offered"].includes(application.status)) {
+        const rejectionForm = element("form");
+        const reasonLabel = element("label", "Reason for rejection ");
+        const reason = element("textarea");
+        reason.required = true; reason.maxLength = 2000;
+        reasonLabel.append(reason);
+        const reject = element("button", "Reject application");
+        reject.type = "submit";
+        rejectionForm.append(reasonLabel,
+          element("p", "Rejecting cancels future interviews and withdraws any pending offer."), reject);
+        rejectionForm.addEventListener("submit", (event) => {
+          event.preventDefault();
+          action(event.submitter, async () => {
+            const generation = sessionGeneration;
+            const note = reason.value.trim();
+            if (!note) throw new Error("Enter a reason for rejection.");
+            if (note.length > 2000) throw new Error("The rejection reason is too long.");
+            await api(`/api/applications/${application.id}/decision`, jsonPost({ decision: "reject", note }));
+            ensureCurrent(generation); reason.value = ""; await refresh(); ensureCurrent(generation);
+            message("Application rejected by HR.");
+          });
+        });
+        card.append(rejectionForm);
+      }
       if (application.status === "advanced") {
         const offerForm = element("form");
         const label = element("label", "Offer details ");
