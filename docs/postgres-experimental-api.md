@@ -7,8 +7,7 @@ SQLite data is not read or migrated. Only health, login, logout, session identit
 jobs, application submission and listing, HR keyword screening and advancement,
 local candidate interview booking, cancellation, explicit HR completion, local
 cancellation notices, and offers with candidate response and explicit HR hire
-are implemented. A dedicated browser interface supports the journey through
-interview completion; offer actions are available through the API. Graph
+are implemented. A dedicated browser interface supports these actions. Graph
 workflows, calendar and email delivery, policy chat, and the dashboard remain
 unavailable in this mode.
 

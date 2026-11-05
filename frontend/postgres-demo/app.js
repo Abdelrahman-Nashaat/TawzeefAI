@@ -85,6 +85,45 @@ async function showSlots(application, container) {
   container.replaceChildren(list);
 }
 
+async function showOffers(application, container) {
+  const generation = sessionGeneration;
+  const role = user.role;
+  const offers = await api(`/api/applications/${application.id}/offers`);
+  ensureCurrent(generation);
+  const list = element("div");
+  if (!offers.length) list.append(element("p", "No offers yet."));
+  for (const offer of offers) {
+    const card = element("article");
+    card.append(element("p", `Offer ${offer.id} - ${offer.status}`));
+    card.append(element("pre", offer.details));
+    if (offer.status === "presented" && role === "candidate" && application.status === "offered") {
+      for (const decision of ["accepted", "declined"]) {
+        card.append(button(decision === "accepted" ? "Accept offer" : "Decline offer", async () => {
+          const current = sessionGeneration;
+          await api(`/api/offers/${offer.id}/respond`, jsonPost({ decision }));
+          ensureCurrent(current); await refresh(); ensureCurrent(current); message(`Offer ${decision}.`);
+        }));
+      }
+    }
+    if (offer.status === "presented" && role === "hr" && application.status === "offered") {
+      card.append(button("Withdraw offer", async () => {
+        const current = sessionGeneration;
+        await api(`/api/offers/${offer.id}/withdraw`, { method: "POST" });
+        ensureCurrent(current); await refresh(); ensureCurrent(current); message("Offer withdrawn.");
+      }));
+    }
+    if (offer.status === "accepted" && role === "hr" && application.status === "offered") {
+      card.append(button("Record hire", async () => {
+        const current = sessionGeneration;
+        await api(`/api/applications/${application.id}/decision`, jsonPost({ decision: "hire" }));
+        ensureCurrent(current); await refresh(); ensureCurrent(current); message("Hiring decision recorded.");
+      }));
+    }
+    list.append(card);
+  }
+  container.replaceChildren(list);
+}
+
 function renderApplications(applications, jobs) {
   const target = $("applications"); target.replaceChildren();
   if (!applications.length) target.append(element("p", "No applications yet."));
@@ -93,12 +132,33 @@ function renderApplications(applications, jobs) {
     const title = jobs.find((job) => job.id === application.job_id)?.title || application.job_id;
     card.append(element("h3", `${title} - application ${application.id}`));
     card.append(element("p", `Status: ${application.status}`));
+    const offers = element("div");
+    card.append(button("View offers", () => showOffers(application, offers)), offers);
     if (user.role === "candidate" && application.status === "advanced") {
       const slots = element("div");
       card.append(button("Find available slots", () => showSlots(application, slots)), slots);
     }
     if (user.role === "hr") {
       card.append(element("p", `Candidate ${application.candidate_id}`));
+      if (application.status === "advanced") {
+        const offerForm = element("form");
+        const label = element("label", "Offer details ");
+        const input = element("textarea");
+        input.required = true; input.maxLength = 4000;
+        label.append(input);
+        const submit = element("button", "Present offer");
+        submit.type = "submit";
+        offerForm.append(label, submit);
+        offerForm.addEventListener("submit", (event) => {
+          event.preventDefault();
+          action(event.submitter, async () => {
+            const current = sessionGeneration;
+            await api(`/api/applications/${application.id}/offers`, jsonPost({ details: input.value }));
+            ensureCurrent(current); input.value = ""; await refresh(); ensureCurrent(current); message("Offer presented locally.");
+          });
+        });
+        card.append(offerForm);
+      }
       const details = element("details"); details.append(element("summary", "Review CV and provisional screening"));
       details.append(element("h4", "Extracted CV"), element("pre", application.resume_text));
       details.append(element("h4", "Provisional screening"), element("pre", application.score ? JSON.stringify(application.score, null, 2) : "Not screened"));
