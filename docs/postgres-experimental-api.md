@@ -5,7 +5,7 @@ application or a migration. It stores demo users, jobs, sessions, applications,
 notices, audit events, screening records, slots, and interviews in one PostgreSQL schema.
 SQLite data is not read or migrated. Only health, login, logout, session identity,
 jobs, application submission and listing, HR keyword screening and advancement,
-local candidate interview booking, cancellation, explicit HR completion, and local cancellation notices are implemented. Graph
+local candidate interview booking, cancellation, explicit HR completion, local cancellation notices, and offers with candidate response and explicit HR hire are implemented. Graph
 workflows, calendar and email delivery, policy chat, the dashboard, and browser
 interface remain unavailable in this mode.
 
@@ -37,6 +37,16 @@ atomic; the candidate sees `completed` in interview listings and can book a
 later slot. Time passing alone does not record attendance. On startup this mode
 adds a completion flag and replaces the application booking index in its own
 experimental schema; stop all older server versions before upgrading.
+After at least one completed interview, and when no interview is active or
+upcoming, HR can present a local offer with `POST /api/applications/{id}/offers`
+and `{"details":"..."}`. The owner and HR can list offers with
+`GET /api/applications/{id}/offers`. Only the intended candidate may accept or
+decline via `POST /api/offers/{id}/respond`; HR may withdraw an unanswered
+offer through `POST /api/offers/{id}/withdraw`. After acceptance, HR can record
+hiring with `POST /api/applications/{id}/decision` and `{"decision":"hire"}`.
+These transitions are stored and audited atomically, and they never send email.
+Offer contents are not copied to the audit record. This is a synthetic local
+workflow, not a complete production offer process.
 This mode exposes no job or resume editing, and does
 not detect direct database changes to previously screened inputs.
 
@@ -62,6 +72,6 @@ it behind a proxy or use real candidate data. The application rejects remote
 peers and untrusted Host headers, but network and proxy configuration still
 matter. Unsupported endpoints return 404. Run the real PostgreSQL tests with
 `TAWZEEF_TEST_POSTGRES_DSN` set privately to a disposable test database and
-`pytest -q tests/test_postgres_experimental_api.py tests/test_postgres_scheduling.py tests/test_postgres_cancellation_lifecycle.py tests/test_postgres_interview_completion.py`. The tests create and remove
+`pytest -q tests/test_postgres_experimental_api.py tests/test_postgres_scheduling.py tests/test_postgres_cancellation_lifecycle.py tests/test_postgres_interview_completion.py tests/test_postgres_offers.py`. The tests create and remove
 randomly named test schemas. No success claim extends beyond the implemented
 routes and tested scenarios.

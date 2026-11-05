@@ -12,6 +12,9 @@ from fastapi import Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.auth import User
+from app.postgres_offers import DDL as OFFER_DDL
+from app.postgres_offers import hire
+from app.postgres_offers import install_routes as install_offer_routes
 from app.recruitment import application_view
 from app.slots import BookSlot, SlotCreate
 
@@ -67,6 +70,9 @@ DDL = (
 )
 
 
+DDL += OFFER_DDL
+
+
 class Advance(BaseModel):
     decision: str
     note: str = ''
@@ -92,11 +98,15 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 user: Annotated[User, Depends(authenticate)]):
         if user.role != 'hr':
             raise HTTPException(status_code=403, detail='Access denied')
-        if payload.decision != 'advance' or len(payload.note) > 2000:
-            raise HTTPException(status_code=422, detail='Only advance is available in this mode')
+        if payload.decision not in {'advance', 'hire'} or len(payload.note) > 2000:
+            raise HTTPException(status_code=422, detail='Only advance or hire is available in this mode')
         with connect() as db:
             authorize_locked(db, request, user, 'hr')
             guard(db)
+            if payload.decision == 'hire':
+                result = application_view(hire(db, application_id, user, payload.note), user)
+                authorize_locked(db, request, user, 'hr')
+                return result
             row = db.execute('SELECT * FROM applications WHERE id=%s FOR UPDATE', (application_id,)).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail='Application not found')
@@ -114,6 +124,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
             result = application_view(db.execute('SELECT * FROM applications WHERE id=%s', (application_id,)).fetchone(), user)
             authorize_locked(db, request, user, 'hr')
             return result
+
+    install_offer_routes(app, connect, authenticate, authorize_locked, guard)
 
     @app.post('/api/slots', status_code=201)
     def create_slot(payload: SlotCreate, request: Request, user: Annotated[User, Depends(authenticate)]):
