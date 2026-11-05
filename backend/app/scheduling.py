@@ -44,6 +44,14 @@ def initialize_scheduling(path: str | Path) -> None:
                 recorded_by INTEGER NOT NULL REFERENCES users(id),
                 recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
+            CREATE TABLE IF NOT EXISTS hr_interview_cancellations (
+                id INTEGER PRIMARY KEY,
+                interview_id INTEGER NOT NULL UNIQUE REFERENCES interviews(id),
+                candidate_id INTEGER NOT NULL REFERENCES users(id),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                read_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS hr_cancellation_candidate ON hr_interview_cancellations(candidate_id,id);
             CREATE TABLE IF NOT EXISTS candidate_interview_cancellations (
                 id INTEGER PRIMARY KEY,
                 interview_id INTEGER NOT NULL UNIQUE REFERENCES interviews(id),
@@ -203,6 +211,12 @@ def create_interview(payload: InterviewCreate, request: Request, user: HR):
         return interview_view(row)
 
 
+def record_hr_cancellation_notice(db, interview_id: int) -> None:
+    """Notify the interview's candidate in the caller's transaction."""
+    db.execute("""INSERT INTO hr_interview_cancellations(interview_id,candidate_id)
+        SELECT id,candidate_id FROM interviews WHERE id=?""", (interview_id,))
+
+
 @router.post("/interviews/{interview_id}/cancel")
 def cancel_interview(interview_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
@@ -218,6 +232,7 @@ def cancel_interview(interview_id: int, request: Request, user: HR):
         if cancellation_block_reason(db, interview_id):
             raise HTTPException(status_code=409, detail="Resolve the Google delivery before cancelling this interview")
         db.execute("UPDATE interviews SET status = 'cancelled' WHERE id = ?", (interview_id,))
+        record_hr_cancellation_notice(db, interview_id)
         db.execute(
             "INSERT INTO audit_events (application_id, actor_id, action, details) VALUES (?, ?, ?, ?)",
             (row["application_id"], user.id, "interview_cancelled", json.dumps({"interview_id": interview_id, "reason": "hr_cancelled"})),
@@ -256,6 +271,58 @@ def cancel_candidate_interview(interview_id: int, request: Request, user: Candid
         result = interview_view(db.execute('SELECT * FROM interviews WHERE id=?', (interview_id,)).fetchone())
         _require_current_candidate(db, request, user)
         return result
+
+
+@router.get('/candidate/interview-cancellations')
+def list_hr_cancellations(request: Request, user: Candidate, before: int | None = Query(default=None, gt=0),
+                          limit: int = Query(default=20, ge=1, le=50)):
+    """Return only notices for interviews and applications still owned by this candidate."""
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_candidate(db, request, user)
+        rows = db.execute("""SELECT n.id,n.interview_id,n.created_at,n.read_at,
+            i.application_id,i.start_at,i.end_at FROM hr_interview_cancellations n
+            JOIN interviews i ON i.id=n.interview_id
+            JOIN applications a ON a.id=i.application_id
+            WHERE n.candidate_id=? AND i.candidate_id=? AND a.candidate_id=?
+              AND (? IS NULL OR n.id<?) ORDER BY n.id DESC LIMIT ?""",
+            (user.id, user.id, user.id, before, before, limit + 1)).fetchall()
+        more = len(rows) > limit
+        rows = rows[:limit]
+        items = [{key: row[key] for key in ('id','interview_id','created_at','application_id','start_at','end_at')}
+                 | {'is_read': bool(row['read_at'])} for row in rows]
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_candidate(db, request, user)
+        for item in items:
+            valid = db.execute("""SELECT 1 FROM hr_interview_cancellations n
+                JOIN interviews i ON i.id=n.interview_id
+                JOIN applications a ON a.id=i.application_id
+                WHERE n.id=? AND n.interview_id=? AND i.application_id=?
+                  AND n.candidate_id=? AND i.candidate_id=? AND a.candidate_id=?""",
+                (item['id'], item['interview_id'], item['application_id'], user.id, user.id, user.id)).fetchone()
+            if not valid:
+                raise HTTPException(status_code=409, detail='Notice ownership changed; retry request')
+    return {'items': items, 'next_before': rows[-1]['id'] if more else None,
+            'notice': 'Local notice only. No email or calendar action was sent.'}
+
+
+@router.post('/candidate/interview-cancellations/{notice_id}/read')
+def acknowledge_hr_cancellation(notice_id: int, request: Request, user: Candidate):
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        _require_current_candidate(db, request, user)
+        notice = db.execute("""SELECT n.id FROM hr_interview_cancellations n
+            JOIN interviews i ON i.id=n.interview_id
+            JOIN applications a ON a.id=i.application_id
+            WHERE n.id=? AND n.candidate_id=? AND i.candidate_id=? AND a.candidate_id=?""",
+            (notice_id, user.id, user.id, user.id)).fetchone()
+        if notice is None:
+            raise HTTPException(status_code=404, detail='Notice not found')
+        db.execute("""UPDATE hr_interview_cancellations
+            SET read_at=COALESCE(read_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id=?""", (notice_id,))
+        _require_current_candidate(db, request, user)
+        return {'id': notice_id, 'is_read': True}
 
 
 @router.get('/hr/interview-cancellations')

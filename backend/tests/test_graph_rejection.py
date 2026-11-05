@@ -58,6 +58,10 @@ def test_reject_review_shows_exact_effects_and_commits_once(case):
         assert db.execute('SELECT withdrawn FROM interview_slots WHERE id=?', (slot,)).fetchone()[0] == 1
         assert db.execute("SELECT count(*) FROM audit_events WHERE application_id=? AND action='decision'", (app,)).fetchone()[0] == 1
         assert db.execute('SELECT count(*) FROM graph_rejection_drafts').fetchone()[0] == 0
+    assert client.post('/api/auth/login', json={'username':'candidate','password':'candidate-demo-only'}).status_code == 200
+    notices = client.get('/api/candidate/interview-cancellations').json()['items']
+    assert len(notices) == 1 and notices[0]['interview_id'] == interview and not notices[0]['is_read']
+    assert 'Synthetic review reason' not in str(notices)
 
 
 @pytest.mark.parametrize('change', ['owner', 'job', 'slot', 'interview', 'reason'])

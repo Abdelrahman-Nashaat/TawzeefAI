@@ -36,8 +36,34 @@ def submit_application(api, job_id, filename, content, ocr, ocr_language, on_aut
                   content=content, headers={"Content-Type": "application/octet-stream"})
 
 
+def render_cancellation_notices(call):
+    """Show local HR cancellation notices for the signed-in candidate."""
+    st.subheader("Interview cancellation notices")
+    before = st.session_state.get("candidate_cancellations_before")
+    data = call("GET", "/api/candidate/interview-cancellations", optional=True,
+                params={"before": before} if before is not None else {})
+    if data is None:
+        return
+    st.caption(data["notice"])
+    if not data["items"]:
+        st.info("No interview cancellation notices.")
+    for item in data["items"]:
+        st.text(f"Application #{item['application_id']} | Interview #{item['interview_id']} | {item['start_at']} | {'read' if item['is_read'] else 'unread'}")
+        if not item['is_read'] and st.button("Mark cancellation notice read", key=f"candidate_cancellation_{item['id']}"):
+            result = call("POST", f"/api/candidate/interview-cancellations/{item['id']}/read", optional=True)
+            if result is not None:
+                st.rerun()
+    if data['next_before'] is not None and st.button("Older cancellation notices"):
+        st.session_state['candidate_cancellations_before'] = data['next_before']
+        st.rerun()
+    if before is not None and st.button("Newest cancellation notices"):
+        st.session_state.pop('candidate_cancellations_before', None)
+        st.rerun()
+
+
 def render_candidate(call, local_api, clear_session):
     st.header("Candidate applications")
+    render_cancellation_notices(call)
     message = st.session_state.pop("candidate_message", None)
     if message:
         st.success(message)

@@ -38,7 +38,7 @@ from app.document_text import (
 from app.google_outbox import cancellation_block_reason
 from app.resume_mask import masked_source
 from app.resume_structure import extract_skill_candidates, structure_resume
-from app.scheduling import utc_text
+from app.scheduling import record_hr_cancellation_notice, utc_text
 
 router = APIRouter(prefix="/api")
 Candidate = Annotated[User, Depends(require_roles("candidate"))]
@@ -849,6 +849,7 @@ def record_rejection(db, application_id: int, actor_id: int, note: str):
         if cancellation_block_reason(db, interview['id']):
             raise HTTPException(status_code=409, detail='Resolve the Google delivery before rejecting this application')
         db.execute("UPDATE interviews SET status='cancelled' WHERE id=?", (interview['id'],))
+        record_hr_cancellation_notice(db, interview['id'])
         db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (?,?,'interview_cancelled',?)",
                    (application_id, actor_id, json.dumps({'interview_id': interview['id'], 'reason': 'application_rejected'})))
     _release_finalized_slots(db, application_id, actor_id)

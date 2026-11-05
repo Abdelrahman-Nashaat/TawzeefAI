@@ -3187,10 +3187,39 @@ function setupGoogleDeliveries(card, interview) {
   synchronizeControls();
 }
 
+async function loadHrCancellationNotices(target, before = null) {
+  target.replaceChildren(element("p", "subtle-note", "Loading interview notices..."));
+  try {
+    const data = await api(`/api/candidate/interview-cancellations${before === null ? "" : `?before=${encodeURIComponent(before)}`}`);
+    if (!target.isConnected) return;
+    target.replaceChildren(element("h4", "", "Interview cancellation notices"), element("p", "subtle-note", data.notice));
+    if (!data.items.length) target.append(element("p", "subtle-note", "No cancellation notices."));
+    for (const item of data.items) {
+      const row = element("div", "application-detail");
+      row.append(element("p", "", `Application #${item.application_id}: interview on ${displayDate(item.start_at)} was cancelled. ${item.is_read ? "Read" : "Unread"}`));
+      if (!item.is_read) {
+        const read = element("button", "outline-button", "Mark read"); read.type = "button";
+        read.addEventListener("click", async () => {
+          read.disabled = true;
+          try { await api(`/api/candidate/interview-cancellations/${encodeURIComponent(item.id)}/read`, {method: "POST"}); if (target.isConnected) await loadHrCancellationNotices(target, before); }
+          catch (error) { if (!isStale(error) && target.isConnected) target.append(element("p", "form-error", "Could not acknowledge notice.")); }
+          finally { read.disabled = false; }
+        });
+        row.append(read);
+      }
+      target.append(row);
+    }
+    if (data.next_before !== null) { const next = element("button", "outline-button", "Older notices"); next.type = "button"; next.addEventListener("click", () => loadHrCancellationNotices(target, data.next_before)); target.append(next); }
+    if (before !== null) { const first = element("button", "outline-button", "Newest notices"); first.type = "button"; first.addEventListener("click", () => loadHrCancellationNotices(target)); target.append(first); }
+  } catch (error) { if (!isStale(error) && target.isConnected) target.replaceChildren(element("p", "form-error", "Could not load cancellation notices.")); }
+}
+
 function renderInterviews(interviews, role, applications, slots) {
   const target = document.getElementById("interviews-area");
   const box = section(role === "hr" ? "المقابلات" : "مقابلاتي");
   box.append(element("p", "subtle-note", "المواعيد مسجلة محليًا. يمكن إضافة ملف التقويم يدويًا، ولن يتحدث تلقائيًا عند تغيير الموعد أو إلغائه. إجراءات Google، عند تهيئتها، تتطلب مراجعة وتأكيدًا منفصلين من HR."));
+  const notices = role === "candidate" ? element("div", "application-detail") : null;
+  if (notices) { notices.setAttribute("aria-live", "polite"); box.append(notices); }
   const list = element("div", "data-list");
   if (!interviews.length) list.append(element("p", "empty-note", "لا توجد مقابلات مسجلة حتى الآن."));
   for (const interview of interviews) {
@@ -3292,6 +3321,7 @@ function renderInterviews(interviews, role, applications, slots) {
     box.append(form);
   }
   target.replaceChildren(box);
+  if (notices) loadHrCancellationNotices(notices);
 }
 
 function renderBulkSlots(target, applications, role) {

@@ -55,6 +55,8 @@ The application stores appointments locally and checks conflicts when booking. E
 
 Candidates can cancel their own future interview while their application is advanced and then choose another available slot. The cancellation creates an in-app HR notice and audit event in the same transaction. Interviews with a confirmed email or unresolved external delivery require HR assistance; cancellation does not send email or alter Google Calendar.
 
+When HR cancels a future interview, including through an application rejection, the candidate sees a local cancellation notice in the main and Streamlit interfaces. Notices are created with the cancellation, can be marked read, and do not send email or modify Google Calendar. Earlier cancellations are not backfilled.
+
 HR can review and release a batch of interview windows targeted to specific applications. Each window is bound to the application and candidate at creation; the candidate chooses their own time. Permissions and conflicts are rechecked before the batch is released, and invitations are not sent automatically.
 
 After an interview ends, HR can record that it took place. The action and actor are recorded, and the candidate sees the stage without HR assessment details. The interview is not assumed to have occurred merely because time passed. Another interview can be scheduled after the previous one is confirmed complete.
