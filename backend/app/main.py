@@ -93,6 +93,14 @@ DEMO_ACCOUNTS = (
 
 
 def create_app(database_path: str | Path | None = None, seed_demo: bool = False) -> FastAPI:
+    engine = os.environ.get('TAWZEEF_DATABASE_ENGINE', 'sqlite')
+    if engine not in ('sqlite', 'postgres-experimental'):
+        raise RuntimeError('Unsupported database engine')
+    if engine == 'postgres-experimental':
+        if database_path is not None:
+            raise RuntimeError('The experimental PostgreSQL mode cannot use a SQLite path')
+        from app.postgres_experimental import create_postgres_app
+        return create_postgres_app(seed_demo=seed_demo)
     path = Path(database_path or os.environ.get("TAWZEEF_DATABASE", "tawzeefai.sqlite3"))
 
     @asynccontextmanager

@@ -16,6 +16,8 @@ You can also run a local demonstration with Docker Desktop using `& .\start-dock
 
 An optional [Streamlit interface](docs/streamlit-demo.md) uses the same local API for saved knowledge chat, HR metrics and review, and candidate applications, local interview booking, and offer responses. The main interface provides additional recruitment and administrative workflows.
 
+An [experimental PostgreSQL submission API](docs/postgres-experimental-api.md) supports only a small synthetic-data candidate journey; it does not replace the SQLite application or migrate its data.
+
 To try local résumé passage suggestions for job criteria on Windows, prepare the local embedding model as described in [experiment details](docs/local-semantic-experiment.md), then run `& .\start-demo.ps1 -SemanticScreening`. This can be combined with `-Google`. Suggestions are experimental, do not verify experience, and do not replace human review; use synthetic data only.
 
 For scanned PDF pages, install Tesseract and its language data, then run `& .\start-demo.ps1 -Ocr`. Choose English or English and Arabic for each upload; the switch can be combined with the other Windows options. OCR runs locally and is approximate: review its text against the original document. See [bilingual OCR setup](docs/bilingual-ocr.md) and [SETUP](SETUP.md) for limitations.
