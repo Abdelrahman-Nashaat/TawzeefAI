@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.db import connect
@@ -53,3 +54,52 @@ def test_duplicate_search_reports_bounded_scan(tmp_path):
         result = client.get(f'/api/applications/{target}/duplicates').json()
         assert result['matches'] == [] and result['scanned'] == 2000
         assert result['truncated'] is True
+
+
+@pytest.mark.parametrize('change', ['update', 'insert', 'logout'])
+def test_duplicate_scan_rechecks_session_and_data_after_concurrent_change(tmp_path, monkeypatch, change):
+    from app import recruitment
+
+    path = tmp_path / 'race.sqlite3'
+    app = create_app(path, seed_demo=True)
+    with TestClient(app) as client:
+        with connect(path) as db:
+            db.execute('PRAGMA journal_mode=WAL')
+            candidate = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
+            ids = [db.execute("""INSERT INTO applications(candidate_id,job_id,filename,resume_text)
+                VALUES(?, 'job-backend-python', 'file.docx', 'Same resume')""", (candidate,)).lastrowid for _ in range(2)]
+        assert client.post('/api/auth/login', json={'username': 'hr', 'password': 'hr-demo-only'}).status_code == 200
+        original = recruitment.normalize
+        changed = False
+
+        def revoke_during_scan(text):
+            nonlocal changed
+            if not changed:
+                changed = True
+                with connect(path) as db:
+                    db.execute("UPDATE users SET role='employee' WHERE username='hr'")
+            return original(text)
+
+        monkeypatch.setattr(recruitment, 'normalize', revoke_during_scan)
+        assert client.get(f'/api/applications/{ids[0]}/duplicates').status_code == 403
+
+        with connect(path) as db:
+            db.execute("UPDATE users SET role='hr' WHERE username='hr'")
+        changed = False
+
+        def change_match_during_scan(text):
+            nonlocal changed
+            if not changed:
+                changed = True
+                with connect(path) as db:
+                    if change == 'update':
+                        db.execute("UPDATE applications SET resume_text='Different now' WHERE id=?", (ids[1],))
+                    elif change == 'insert':
+                        db.execute("""INSERT INTO applications(candidate_id,job_id,filename,resume_text)
+                            VALUES(?, 'job-backend-python', 'new.docx', 'Same resume')""", (candidate,))
+                    else:
+                        db.execute("DELETE FROM sessions WHERE user_id=(SELECT id FROM users WHERE username='hr')")
+            return original(text)
+
+        monkeypatch.setattr(recruitment, 'normalize', change_match_during_scan)
+        assert client.get(f'/api/applications/{ids[0]}/duplicates').status_code == (401 if change == 'logout' else 409)

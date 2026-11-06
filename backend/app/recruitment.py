@@ -485,7 +485,12 @@ def duplicate_resume_candidates(application_id: int, request: Request, user: HR)
     """
     limit = 2000
     with connect(request.app.state.database_path) as db:
+        # Keep one connection: SQLite data_version is comparable only across
+        # reads on the same connection. A concurrent write can otherwise make
+        # either the matches or the authorization snapshot stale during a scan.
+        data_version = db.execute('PRAGMA data_version').fetchone()[0]
         db.execute('BEGIN')
+        _require_current_role(db, request, user, 'hr')
         row = get_application(db, application_id)
         target = normalize(row['resume_text'])
         matches = []
@@ -503,6 +508,11 @@ def duplicate_resume_candidates(application_id: int, request: Request, user: HR)
                                    (application_id,)).fetchone()[0] > limit
         else:
             truncated = False
+        db.commit()
+        db.execute('BEGIN')
+        _require_current_role(db, request, user, 'hr')
+        if db.execute('PRAGMA data_version').fetchone()[0] != data_version:
+            raise HTTPException(status_code=409, detail='Data changed during duplicate scan; retry request')
         return {'matches': matches, 'scanned': scanned, 'truncated': truncated,
                 'notice': 'Exact normalized extracted text only. Similarity does not prove fraud; HR must review.'}
 
