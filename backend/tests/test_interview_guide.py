@@ -1,10 +1,41 @@
 """An interview guide suggests questions; it does not assess candidates."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.db import connect
 from app.interview_guide import guide_from_matching
 from app.main import create_app
+
+
+@pytest.mark.parametrize('change, expected', [('role', 403), ('source', 409), ('logout', 401)])
+def test_guide_rechecks_access_and_source_after_build(tmp_path, monkeypatch, change, expected):
+    from app import interview_guide as guide_module
+
+    path = tmp_path / 'guide-race.sqlite3'
+    app = create_app(path, seed_demo=True)
+    with TestClient(app) as client:
+        with connect(path) as db:
+            db.execute('PRAGMA journal_mode=WAL')
+            owner = db.execute("SELECT id FROM users WHERE username='candidate'").fetchone()[0]
+            application = db.execute("""INSERT INTO applications(candidate_id,job_id,filename,resume_text,status)
+                VALUES (?,'job-backend-python','synthetic.pdf','Python','submitted')""", (owner,)).lastrowid
+        assert client.post('/api/auth/login', json={'username': 'hr', 'password': 'hr-demo-only'}).status_code == 200
+        original = guide_module.guide_from_matching
+
+        def concurrent_change(snapshot):
+            result = original(snapshot)
+            with connect(path) as db:
+                if change == 'role':
+                    db.execute("UPDATE users SET role='employee' WHERE username='hr'")
+                elif change == 'logout':
+                    db.execute("DELETE FROM sessions WHERE user_id=(SELECT id FROM users WHERE username='hr')")
+                else:
+                    db.execute("UPDATE applications SET resume_text='Changed' WHERE id=?", (application,))
+            return result
+
+        monkeypatch.setattr(guide_module, 'guide_from_matching', concurrent_change)
+        assert client.get(f'/api/applications/{application}/interview-guide').status_code == expected
 
 
 def test_guide_is_job_specific_neutral_and_does_not_copy_resume():

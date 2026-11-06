@@ -7,7 +7,7 @@ applicant, verify experience, or create hiring decisions.
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.auth import User, require_roles
 from app.blind import redact_resume
@@ -83,7 +83,15 @@ def interview_guide(application_id: int, request: Request, user: HR):
     with connect(request.app.state.database_path) as db:
         db.execute('BEGIN')
         _require_current_role(db, request, user, 'hr')
-        _, snapshot = matching_snapshot(db, application_id)
+        digest, snapshot = matching_snapshot(db, application_id)
         result = guide_from_matching(snapshot)
+    # Reopen the read snapshot: rechecking inside the original SQLite read
+    # transaction would continue to see a revoked session or stale evidence.
+    with connect(request.app.state.database_path) as db:
+        db.execute('BEGIN')
+        _require_current_role(db, request, user, 'hr')
+        current_digest, _ = matching_snapshot(db, application_id)
+        if current_digest != digest:
+            raise HTTPException(status_code=409, detail='Assessment changed; retry request')
         _require_current_role(db, request, user, 'hr')
         return result
