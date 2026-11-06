@@ -57,6 +57,7 @@ def test_audit_failure_rolls_back_and_job_change_invalidates(mode):  # noqa: F81
             db.execute("ALTER TABLE audit_events ADD CONSTRAINT reject_rubric CHECK (action <> 'rubric_reviewed')")
         assert hr.post(review_url, json=body).status_code == 500
         assert hr.get(review_url).status_code == 404
+        assert hr.get(f'/api/applications/{app_id}/rubric-history').json()['items'] == []
         with db_for(mode) as db:
             db.execute('ALTER TABLE audit_events DROP CONSTRAINT reject_rubric')
         assert hr.post(review_url, json=body).status_code == 200
@@ -92,4 +93,35 @@ def test_review_expiring_during_lock_wait_rolls_back(mode, monkeypatch):  # noqa
             assert future.result(timeout=20).status_code == 401
         with db_for(mode) as db:
             assert db.execute('SELECT count(*) AS n FROM hr_rubric_assessments').fetchone()['n'] == 0
+            assert db.execute('SELECT count(*) AS n FROM hr_rubric_history').fetchone()['n'] == 0
             assert db.execute("SELECT count(*) AS n FROM audit_events WHERE action='rubric_reviewed'").fetchone()['n'] == 0
+
+
+def test_history_retains_reviews_and_checks_integrity(mode):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
+        login(candidate, 'candidate')
+        login(hr, 'hr')
+        job = candidate.get('/api/jobs').json()[0]['id']
+        app_id = candidate.post('/api/applications', params={'job_id': job, 'filename': 'resume.docx'}, content=resume_bytes()).json()['id']
+        source = hr.get(f'/api/applications/{app_id}/rubric-source').json()
+        review_url = f'/api/applications/{app_id}/rubric-assessment'
+        history_url = f'/api/applications/{app_id}/rubric-history'
+        names = ['mandatory_skills', 'preferred_skills', 'experience', 'projects', 'education']
+        items = [{'category': name, 'score': None} for name in names]
+        body = {'source_digest': source['source_digest'], 'items': items}
+        assert hr.post(review_url, json=body).status_code == 200
+        text = source['resume_text']
+        start = next(i for i, char in enumerate(text) if not char.isspace())
+        items[0] = {'category': names[0], 'score': 50, 'start': start, 'end': start + 1}
+        assert hr.post(review_url, json=body).status_code == 200
+        assert candidate.get(history_url).status_code == 403
+        first = hr.get(history_url, params={'limit': 1}).json()
+        assert first['items'][0]['lower'] == 20 and not first['items'][0]['is_stale']
+        second = hr.get(history_url, params={'limit': 1, 'before': first['next_before']}).json()
+        assert second['items'][0]['lower'] == 0 and second['next_before'] is None
+        with db_for(mode) as db:
+            db.execute("UPDATE jobs SET title=title || ' changed' WHERE id=%s", (job,))
+        assert all(item['is_stale'] for item in hr.get(history_url).json()['items'])
+        with db_for(mode) as db:
+            db.execute("UPDATE hr_rubric_history SET review_json='{}' WHERE audit_event_id=%s", (first['items'][0]['audit_event_id'],))
+        assert hr.get(history_url).status_code == 409

@@ -3,7 +3,7 @@ import hashlib
 import json
 from typing import Annotated, Literal
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, StrictInt, model_validator
 
 from app.auth import User
@@ -15,6 +15,14 @@ DDL = '''CREATE TABLE IF NOT EXISTS hr_rubric_assessments (
     reviewer_id bigint NOT NULL REFERENCES users(id),
     source_digest text NOT NULL, review_json text NOT NULL,
     reviewed_at timestamptz NOT NULL DEFAULT clock_timestamp())'''
+
+HISTORY_DDL = '''CREATE TABLE IF NOT EXISTS hr_rubric_history (
+    audit_event_id bigint PRIMARY KEY REFERENCES audit_events(id),
+    application_id bigint NOT NULL REFERENCES applications(id),
+    reviewer_id bigint NOT NULL REFERENCES users(id), source_digest text NOT NULL,
+    review_json text NOT NULL, reviewed_at timestamptz NOT NULL DEFAULT clock_timestamp())'''
+HISTORY_INDEX = 'CREATE INDEX IF NOT EXISTS rubric_history_application ON hr_rubric_history(application_id,audit_event_id DESC)'
+
 
 
 class AssessmentItem(BaseModel):
@@ -96,8 +104,10 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 VALUES (%s,%s,%s,%s) ON CONFLICT(application_id) DO UPDATE SET reviewer_id=EXCLUDED.reviewer_id,
                 source_digest=EXCLUDED.source_digest,review_json=EXCLUDED.review_json,reviewed_at=clock_timestamp()''',
                 (application_id,user.id,digest,data))
-            db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'rubric_reviewed',%s)",
-                       (application_id,user.id,json.dumps({'source_digest': digest, 'review_digest': hashlib.sha256(data.encode()).hexdigest()})))
+            event = db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'rubric_reviewed',%s) RETURNING id",
+                       (application_id,user.id,json.dumps({'source_digest': digest, 'review_digest': hashlib.sha256(data.encode()).hexdigest()}))).fetchone()
+            db.execute("INSERT INTO hr_rubric_history(audit_event_id,application_id,reviewer_id,source_digest,review_json) VALUES (%s,%s,%s,%s,%s)",
+                       (event['id'],application_id,user.id,digest,data))
             authorize_locked(db, request, user, 'hr')
             return {'source_digest': digest, **review, 'notice': 'Human assessment is provisional, not an automatic decision.'}
 
@@ -114,3 +124,32 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=409, detail='Source changed; review again')
             return {'source_digest': digest, 'reviewer_id': review['reviewer_id'],
                     'reviewed_at': review['reviewed_at'], **json.loads(review['review_json'])}
+
+    @app.get('/api/applications/{application_id}/rubric-history')
+    def read_history(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)],
+                     before: int | None = Query(default=None, gt=0), limit: int = Query(default=20, ge=1, le=50)):
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+            _, _, digest = _source(db, application_id)
+            rows = db.execute("""SELECT h.*,e.details,e.actor_id,e.action,e.application_id AS audit_application
+                FROM hr_rubric_history h JOIN audit_events e ON e.id=h.audit_event_id
+                WHERE h.application_id=%s AND (%s::bigint IS NULL OR h.audit_event_id < %s)
+                ORDER BY h.audit_event_id DESC LIMIT %s FOR SHARE OF h,e""",
+                (application_id,before,before,limit+1)).fetchall()
+            result = []
+            for row in rows[:limit]:
+                try:
+                    details = json.loads(row['details'])
+                    review = json.loads(row['review_json'])
+                    if (not isinstance(review, dict) or row['action'] != 'rubric_reviewed' or row['actor_id'] != row['reviewer_id'] or
+                        row['audit_application'] != application_id or details.get('source_digest') != row['source_digest'] or
+                        details.get('review_digest') != hashlib.sha256(row['review_json'].encode()).hexdigest()):
+                        raise ValueError('History integrity check failed')
+                except (ValueError, TypeError, AttributeError):
+                    raise HTTPException(status_code=409, detail='History integrity check failed') from None
+                result.append({'audit_event_id': row['audit_event_id'], 'reviewer_id': row['reviewer_id'],
+                               'reviewed_at': row['reviewed_at'], 'source_digest': row['source_digest'],
+                               'is_stale': row['source_digest'] != digest, **review})
+            authorize_locked(db, request, user, 'hr')
+            return {'items': result, 'next_before': rows[limit-1]['audit_event_id'] if len(rows) > limit else None,
+                    'notice': 'Historical offsets require the original masked source; stale source text is not retained.'}

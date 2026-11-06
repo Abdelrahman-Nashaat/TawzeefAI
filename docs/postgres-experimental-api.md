@@ -106,7 +106,12 @@ changes. HR may retrieve a current assessment with GET on the same endpoint.
 
 These generic category scores are subjective HR judgments. Source offsets merely
 identify text; they do not verify qualifications, accuracy, or fairness. Masking
-is incomplete, and the original requires human review. Only one current assessment
-is retained; audit records contain hashes rather than résumé excerpts. This is
+is incomplete, and the original requires human review. The latest assessment is available separately; each new review is also retained
+in append-only HR-only history at `GET /api/applications/{id}/rubric-history`,
+with a cursor, stale-source flag, and audit-integrity check. Historical offsets
+cannot reconstruct the original source after it changes; source text is not
+retained in history. Audit records contain hashes rather than résumé excerpts.
+Existing pre-history assessments are not backfilled. Advancement still requires
+the recorded keyword screen and does not require this separate rubric review. This is
 an API-only synthetic-data experiment: the browser does not expose it, and saving
 an assessment does not advance, reject, shortlist, or schedule a candidate.

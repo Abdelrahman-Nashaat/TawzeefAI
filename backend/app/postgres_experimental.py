@@ -38,6 +38,7 @@ from app.auth_store import InvalidAccount, issue_session, session_user
 from app.blind import redact_resume
 from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_document_text
 from app.postgres_rubric import DDL as RUBRIC_DDL
+from app.postgres_rubric import HISTORY_DDL, HISTORY_INDEX
 from app.postgres_rubric import install_routes as install_rubric_routes
 from app.postgres_scheduling import DDL as SCHEDULING_DDL
 from app.postgres_scheduling import install_routes
@@ -141,6 +142,8 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
             for statement in SCHEDULING_DDL:
                 db.execute(statement)
             db.execute(RUBRIC_DDL)
+            db.execute(HISTORY_DDL)
+            db.execute(HISTORY_INDEX)
             # Additive and idempotent for schemas created by earlier demo versions.
             db.execute('''CREATE TABLE IF NOT EXISTS screening_history (
                 audit_event_id bigint PRIMARY KEY REFERENCES audit_events(id), score_json text NOT NULL)''')
