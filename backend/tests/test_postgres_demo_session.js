@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 class Node {
-  constructor() { this.children = []; this.hidden = false; this.value = ''; this.textContent = ''; }
-  addEventListener() {}
+  constructor() { this.children = []; this.hidden = false; this.value = ''; this.textContent = ''; this.listeners = {}; }
+  addEventListener(name, listener) { this.listeners[name] = listener; }
   replaceChildren(...nodes) { this.children = nodes; }
   append(...nodes) { this.children.push(...nodes); }
   reset() { this.resetCalled = true; }
@@ -16,10 +16,12 @@ const response = (data, status = 200) => ({status, ok: status >= 200 && status <
 let pending = [];
 let deferred = false;
 let deferNotice = false;
+let deferProgress = false;
 const fetch = async (path) => {
   if (path === '/api/auth/me') return response({}, 401);
   if (deferred && path === '/api/applications') return new Promise(resolve => pending.push(resolve));
   if (deferNotice && path.includes('interview-cancellations')) return new Promise(resolve => pending.push(resolve));
+  if (deferProgress && path.includes('/progress')) return new Promise(resolve => pending.push(resolve));
   if (path === '/api/jobs') return response([{id:'job', title:'New job'}]);
   if (path === '/api/applications' || path === '/api/interviews') return response([]);
   if (path.includes('interview-cancellations')) return response({items: [], next_before: null});
@@ -60,5 +62,19 @@ async function run() {
   pending.shift()(response({items:[{application_id:999,start_at:'2030-01-01',is_read:false}],next_before:null}));
   await oldNotice;
   assert.equal(nodes.get('notices').children[0].textContent, 'No cancellation notices.');
+  vm.runInContext('renderApplications([{id:123,job_id:"job",status:"submitted"}], [{id:"job",title:"Old"}])', context);
+  const card = nodes.get('applications').children[0];
+  const progressButton = card.children.find(node => node.textContent === 'View current stage');
+  const progressText = card.children[card.children.indexOf(progressButton) + 1];
+  deferProgress = true;
+  progressButton.listeners.click();
+  await tick();
+  vm.runInContext('signedOut()', context);
+  deferProgress = false;
+  await vm.runInContext('openWorkspace({role:"candidate",display_name:"New"})', context);
+  pending.shift()(response({application_id:123, stage:'interviewed'}));
+  await tick();
+  assert.equal(progressText.textContent, '', 'old progress must not render after logout');
+  assert.equal(nodes.get('applications').children[0].textContent, 'No applications yet.');
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

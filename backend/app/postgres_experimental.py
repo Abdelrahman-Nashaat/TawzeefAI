@@ -292,6 +292,38 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
             authorize_locked(db, request, user)
             return result
 
+    @app.get('/api/workflows/{application_id}/progress')
+    def candidate_progress(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
+        """Expose the owner's actual stage without disclosing HR assessment."""
+        with connect() as db:
+            authorize_locked(db, request, user, 'candidate')
+            application = db.execute('''SELECT status,score_json FROM applications
+                WHERE id=%s AND candidate_id=%s FOR SHARE''', (application_id, user.id)).fetchone()
+            if application is None:
+                raise HTTPException(status_code=404, detail='Application not found')
+            status = application['status']
+            if status in ('hired', 'offered'):
+                offer = db.execute('''SELECT 1 FROM job_offers WHERE application_id=%s AND recipient_id=%s
+                    AND (status='accepted' OR (status='presented' AND %s='offered')) LIMIT 1''',
+                    (application_id, user.id, status)).fetchone()
+                stage = status if offer else 'unavailable'
+            elif status == 'rejected':
+                stage = status
+            else:
+                interview = db.execute('''SELECT completed FROM interviews WHERE application_id=%s
+                    AND candidate_id=%s AND status='scheduled' ORDER BY id DESC LIMIT 1''',
+                    (application_id, user.id)).fetchone()
+                if interview:
+                    stage = 'interviewed' if interview['completed'] else 'interview_scheduled'
+                elif status == 'advanced':
+                    stage = 'shortlisted'
+                elif application['score_json'] is not None:
+                    stage = 'screened'
+                else:
+                    stage = 'applied'
+            authorize_locked(db, request, user, 'candidate')
+            return {'application_id': application_id, 'stage': stage}
+
     @app.post('/api/applications/{application_id}/screen')
     def screen(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
         """Record a bounded keyword screen in the PostgreSQL demo transaction."""

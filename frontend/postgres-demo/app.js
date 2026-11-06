@@ -132,6 +132,15 @@ function renderApplications(applications, jobs) {
     const title = jobs.find((job) => job.id === application.job_id)?.title || application.job_id;
     card.append(element("h3", `${title} - application ${application.id}`));
     card.append(element("p", `Status: ${application.status}`));
+    if (user.role === "candidate") {
+      const progress = element("p");
+      card.append(button("View current stage", async () => {
+        const generation = sessionGeneration;
+        const result = await api(`/api/workflows/${application.id}/progress`);
+        ensureCurrent(generation);
+        progress.textContent = `Current stage: ${result.stage.replaceAll("_", " ")}`;
+      }), progress);
+    }
     const offers = element("div");
     card.append(button("View offers", () => showOffers(application, offers)), offers);
     if (user.role === "candidate" && application.status === "advanced") {

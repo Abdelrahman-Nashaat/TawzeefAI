@@ -31,6 +31,9 @@ score does not itself decide advancement. HR can create future slots with
 `POST /api/slots/{id}/book`. `GET /api/interviews` lets a candidate retrieve
 their own bookings and HR retrieve all bookings, including after restart.
 Booking is recorded locally; no email or calendar invitation is delivered.
+Candidates may view their current persisted stage in the browser or via
+`GET /api/workflows/{id}/progress`. The stage excludes HR notes and scores;
+an interview becomes interviewed only after HR confirms completion.
 For future interviews, HR may call `POST /api/interviews/{id}/cancel`, or the
 owning candidate may call `POST /api/interviews/{id}/candidate-cancel`. The
 cancellation, audit event, and local notice to the other role are committed in
