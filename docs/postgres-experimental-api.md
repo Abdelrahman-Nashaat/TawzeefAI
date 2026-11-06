@@ -93,6 +93,12 @@ routes and tested scenarios.
 
 ## Experimental HR rubric API
 
+In the PostgreSQL demo browser, HR can open the weighted rubric for a submitted
+application, select evidence from the partially masked CV and enter scores, or
+leave categories unknown. Selections are source-bound and become stale if the
+CV or job changes. This is a subjective HR review, not verified qualification
+or an automatic hiring decision; masking is incomplete.
+
 HR can use `GET /api/applications/{id}/rubric-source` to obtain the partially
 masked résumé, job requirements and a source digest. `POST
 /api/applications/{id}/rubric-assessment` saves exactly five human judgments:

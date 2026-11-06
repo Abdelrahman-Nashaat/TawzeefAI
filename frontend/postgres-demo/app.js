@@ -124,6 +124,78 @@ async function showOffers(application, container) {
   container.replaceChildren(list);
 }
 
+async function showRubric(application, container) {
+  const generation = sessionGeneration;
+  const source = await api(`/api/applications/${application.id}/rubric-source`);
+  ensureCurrent(generation);
+  const panel = element("div");
+  panel.append(element("p", "HR judgment only. Masking is incomplete; evidence does not verify qualifications. Leave a score blank when unknown. Select evidence in the CV and use the corresponding button."));
+  panel.append(element("pre", JSON.stringify(source.job, null, 2)));
+  const cv = element("textarea");
+  cv.readOnly = true; cv.value = source.resume_text; cv.rows = 12;
+  cv.setAttribute("aria-label", "Partially masked CV for evidence selection");
+  panel.append(cv);
+  const form = element("form");
+  const categories = [["mandatory_skills", "Mandatory skills (40%)"], ["preferred_skills", "Preferred skills (15%)"], ["experience", "Experience (20%)"], ["projects", "Projects (15%)"], ["education", "Education (10%)"]];
+  const fields = [];
+  for (const [category, labelText] of categories) {
+    const row = element("div");
+    const label = element("label", `${labelText} score (0-100, blank if unknown) `);
+    const score = element("input"); score.type = "number"; score.min = "0"; score.max = "100"; score.step = "1";
+    label.append(score); const evidence = element("span", "No evidence selected");
+    let selection = null;
+    row.append(label, button("Use selected evidence", async () => {
+      ensureCurrent(generation);
+      const start = cv.selectionStart, end = cv.selectionEnd;
+      if (cv.value !== source.resume_text.replace(/\r\n?/g, "\n")) throw new Error("CV display changed; reopen the rubric.");
+      if (start === end || !cv.value.slice(start, end).trim()) throw new Error("Select nonempty CV evidence first.");
+      const sourceOffset = (position) => {
+        let offset = 0, display = 0;
+        while (display < position && offset < source.resume_text.length) {
+          if (source.resume_text[offset] === "\r" && source.resume_text[offset + 1] === "\n") offset++;
+          offset++; display++;
+        }
+        return offset;
+      };
+      const originalStart = sourceOffset(start), originalEnd = sourceOffset(end);
+      const splitsSurrogate = (i) => i > 0 && i < source.resume_text.length && /[\uD800-\uDBFF]/.test(source.resume_text[i - 1]) && /[\uDC00-\uDFFF]/.test(source.resume_text[i]);
+      if (splitsSurrogate(originalStart) || splitsSurrogate(originalEnd)) throw new Error("Select complete characters.");
+      // DOM selections use UTF-16 units; the API uses Unicode code-point offsets.
+      selection = { start: Array.from(source.resume_text.slice(0, originalStart)).length,
+        end: Array.from(source.resume_text.slice(0, originalEnd)).length };
+      if (selection.end - selection.start > 1000) { selection = null; throw new Error("Evidence exceeds 1000 characters."); }
+      evidence.textContent = `Selected: ${source.resume_text.slice(originalStart, originalEnd)}`;
+    }), evidence);
+    fields.push({ category, score, selected: () => selection }); form.append(row);
+  }
+  const submit = element("button", "Save HR rubric review"); submit.type = "submit"; form.append(submit);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    action(event.submitter, async () => {
+      ensureCurrent(generation);
+      const items = fields.map(({category, score, selected}) => {
+        if (!score.value.trim()) return {category, score: null, start: null, end: null};
+        const value = Number(score.value), span = selected();
+        if (!Number.isInteger(value) || value < 0 || value > 100 || !span) throw new Error(`Enter a valid score and select evidence for ${category}.`);
+        return {category, score: value, ...span};
+      });
+      const review = await api(`/api/applications/${application.id}/rubric-assessment`, jsonPost({source_digest: source.source_digest, items}));
+      ensureCurrent(generation);
+      const result = element("div");
+      result.append(element("p", `HR assessment range: ${review.lower} - ${review.upper}. This is not an automatic decision.`));
+      if (Number.isInteger(review.audit_event_id) && items.some((item) => item.score !== null)) {
+        result.append(button("Advance using this review", async () => {
+          ensureCurrent(generation);
+          await api(`/api/applications/${application.id}/decision`, jsonPost({decision: "advance", rubric_event_id: review.audit_event_id}));
+          ensureCurrent(generation); await refresh(); ensureCurrent(generation); message("Application advanced by HR using this review.");
+        }));
+      }
+      container.replaceChildren(result);
+    });
+  });
+  panel.append(form); container.replaceChildren(panel);
+}
+
 function renderApplications(applications, jobs) {
   const target = $("applications"); target.replaceChildren();
   if (!applications.length) target.append(element("p", "No applications yet."));
@@ -197,6 +269,8 @@ function renderApplications(applications, jobs) {
       details.append(element("h4", "Provisional screening"), element("pre", application.score ? JSON.stringify(application.score, null, 2) : "Not screened"));
       card.append(details);
       if (application.status === "submitted") {
+        const rubric = element("div");
+        card.append(button("Review weighted rubric", () => showRubric(application, rubric)), rubric);
         card.append(button("Run provisional screening", async () => {
           const generation = sessionGeneration;
           await api(`/api/applications/${application.id}/screen`, { method: "POST" });
