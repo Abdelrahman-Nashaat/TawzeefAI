@@ -3,6 +3,7 @@
 import streamlit as st
 
 from streamlit_client import ApiError, ApiUnavailable
+from streamlit_graph_policy import show_policy
 
 
 def _request(api, clear_session, method, path, **kwargs):
@@ -34,11 +35,16 @@ def render_graph_offer(api, clear_session, application_id, job_id):
         st.session_state.pop('graph_offer_review', None)
         review = None
     details_key = f'graph_offer_details_{application_id}'
+    policy_key = f'graph_offer_policy_{application_id}'
     if st.session_state.pop('graph_offer_clear_details', False):
         st.session_state.pop(details_key, None)
+        st.session_state.pop(policy_key, None)
     if not review:
+        st.caption('If an AI provider is enabled, policy questions and authorized passages may be sent to it.')
         with st.form(f'graph_offer_start_{application_id}'):
             details = st.text_area('Terms for graph offer', max_chars=4000, key=details_key)
+            question = st.text_area('Optional policy question for graph offer', max_chars=2000, key=policy_key,
+                                    help='When the AI provider is enabled, the question and authorized passages may be sent to it.')
             start = st.form_submit_button('Start graph offer review')
         if start:
             if not details.strip():
@@ -46,11 +52,11 @@ def render_graph_offer(api, clear_session, application_id, job_id):
             else:
                 data = _request(api, clear_session, 'POST', '/api/graph-reviews',
                                 json={'application_id': application_id, 'intent': 'present_offer',
-                                      'offer_details': details.strip()})
+                                      'offer_details': details.strip(), 'policy_question': question.strip()})
                 st.session_state['graph_offer_clear_details'] = True
                 if data is not None:
                     st.session_state['graph_offer_review'] = {'id': data['id'], 'application_id': application_id,
-                                                              'job_id': job_id}
+                                                              'job_id': job_id, 'policy_requested': bool(question.strip())}
                 st.rerun()
         return
     data = _request(api, clear_session, 'GET', f"/api/graph-reviews/{review['id']}")
@@ -77,6 +83,10 @@ def render_graph_offer(api, clear_session, application_id, job_id):
                 f"{preview['candidate_name']} ({preview['candidate_username']})")
         st.text(f"Role: {preview['job_title']} ({job_id})")
         st.text('Offer terms: ' + preview['details'])
+        policy_current = show_policy(state, review.get('policy_requested', False))
+        if not policy_current:
+            valid = False
+    if valid:
         confirmed = st.checkbox('I reviewed the candidate, role and offer terms', key=f"graph_offer_confirm_{review['id']}")
         if st.button('Approve graph offer', key=f"graph_offer_approve_{review['id']}"):
             if not confirmed:
@@ -91,7 +101,7 @@ def render_graph_offer(api, clear_session, application_id, job_id):
                                                           if status == 'offer_presented' else
                                                           ('warning', 'Check the application before trying again.'))
             st.rerun()
-    else:
+    elif stale:
         st.warning('Offer context changed. Discard this review and start a new one.')
     if st.button('Discard graph offer review', key=f"graph_offer_discard_{review['id']}"):
         result = _request(api, clear_session, 'POST', f"/api/graph-reviews/{review['id']}/resume", json={'reviewed': False})

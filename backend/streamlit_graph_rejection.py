@@ -3,6 +3,7 @@
 import streamlit as st
 
 from streamlit_client import ApiError, ApiUnavailable
+from streamlit_graph_policy import show_policy
 
 
 def _request(api, clear_session, method, path, **kwargs):
@@ -34,11 +35,16 @@ def render_graph_rejection(api, clear_session, application_id, job_id):
         st.session_state.pop('graph_reject_review', None)
         review = None
     reason_key = f'graph_reject_reason_{application_id}'
+    policy_key = f'graph_reject_policy_{application_id}'
     if st.session_state.pop('graph_reject_clear_reason', False):
         st.session_state.pop(reason_key, None)
+        st.session_state.pop(policy_key, None)
     if not review:
+        st.caption('If an AI provider is enabled, policy questions and authorized passages may be sent to it.')
         with st.form(f'graph_reject_start_{application_id}'):
             reason = st.text_area('Reason for graph rejection', max_chars=1000, key=reason_key)
+            question = st.text_area('Optional policy question for graph rejection', max_chars=2000, key=policy_key,
+                                    help='When the AI provider is enabled, the question and authorized passages may be sent to it.')
             start = st.form_submit_button('Start graph rejection review')
         if start:
             if not reason.strip():
@@ -46,11 +52,11 @@ def render_graph_rejection(api, clear_session, application_id, job_id):
             else:
                 data = _request(api, clear_session, 'POST', '/api/graph-reviews',
                                 json={'application_id': application_id, 'intent': 'reject_application',
-                                      'rejection_reason': reason.strip()})
+                                      'rejection_reason': reason.strip(), 'policy_question': question.strip()})
                 st.session_state['graph_reject_clear_reason'] = True
                 if data is not None:
                     st.session_state['graph_reject_review'] = {'id': data['id'], 'application_id': application_id,
-                                                               'job_id': job_id}
+                                                               'job_id': job_id, 'policy_requested': bool(question.strip())}
                 st.rerun()
         return
     data = _request(api, clear_session, 'GET', f"/api/graph-reviews/{review['id']}")
@@ -83,6 +89,10 @@ def render_graph_rejection(api, clear_session, application_id, job_id):
             st.text(f"Offer #{preview['offer_id']} ({preview.get('offer_status')}) {offer_action}.")
         st.write('Future interviews to cancel:', preview['interviews'])
         st.write('Private slots to withdraw:', preview['slots'])
+        policy_current = show_policy(state, review.get('policy_requested', False))
+        if not policy_current:
+            valid = False
+    if valid:
         confirmed = st.checkbox('I reviewed the rejection reason and effects', key=f"graph_reject_confirm_{review['id']}")
         if st.button('Approve graph rejection', key=f"graph_reject_approve_{review['id']}"):
             if not confirmed:
@@ -97,7 +107,7 @@ def render_graph_rejection(api, clear_session, application_id, job_id):
                                                            if status == 'rejected' else
                                                            ('warning', 'Check the application before trying again.'))
             st.rerun()
-    else:
+    elif stale:
         st.warning('Rejection context changed. Discard this review and start a new one.')
     if st.button('Discard graph rejection review', key=f"graph_reject_discard_{review['id']}"):
         result = _request(api, clear_session, 'POST', f"/api/graph-reviews/{review['id']}/resume", json={'reviewed': False})

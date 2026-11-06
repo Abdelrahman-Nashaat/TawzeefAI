@@ -8,6 +8,14 @@ before retrying. Changing the selected application removes the review from this
 Streamlit session; an undiscarded or uncertain draft can remain on the server
 until it expires and a later offer review performs cleanup.
 
+For graph offer and rejection reviews, HR may include an optional policy
+question. The review shows currently authorized source excerpts or states that
+no answer was found. If a cited source becomes unavailable, approval is hidden;
+discard the review and start again. Excerpts require human review and are not
+proof of relevance. When the AI provider is enabled, the question and authorized
+policy passages may be sent to it. The graph checkpoint does not retain the
+question or excerpts; the form clears its question after submission and sign-out.
+
 HR can start a graph keyword-screening review from the application queue. The
 interface reloads the current server preview before approval, displays the
 candidate ID and scoring details, and requires explicit confirmation. Approval
