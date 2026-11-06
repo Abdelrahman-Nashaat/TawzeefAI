@@ -1098,7 +1098,7 @@ function setupGraphReview(target, application, refreshWorkflow) {
     const adaptiveMode = ["adaptive", "adaptive_schedule", "adaptive_advance"].includes(intent.value);
     adaptiveSemanticLabel.hidden = !adaptiveMode; adaptiveSemantic.disabled = !adaptiveMode;
     if (!adaptiveMode) adaptiveSemantic.checked = false;
-    const supportsPolicy = intent.value === "full" || intent.value === "policy" || adaptiveMode;
+    const supportsPolicy = intent.value === "full" || intent.value === "policy" || intent.value === "present_offer" || intent.value === "reject_application" || adaptiveMode;
     questionLabel.hidden = !supportsPolicy; question.disabled = !supportsPolicy;
     question.required = intent.value === "policy";
     questionLabel.firstChild.textContent = question.required ? "سؤال السياسة المطلوب للبحث المحلي" : "سؤال سياسة اختياري للبحث المحلي";

@@ -116,7 +116,7 @@ class ReviewRequest(BaseModel):
             raise ValueError('Interview ID is required only for completion review')
         if self.intent == 'policy' and not self.policy_question.strip():
             raise ValueError('Policy review requires a question')
-        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview', 'present_offer', 'finalize_hire', 'reject_application') and self.policy_question.strip():
+        if self.intent in ('scheduling', 'status', 'advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview', 'finalize_hire') and self.policy_question.strip():
             raise ValueError('Policy question is not used by this review')
         needs_slot = self.intent in ('create_slot', 'create_private_slot', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot') or (self.intent == 'adaptive' and self.adaptive_goal in ('schedule_interview', 'advance_and_reserve'))
         if needs_slot != (self.slot is not None):
@@ -571,7 +571,11 @@ def build_review_graph(path: str | Path, checkpointer, *, policy_question: str =
             'semantic_review': ['parser', 'matching', 'semantic', 'human_review'],
             'semantic_advance_and_reserve_slot': ['parser', 'matching', 'semantic', 'status', 'prepare_advance', 'human_review', 'execute_advance'],
         }
-        return {'plan': plans[state.get('intent', 'full')]}
+        intent = state.get('intent', 'full')
+        steps = list(plans[intent])
+        if intent in ('present_offer', 'reject_application') and policy_question.strip():
+            steps.insert(1, 'policy')
+        return {'plan': steps}
 
     def parser(state: ReviewState):
         with connect(path) as db:
@@ -1141,6 +1145,8 @@ def _view(snapshot, path: str | Path | None = None, *, request: Request | None =
         adaptive_fields = {'parsed': 'parser', 'matching': 'matching', 'policy': 'policy', 'scheduling': 'scheduler', 'status': 'status'}
         if selected == 'adaptive' and adaptive_fields.get(field) in state.get('plan', []):
             continue
+        if selected in ('present_offer', 'reject_application') and field == 'policy' and 'policy' in state.get('plan', []):
+            continue
         if selected in ('advance_application', 'advance_and_reserve_slot', 'semantic_review', 'semantic_advance_and_reserve_slot', 'screen_application') and field in {'parsed', 'matching', 'status'}:
             continue
         if selected != 'full' and scope != selected:
@@ -1469,7 +1475,7 @@ def resume_review(thread_id: str, payload: ReviewReply, request: Request, user: 
             if (snapshot.values.get('intent') == 'adaptive' and
                     context_for(db, snapshot.values['application_id'])[1] != snapshot.values.get('context_digest')):
                 raise HTTPException(status_code=409, detail='Application changed; start a new review')
-            if (snapshot.values.get('intent') == 'adaptive' and 'policy' in snapshot.values.get('plan', [])
+            if (snapshot.values.get('intent') in ('adaptive', 'present_offer', 'reject_application') and 'policy' in snapshot.values.get('plan', [])
                     and payload.reviewed and not _adaptive_policy_current(db, snapshot.values.get('policy'))):
                 raise HTTPException(status_code=409, detail='Policy sources changed; start a new review')
             if (snapshot.values.get('intent') in ('create_slot', 'create_private_slot', 'advance_application', 'advance_and_reserve_slot', 'semantic_advance_and_reserve_slot', 'screen_application', 'complete_interview', 'present_offer', 'finalize_hire', 'reject_application') or snapshot.values.get('adaptive_goal') in ('schedule_interview', 'advance_and_reserve')) and payload.reviewed:
