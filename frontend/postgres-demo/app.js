@@ -199,6 +199,25 @@ async function showRubric(application, container) {
 function renderApplications(applications, jobs) {
   const target = $("applications"); target.replaceChildren();
   if (!applications.length) target.append(element("p", "No applications yet."));
+  const compareSelection = [];
+  if (user.role === "hr" && applications.length >= 2) {
+    const generation = sessionGeneration;
+    const results = element("div");
+    target.append(element("p", "Select 2–20 applications for the same job with current HR reviews."));
+    target.append(button("Compare HR reviews", async () => {
+      ensureCurrent(generation);
+      const selected = compareSelection.filter((item) => item.checkbox.checked).map((item) => item.id);
+      if (selected.length < 2 || selected.length > 20) throw new Error("Select 2–20 applications.");
+      const comparison = await api("/api/hr/rubric-comparison", jsonPost({ application_ids: selected }));
+      ensureCurrent(generation);
+      const content = [element("p", comparison.notice)];
+      for (const review of comparison.reviews) content.push(element("p", `Application ${review.application_id}: ${review.lower}–${review.upper}`));
+      for (const pair of comparison.pairs) content.push(element("p", pair.higher_range === null
+        ? `Applications ${pair.application_ids.join(" and ")}: ranges overlap; order indeterminate.`
+        : `Applications ${pair.application_ids.join(" and ")}: application ${pair.higher_range} has the higher range.`));
+      results.replaceChildren(...content);
+    }), results);
+  }
   for (const application of applications) {
     const card = element("article");
     const title = jobs.find((job) => job.id === application.job_id)?.title || application.job_id;
@@ -221,6 +240,9 @@ function renderApplications(applications, jobs) {
     }
     if (user.role === "hr") {
       card.append(element("p", `Candidate ${application.candidate_id}`));
+      const label = element("label", "Select for HR comparison ");
+      const checkbox = element("input"); checkbox.type = "checkbox";
+      label.append(checkbox); card.append(label); compareSelection.push({ id: application.id, checkbox });
       if (["submitted", "advanced", "offered"].includes(application.status)) {
         const rejectionForm = element("form");
         const reasonLabel = element("label", "Reason for rejection ");

@@ -93,6 +93,19 @@ routes and tested scenarios.
 
 ## Experimental HR rubric API
 
+HR can compare two to twenty applications for the same job using
+`POST /api/hr/rubric-comparison` with `{"application_ids": [1, 2]}`. Each must
+have a current, intact, source-bound human assessment with at least one scored
+category. The response includes reviewed ranges and reports one range as higher
+only when the ranges do not overlap. Overlap is indeterminate, not a tie or
+qualification verdict. Reviews are subjective; this endpoint does not change
+any decision or status. The HR demo browser provides checkboxes and a comparison
+button for this workflow. Synthetic data only.
+
+The assessment source fingerprint now includes the job identifier. Reviews
+created before this change are marked stale and require a fresh HR assessment;
+their history remains available. Stop older server versions before upgrading.
+
 In the PostgreSQL demo browser, HR can open the weighted rubric for a submitted
 application, select evidence from the partially masked CV and enter scores, or
 leave categories unknown. Selections are source-bound and become stale if the

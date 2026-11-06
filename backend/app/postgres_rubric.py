@@ -46,8 +46,18 @@ class Assessment(BaseModel):
     items: list[AssessmentItem] = Field(min_length=5, max_length=5)
 
 
+class Comparison(BaseModel):
+    application_ids: list[StrictInt] = Field(min_length=2, max_length=20)
+
+    @model_validator(mode='after')
+    def distinct_positive_ids(self):
+        if any(value <= 0 for value in self.application_ids) or len(set(self.application_ids)) != len(self.application_ids):
+            raise ValueError('Choose two to twenty distinct applications')
+        return self
+
+
 def _source(db, application_id):
-    row = db.execute('''SELECT a.id,a.status,a.resume_text,j.required_skills,j.preferred_skills,
+    row = db.execute('''SELECT a.id,a.status,a.resume_text,j.id AS job_id,j.required_skills,j.preferred_skills,
         j.responsibilities,j.title FROM applications a JOIN jobs j ON j.id=a.job_id
         WHERE a.id=%s FOR UPDATE OF a FOR SHARE OF j''', (application_id,)).fetchone()
     if row is None:
@@ -57,13 +67,64 @@ def _source(db, application_id):
     masked = redact_resume(row['resume_text']).text
     if len(masked) > 16000:
         raise HTTPException(status_code=422, detail='Resume exceeds experimental review limit')
-    basis = json.dumps([row['resume_text'], masked, row['title'], row['required_skills'],
+    basis = json.dumps([row['job_id'], row['resume_text'], masked, row['title'], row['required_skills'],
                         row['preferred_skills'], row['responsibilities']], ensure_ascii=False, separators=(',', ':'))
     digest = hashlib.sha256(basis.encode('utf-8')).hexdigest()
     return row, masked, digest
 
 
 def install_routes(app, connect, authenticate, authorize_locked):
+    @app.post('/api/hr/rubric-comparison')
+    def compare(payload: Comparison, request: Request, user: Annotated[User, Depends(authenticate)]):
+        """Compare current human reviews; overlapping score ranges are indeterminate."""
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+            comparisons = []
+            job_id = None
+            # Stable lock order avoids reversed-input comparisons deadlocking.
+            for application_id in sorted(payload.application_ids):
+                row, _, digest = _source(db, application_id)
+                if job_id is None:
+                    job_id = row['job_id']
+                elif row['job_id'] != job_id:
+                    raise HTTPException(status_code=422, detail='Applications must belong to the same job')
+                review = db.execute('''SELECT h.audit_event_id,h.source_digest,h.review_json,h.reviewer_id,
+                    e.details,e.action,e.actor_id,e.application_id AS audit_application
+                    FROM hr_rubric_history h JOIN audit_events e ON e.id=h.audit_event_id
+                    JOIN hr_rubric_assessments a ON a.application_id=h.application_id
+                    WHERE h.application_id=%s AND h.audit_event_id=(SELECT max(audit_event_id)
+                        FROM hr_rubric_history WHERE application_id=%s)
+                    AND h.source_digest=a.source_digest AND h.review_json=a.review_json AND h.reviewer_id=a.reviewer_id
+                    FOR SHARE OF h,e,a''', (application_id, application_id)).fetchone()
+                try:
+                    data = json.loads(review['review_json']) if review else None
+                    details = json.loads(review['details']) if review else None
+                    items = [AssessmentItem.model_validate(item) for item in data['items']]
+                    valid = (review['source_digest'] == digest and review['action'] == 'rubric_reviewed'
+                             and review['actor_id'] == review['reviewer_id'] and review['audit_application'] == application_id
+                             and details.get('source_digest') == digest
+                             and details.get('review_digest') == hashlib.sha256(review['review_json'].encode()).hexdigest()
+                             and len(items) == 5 and {item.category for item in items} == set(WEIGHTS)
+                             and any(item.score is not None for item in items))
+                except (TypeError, ValueError, KeyError, AttributeError):
+                    valid = False
+                if not valid:
+                    raise HTTPException(status_code=409, detail='Each application needs a current, intact HR review')
+                lower = sum(WEIGHTS[item.category] * item.score for item in items if item.score is not None) / 100
+                upper = lower + sum(WEIGHTS[item.category] for item in items if item.score is None)
+                comparisons.append({'application_id': application_id, 'audit_event_id': review['audit_event_id'],
+                                    'lower': lower, 'upper': upper})
+            pairs = []
+            for index, left in enumerate(comparisons):
+                for right in comparisons[index + 1:]:
+                    higher = (left['application_id'] if left['lower'] > right['upper'] else
+                              right['application_id'] if right['lower'] > left['upper'] else None)
+                    pairs.append({'application_ids': [left['application_id'], right['application_id']],
+                                  'higher_range': higher})
+            authorize_locked(db, request, user, 'hr')
+            return {'job_id': job_id, 'reviews': comparisons, 'pairs': pairs,
+                    'notice': 'Human judgments are unverified; overlapping ranges are indeterminate, not a tie or hiring decision.'}
+
     @app.get('/api/applications/{application_id}/rubric-source')
     def source(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
         with connect() as db:
