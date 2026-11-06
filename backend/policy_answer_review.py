@@ -31,6 +31,26 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
 
 
+def decisive_agreement(pairs):
+    """Describe agreement on pairs where both reviewers made a definite judgment."""
+    complete = [(a, b) for a, b in pairs if a and b]
+    definite = [(a, b) for a, b in complete if a != 'uncertain' and b != 'uncertain']
+    count = len(definite)
+    result = {'paired': count, 'excluded_missing': len(pairs) - len(complete),
+              'excluded_uncertain': len(complete) - count, 'agreements': 0,
+              'observed_agreement': None, 'chance_agreement': None, 'cohen_kappa': None}
+    if not count:
+        return result
+    first = Counter(a for a, _ in definite)
+    second = Counter(b for _, b in definite)
+    matches = sum(a == b for a, b in definite)
+    observed = matches / count
+    chance = sum(first[label] * second[label] for label in first.keys() | second.keys()) / (count * count)
+    result.update(agreements=matches, observed_agreement=observed, chance_agreement=chance,
+                  cohen_kappa=(observed - chance) / (1 - chance) if chance < 1 else None)
+    return result
+
+
 def prepare(destination: Path):
     destination = destination.resolve()
     if destination == ROOT or destination.is_relative_to(ROOT) or destination.exists():
@@ -118,12 +138,13 @@ def report(directory: Path):
         compared = [(a, b) for a, b in pairs if a and b]
         dimensions[field] = {'reviewers': groups, 'both_reviewed': len(compared),
                              'agreements': sum(a == b for a, b in compared),
+                             'decisive_agreement': decisive_agreement(pairs),
                              'disagreements': [{'case_id': case, 'R1': reviewers['R1'][case][field],
                                                 'R2': reviewers['R2'][case][field]} for case in ids
                                                if reviewers['R1'][case][field] and reviewers['R2'][case][field]
                                                and reviewers['R1'][case][field] != reviewers['R2'][case][field]]}
     return {'run_sha256': materials['run_sha256'], 'case_count': len(ids), 'dimensions': dimensions,
-            'notice': 'Counts reflect entered judgments only. Independence, expertise and correctness are not verified; unresolved disagreement is not adjudicated.'}
+            'notice': 'Counts reflect entered judgments only. Decisive agreement excludes missing and uncertain pairs; kappa is undefined when chance agreement is 1 and may be unstable for small samples. Independence, expertise and correctness are not verified; unresolved disagreement is not adjudicated.'}
 
 
 def main():

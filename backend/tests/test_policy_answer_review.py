@@ -52,6 +52,32 @@ def test_packet_rejects_material_changes_and_invalid_judgments(tmp_path):
         review.report(packet)
 
 
+def test_decisive_agreement_reports_denominators_and_chance_adjustment(tmp_path):
+    packet = review.prepare(tmp_path / 'review')
+    # Eight definite pairs: 3 correct/correct, 3 incorrect/incorrect,
+    # 1 in each disagreement direction. p_o = 6/8, p_e = 1/2, kappa = 1/2.
+    r1 = ['correct'] * 4 + ['incorrect'] * 4 + ['uncertain', 'correct', '']
+    r2 = ['correct'] * 3 + ['incorrect', 'correct'] + ['incorrect'] * 3 + ['uncertain', 'uncertain', 'correct']
+    for reviewer, values in [('R1', r1), ('R2', r2)]:
+        def fill(rows, values=values):
+            for row, value in zip(rows, values):
+                row['correctness'] = value
+        edit_csv(packet / f'{reviewer}-judgments.csv', fill)
+    result = review.report(packet)['dimensions']['correctness']['decisive_agreement']
+    assert result == {'paired': 8, 'excluded_missing': 24, 'excluded_uncertain': 2,
+                      'agreements': 6, 'observed_agreement': 0.75,
+                      'chance_agreement': 0.5, 'cohen_kappa': 0.5}
+
+
+def test_decisive_agreement_handles_missing_and_single_category():
+    assert review.decisive_agreement([('', ''), ('uncertain', 'correct')]) == {
+        'paired': 0, 'excluded_missing': 1, 'excluded_uncertain': 1, 'agreements': 0,
+        'observed_agreement': None, 'chance_agreement': None, 'cohen_kappa': None}
+    result = review.decisive_agreement([('correct', 'correct'), ('correct', 'correct')])
+    assert result['observed_agreement'] == 1 and result['chance_agreement'] == 1
+    assert result['cohen_kappa'] is None
+
+
 @pytest.mark.parametrize('change', ['duplicate', 'unknown'])
 def test_packet_rejects_duplicate_cases_and_unknown_verdicts(tmp_path, change):
     packet = review.prepare(tmp_path / 'review')

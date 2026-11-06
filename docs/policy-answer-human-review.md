@@ -53,6 +53,13 @@ reviewed and unreviewed judgments per dimension and reviewer, and lists paired
 disagreements. Resolve disagreements separately and retain the initial judgments;
 the tool does not adjudicate or infer missing verdicts. Report denominators,
 uncertainties, exclusions, provider errors, and both reviewers' outcomes.
+For each dimension it also reports decisive paired agreement and Cohen's kappa,
+excluding missing and uncertain pairs and reporting both exclusion counts.
+The observed agreement and chance agreement are proportions; kappa is null
+when no definite pairs exist or chance agreement is 1. `not_applicable`,
+`no_claim`, and `no_citation` are definite categories where allowed, not missing
+values. These statistics describe only the entered cases and are unstable with
+small samples; they do not establish reviewer independence or answer accuracy.
 Document who reviewed the material and how disagreements were handled before
 describing a human-reviewed result. Packet fingerprints detect accidental edits
 to materials, not intentional manipulation or reviewer independence. These
