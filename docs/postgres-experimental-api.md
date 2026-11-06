@@ -90,3 +90,23 @@ local time zone. Unsupported endpoints return 404. Run the real PostgreSQL tests
 `pytest -q tests/test_postgres_experimental_api.py tests/test_postgres_scheduling.py tests/test_postgres_cancellation_lifecycle.py tests/test_postgres_interview_completion.py tests/test_postgres_offers.py`. The tests create and remove
 randomly named test schemas. No success claim extends beyond the implemented
 routes and tested scenarios.
+
+## Experimental HR rubric API
+
+HR can use `GET /api/applications/{id}/rubric-source` to obtain the partially
+masked résumé, job requirements and a source digest. `POST
+/api/applications/{id}/rubric-assessment` saves exactly five human judgments:
+`mandatory_skills`, `preferred_skills`, `experience`, `projects`, and
+`education`, weighted 40/15/20/15/10. Each judgment contains an integer score
+from 0 to 100 and nonempty `start`/`end` offsets into the returned masked text,
+or `null` for an unknown category without offsets. Unknown categories contribute
+a range of possible scores, not an assumption of missing qualifications. The
+reviewer submits the source digest and must review again if the résumé or job
+changes. HR may retrieve a current assessment with GET on the same endpoint.
+
+These generic category scores are subjective HR judgments. Source offsets merely
+identify text; they do not verify qualifications, accuracy, or fairness. Masking
+is incomplete, and the original requires human review. Only one current assessment
+is retained; audit records contain hashes rather than résumé excerpts. This is
+an API-only synthetic-data experiment: the browser does not expose it, and saving
+an assessment does not advance, reject, shortlist, or schedule a candidate.

@@ -37,6 +37,8 @@ from app.auth import (
 from app.auth_store import InvalidAccount, issue_session, session_user
 from app.blind import redact_resume
 from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_document_text
+from app.postgres_rubric import DDL as RUBRIC_DDL
+from app.postgres_rubric import install_routes as install_rubric_routes
 from app.postgres_scheduling import DDL as SCHEDULING_DDL
 from app.postgres_scheduling import install_routes
 from app.recruitment import (
@@ -138,6 +140,7 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
                                   ('required_skills','preferred_skills','responsibilities'))))
             for statement in SCHEDULING_DDL:
                 db.execute(statement)
+            db.execute(RUBRIC_DDL)
             # Additive and idempotent for schemas created by earlier demo versions.
             db.execute('''CREATE TABLE IF NOT EXISTS screening_history (
                 audit_event_id bigint PRIMARY KEY REFERENCES audit_events(id), score_json text NOT NULL)''')
@@ -363,5 +366,6 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
         finally:
             _SCREEN_WORKERS.release()
 
+    install_rubric_routes(app, connect, authenticate, authorize_locked)
     install_routes(app, connect, authenticate, authorize_locked)
     return app
