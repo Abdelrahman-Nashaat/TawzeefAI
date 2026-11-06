@@ -111,7 +111,11 @@ in append-only HR-only history at `GET /api/applications/{id}/rubric-history`,
 with a cursor, stale-source flag, and audit-integrity check. Historical offsets
 cannot reconstruct the original source after it changes; source text is not
 retained in history. Audit records contain hashes rather than résumé excerpts.
-Existing pre-history assessments are not backfilled. Advancement still requires
-the recorded keyword screen and does not require this separate rubric review. This is
-an API-only synthetic-data experiment: the browser does not expose it, and saving
-an assessment does not advance, reject, shortlist, or schedule a candidate.
+Existing pre-history assessments are not backfilled. HR may explicitly advance
+using either the recorded keyword screen or a current rubric review. For the latter,
+send `{"decision":"advance","rubric_event_id": N}` to the decision endpoint,
+where `N` is the `audit_event_id` returned by saving the review. The review must
+be the latest, source-current and integrity-checked, with at least one scored
+category. The decision records this event ID, not résumé text. A later review or
+source change invalidates the proposed action. This is an API-only synthetic-data
+experiment: saving an assessment itself does not advance, reject, or schedule.

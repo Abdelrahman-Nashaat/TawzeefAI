@@ -4,17 +4,19 @@ All writes use one transaction-scoped advisory lock to serialize slot and
 interview conflict checks. No external calendar or message is sent.
 """
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt
 
 from app.auth import User
 from app.postgres_offers import DDL as OFFER_DDL
 from app.postgres_offers import hire
 from app.postgres_offers import install_routes as install_offer_routes
+from app.postgres_rubric import _source as rubric_source
 from app.recruitment import application_view
 from app.slots import BookSlot, SlotCreate
 
@@ -76,6 +78,7 @@ DDL += OFFER_DDL
 class Advance(BaseModel):
     decision: str
     note: str = ''
+    rubric_event_id: StrictInt | None = Field(default=None, gt=0)
 
 
 def install_routes(app, connect, authenticate, authorize_locked):
@@ -99,6 +102,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
         if user.role != 'hr':
             raise HTTPException(status_code=403, detail='Access denied')
         if (payload.decision not in {'advance', 'hire', 'reject'} or len(payload.note) > 2000
+                or (payload.rubric_event_id is not None and payload.decision != 'advance')
                 or (payload.decision == 'reject' and not payload.note.strip())):
             raise HTTPException(status_code=422, detail='Invalid decision or missing rejection reason')
         with connect() as db:
@@ -134,9 +138,32 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 result = application_view(db.execute('SELECT * FROM applications WHERE id=%s', (application_id,)).fetchone(), user)
                 authorize_locked(db, request, user, 'hr')
                 return result
-            if row['status'] != 'submitted' or row['score_json'] is None:
+            if row['status'] != 'submitted':
                 raise HTTPException(status_code=409, detail='A submitted, screened application is required')
-            if not db.execute('''SELECT 1 FROM screening_history h JOIN audit_events e ON e.id=h.audit_event_id
+            if payload.rubric_event_id is not None:
+                _, _, current_digest = rubric_source(db, application_id)
+                review = db.execute('''SELECT h.source_digest,h.review_json,e.details,e.action,e.actor_id,h.reviewer_id,
+                    e.application_id AS audit_application
+                    FROM hr_rubric_history h JOIN audit_events e ON e.id=h.audit_event_id
+                    JOIN hr_rubric_assessments a ON a.application_id=h.application_id
+                    WHERE h.application_id=%s AND h.audit_event_id=%s
+                    AND h.source_digest=a.source_digest AND h.review_json=a.review_json AND h.reviewer_id=a.reviewer_id
+                    AND h.audit_event_id=(SELECT max(audit_event_id) FROM hr_rubric_history WHERE application_id=%s)
+                    FOR SHARE OF h,e,a''', (application_id, payload.rubric_event_id, application_id)).fetchone()
+                try:
+                    details = json.loads(review['details']) if review else None
+                    content = json.loads(review['review_json']) if review else None
+                    valid = (review and review['source_digest'] == current_digest and
+                             review['action'] == 'rubric_reviewed' and review['actor_id'] == review['reviewer_id'] and
+                             review['audit_application'] == application_id and
+                             details.get('source_digest') == current_digest and
+                             details.get('review_digest') == hashlib.sha256(review['review_json'].encode()).hexdigest() and
+                             any(item.get('score') is not None for item in content['items']))
+                except (TypeError, ValueError, KeyError, AttributeError):
+                    valid = False
+                if not valid:
+                    raise HTTPException(status_code=409, detail='Current reviewed rubric assessment required')
+            elif row['score_json'] is None or not db.execute('''SELECT 1 FROM screening_history h JOIN audit_events e ON e.id=h.audit_event_id
                 WHERE e.application_id=%s AND e.action='screened' AND h.score_json=%s LIMIT 1''',
                               (application_id, row['score_json'])).fetchone():
                 raise HTTPException(status_code=409, detail='A recorded screening is required')
@@ -144,7 +171,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=409, detail='An active candidate is required')
             db.execute("UPDATE applications SET status='advanced', updated_at=to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') WHERE id=%s", (application_id,))
             db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'decision',%s)",
-                       (application_id, user.id, json.dumps({'decision': 'advance', 'note': payload.note}, ensure_ascii=False)))
+                       (application_id, user.id, json.dumps({'decision': 'advance', 'note': payload.note,
+                        **({'rubric_event_id': payload.rubric_event_id} if payload.rubric_event_id is not None else {})}, ensure_ascii=False)))
             result = application_view(db.execute('SELECT * FROM applications WHERE id=%s', (application_id,)).fetchone(), user)
             authorize_locked(db, request, user, 'hr')
             return result

@@ -109,7 +109,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
             db.execute("INSERT INTO hr_rubric_history(audit_event_id,application_id,reviewer_id,source_digest,review_json) VALUES (%s,%s,%s,%s,%s)",
                        (event['id'],application_id,user.id,digest,data))
             authorize_locked(db, request, user, 'hr')
-            return {'source_digest': digest, **review, 'notice': 'Human assessment is provisional, not an automatic decision.'}
+            return {'source_digest': digest, 'audit_event_id': event['id'], **review,
+                    'notice': 'Human assessment is provisional, not an automatic decision.'}
 
     @app.get('/api/applications/{application_id}/rubric-assessment')
     def read_assessment(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
