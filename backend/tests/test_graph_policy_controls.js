@@ -58,4 +58,3 @@ async function render(state) {
     'stale semantic evidence must block action but permit discard');
   console.log('Graph stale-policy and discard UI checks passed.');
 })().catch(error=>{console.error(error);process.exitCode=1});
-
