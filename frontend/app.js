@@ -1229,6 +1229,8 @@ function setupGraphReview(target, application, refreshWorkflow) {
       }
     }
     const policy = review.state.policy;
+    const policyRequired = ["adaptive", "present_offer", "reject_application", "semantic_review", "semantic_advance_and_reserve_slot"].includes(review.state.intent) && review.state.plan?.includes("policy");
+    const stalePolicy = policyRequired && !(policy?.status === "abstain" || (policy?.status === "answer" && typeof policy.answer === "string" && Array.isArray(policy.sources) && policy.sources.length > 0));
     if (policy?.status === "answer" && typeof policy.answer === "string" && Array.isArray(policy.sources)) {
       output.append(element("h4", "", "نتيجة بحث السياسة"), element("p", "subtle-note", "مقتطفات من المصادر؛ تحقق من السياق قبل الاعتماد عليها."), element("p", "", policy.answer));
       if (policy.notice) output.append(element("p", "subtle-note", policy.notice));
@@ -1344,8 +1346,8 @@ function setupGraphReview(target, application, refreshWorkflow) {
       const approve = element("button", "small-button", validReject ? "Approve and reject application" : validHire ? "Approve and finalize hiring" : validOffer ? "Approve and present offer" : validCompletion ? "Confirm interview took place" : validScreen ? "Approve and record screening" : validCombined ? "Approve advancement and private slot" : validAdvance ? "Approve advancement" : "Approve this slot"); approve.type = "button";
       const decline = element("button", "outline-button", "أرفض المقترح"); decline.type = "button";
       const staleSemantic = (review.state.intent === "semantic_advance_and_reserve_slot" || (review.state.intent === "adaptive" && review.state.plan?.includes("semantic"))) && semantic?.status !== "current";
-      if (discardOnly || review.state.plan_stale || staleSemantic) approve.disabled = true;
-      if (review.state.plan_stale || staleSemantic) decline.disabled = true;
+      if (discardOnly || review.state.plan_stale || staleSemantic || stalePolicy) approve.disabled = true;
+      if (review.state.plan_stale) decline.disabled = true;
       async function decide(reviewed) {
         let uncertain = false;
         approve.disabled = true; decline.disabled = true; start.disabled = true; open.disabled = true; report("جارٍ تسجيل القرار...");
@@ -1359,7 +1361,7 @@ function setupGraphReview(target, application, refreshWorkflow) {
         } catch (error) {
           uncertain = error instanceof TypeError;
           if (!isStale(error) && target.isConnected) report(uncertain ? "تعذّر الاتصال بالخادم. أعد تحميل المراجعة للتحقق من حالة القرار قبل المحاولة مجددًا." : error.message, true);
-        } finally { approve.disabled = discardOnly || uncertain || Boolean(review.state.plan_stale) || staleSemantic; decline.disabled = uncertain || Boolean(review.state.plan_stale) || staleSemantic; start.disabled = false; open.disabled = false; }
+        } finally { approve.disabled = discardOnly || uncertain || Boolean(review.state.plan_stale) || staleSemantic || stalePolicy; decline.disabled = uncertain || Boolean(review.state.plan_stale); start.disabled = false; open.disabled = false; }
       }
       approve.addEventListener("click", () => decide(true)); decline.addEventListener("click", () => decide(false));
       if (discardOnly) {
@@ -1369,18 +1371,22 @@ function setupGraphReview(target, application, refreshWorkflow) {
     } else if (review.awaiting_review) {
       output.append(element("p", "result-badge", "توقفت المراجعة بانتظار التأكيد البشري."));
       const resume = element("button", "small-button", "أؤكد أنني راجعت النتائج واستكمل المراجعة"); resume.type = "button";
-      if (review.state.intent === "adaptive" && review.state.plan_stale) resume.disabled = true;
-      if (review.state.intent === "semantic_review" && semantic?.status !== "current") resume.disabled = true;
-      if (review.state.intent === "adaptive" && review.state.plan?.includes("semantic") && semantic?.status !== "current") resume.disabled = true;
-      resume.addEventListener("click", async () => {
-        resume.disabled = true; start.disabled = true; open.disabled = true; report("جارٍ استكمال المراجعة...");
+      const staleReadOnly = Boolean(review.state.plan_stale) || stalePolicy || (review.state.intent === "semantic_review" && semantic?.status !== "current") || (review.state.intent === "adaptive" && review.state.plan?.includes("semantic") && semantic?.status !== "current");
+      resume.disabled = staleReadOnly;
+      const discard = element("button", "outline-button", "Discard review"); discard.type = "button";
+      discard.disabled = Boolean(review.state.plan_stale);
+      async function finishReadOnly(reviewed) {
+        let uncertain = false;
+        resume.disabled = true; discard.disabled = true; start.disabled = true; open.disabled = true; report("جارٍ استكمال المراجعة...");
         try {
-          const updated = await api(`/api/graph-reviews/${encodeURIComponent(review.id)}/resume`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewed: true }) });
-          if (target.isConnected) { display(updated); report("اكتملت مراجعة المراحل دون تغيير قرار الطلب أو حجز موعد."); }
-        } catch (error) { if (!isStale(error) && target.isConnected) report(error instanceof TypeError ? "تعذّر الاتصال بالخادم." : error.message, true); }
-        finally { resume.disabled = (review.state.intent === "semantic_review" || (review.state.intent === "adaptive" && review.state.plan?.includes("semantic"))) && semantic?.status !== "current"; start.disabled = false; open.disabled = false; }
-      });
-      output.append(resume);
+          const updated = await api(`/api/graph-reviews/${encodeURIComponent(review.id)}/resume`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewed }) });
+          if (target.isConnected) { display(updated); report(reviewed ? "Review completed without changing the application or booking a slot." : "Review discarded without taking action."); }
+        } catch (error) { uncertain = error instanceof TypeError; if (!isStale(error) && target.isConnected) report(uncertain ? "Connection failed. Reload the review before trying again." : error.message, true); }
+        finally { resume.disabled = staleReadOnly || uncertain; discard.disabled = Boolean(review.state.plan_stale) || uncertain; start.disabled = false; open.disabled = false; }
+      }
+      resume.addEventListener("click", () => finishReadOnly(true));
+      discard.addEventListener("click", () => finishReadOnly(false));
+      output.append(resume, discard);
     } else if (!result) output.append(element("p", "result-badge", review.state.reviewed === true ? "اكتملت المراجعة بتأكيد بشري." : "انتهت المراجعة دون تأكيد بأن النتائج روجعت."));
   }
   async function load(id) {
