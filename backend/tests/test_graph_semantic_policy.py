@@ -2,6 +2,7 @@
 import sqlite3
 
 import pytest
+from fastapi import HTTPException
 
 from app.db import connect
 
@@ -91,3 +92,46 @@ def test_combined_review_rechecks_resume_and_hr_role(case, change, expected):
     with connect(path) as db:
         assert db.execute('SELECT status FROM applications WHERE id=?', (application,)).fetchone()[0] == 'submitted'
         assert db.execute('SELECT count(*) FROM interview_slots').fetchone()[0] == 0
+
+
+def test_combined_policy_check_holds_write_lock_and_expiry_rolls_back(case, monkeypatch):
+    from app import graph_orchestrator
+
+    client, path, application, _, slot = case
+    policy = client.post('/api/knowledge/documents/text', json={
+        'title': 'Quasar policy', 'audience': 'hr', 'collection': 'handbook',
+        'text': 'Quasar leave is eleven days.',
+    }).json()['id']
+    response = client.post('/api/graph-reviews', json={
+        'application_id': application, 'intent': 'semantic_advance_and_reserve_slot',
+        'slot': slot, 'policy_question': 'What is quasar leave?',
+    })
+    assert response.status_code == 201, response.text
+    review = response.json()
+    original_policy = graph_orchestrator._adaptive_policy_current
+    original_auth = graph_orchestrator._authorize_resume
+    calls = 0
+
+    def policy_under_lock(db, value):
+        assert db.in_transaction
+        with sqlite3.connect(str(path), timeout=0) as other, pytest.raises(sqlite3.OperationalError, match='locked'):
+            other.execute('UPDATE knowledge_documents SET active=0 WHERE id=?', (policy,))
+        return original_policy(db, value)
+
+    def expire_before_commit(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise HTTPException(status_code=401, detail='Session expired')
+        return original_auth(*args)
+
+    monkeypatch.setattr(graph_orchestrator, '_adaptive_policy_current', policy_under_lock)
+    monkeypatch.setattr(graph_orchestrator, '_authorize_resume', expire_before_commit)
+    endpoint = f"/api/graph-reviews/{review['id']}/resume"
+    payload = {'reviewed': True, 'approval_fingerprint': review['state']['action_proposal']['approval_fingerprint']}
+    assert client.post(endpoint, json=payload).status_code == 401
+    with connect(path) as db:
+        assert db.execute('SELECT status FROM applications WHERE id=?', (application,)).fetchone()[0] == 'submitted'
+        assert db.execute('SELECT count(*) FROM interview_slots').fetchone()[0] == 0
+    monkeypatch.setattr(graph_orchestrator, '_authorize_resume', original_auth)
+    assert client.post(endpoint, json=payload).status_code == 200
