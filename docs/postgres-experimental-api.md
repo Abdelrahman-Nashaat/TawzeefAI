@@ -99,6 +99,20 @@ routes and tested scenarios.
 
 ## Experimental HR rubric API
 
+HR can explicitly share the current reviewed score range and an HR-written
+candidate-facing explanation using the browser or
+`POST /api/applications/{id}/candidate-feedback`. The candidate sees only that
+range and explanation via the browser or `GET` on the same path; private rubric
+judgments and CV excerpts are not included automatically. HR must review the
+exact text before sharing and can retract it with `DELETE` on that path. A new
+assessment or changed CV or job makes a prior publication unavailable while
+the saved source is no longer current. Feedback is only returned while the
+stored recipient owns the application. Publishing and retraction write audit events
+without copying the explanation to the audit log. Previously seen information
+cannot be recalled from the candidate. Replacing or retracting feedback removes
+the previous explanation; the audit log records the action but cannot reconstruct
+that text. This remains a synthetic local demo.
+
 HR can compare two to twenty applications for the same job using
 `POST /api/hr/rubric-comparison` with `{"application_ids": [1, 2]}`. Each must
 have a current, intact, source-bound human assessment with at least one scored

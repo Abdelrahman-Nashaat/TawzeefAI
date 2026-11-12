@@ -184,6 +184,27 @@ async function showRubric(application, container) {
       const result = element("div");
       result.append(element("p", `HR assessment range: ${review.lower} - ${review.upper}. This is not an automatic decision.`));
       if (Number.isInteger(review.audit_event_id) && items.some((item) => item.score !== null)) {
+        const feedbackForm = element("form");
+        const feedbackLabel = element("label", "Candidate-facing explanation ");
+        const feedback = element("textarea"); feedback.required = true; feedback.maxLength = 2000;
+        feedbackLabel.append(feedback);
+        const share = element("button", "Share explanation and score range"); share.type = "submit";
+        feedbackForm.append(element("p", "Review your explanation before sharing it with the candidate. Your private rubric judgments and CV excerpts are not shared automatically."), feedbackLabel, share);
+        feedbackForm.addEventListener("submit", (event) => {
+          event.preventDefault();
+          action(event.submitter, async () => {
+            ensureCurrent(generation);
+            const explanation = feedback.value.trim();
+            if (!explanation) throw new Error("Enter an explanation to share.");
+            await api(`/api/applications/${application.id}/candidate-feedback`, jsonPost({audit_event_id: review.audit_event_id, explanation}));
+            ensureCurrent(generation); feedback.value = ""; message("Assessment feedback shared with candidate.");
+          });
+        });
+        result.append(feedbackForm, button("Retract candidate feedback", async () => {
+          ensureCurrent(generation);
+          await api(`/api/applications/${application.id}/candidate-feedback`, { method: "DELETE" });
+          ensureCurrent(generation); message("Candidate feedback retracted.");
+        }));
         result.append(button("Advance using this review", async () => {
           ensureCurrent(generation);
           await api(`/api/applications/${application.id}/decision`, jsonPost({decision: "advance", rubric_event_id: review.audit_event_id}));
@@ -194,6 +215,37 @@ async function showRubric(application, container) {
     });
   });
   panel.append(form); container.replaceChildren(panel);
+}
+
+async function manageFeedback(application, container) {
+  const generation = sessionGeneration;
+  const history = await api(`/api/applications/${application.id}/rubric-history?limit=1`);
+  ensureCurrent(generation);
+  const panel = element("div");
+  const current = history.items[0];
+  panel.append(button("Retract candidate feedback", async () => {
+    ensureCurrent(generation);
+    await api(`/api/applications/${application.id}/candidate-feedback`, { method: "DELETE" });
+    ensureCurrent(generation); message("Candidate feedback retracted.");
+  }));
+  if (!current || current.is_stale) {
+    panel.append(element("p", "A current HR rubric review is required before sharing feedback."));
+  } else {
+    panel.append(element("p", `The candidate will see score range ${current.lower} - ${current.upper} and your explanation. Private rubric judgments and CV excerpts are not shared automatically.`));
+    const form = element("form"); const label = element("label", "Candidate-facing explanation ");
+    const explanation = element("textarea"); explanation.required = true; explanation.maxLength = 2000; label.append(explanation);
+    const submit = element("button", "Share feedback"); submit.type = "submit"; form.append(label, submit);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault(); action(event.submitter, async () => {
+        ensureCurrent(generation);
+        const text = explanation.value.trim(); if (!text) throw new Error("Enter an explanation to share.");
+        await api(`/api/applications/${application.id}/candidate-feedback`, jsonPost({audit_event_id: current.audit_event_id, explanation: text}));
+        ensureCurrent(generation); explanation.value = ""; message("Assessment feedback shared with candidate.");
+      });
+    });
+    panel.append(form);
+  }
+  container.replaceChildren(panel);
 }
 
 function renderApplications(applications, jobs) {
@@ -231,6 +283,15 @@ function renderApplications(applications, jobs) {
         ensureCurrent(generation);
         progress.textContent = `Current stage: ${result.stage.replaceAll("_", " ")}`;
       }), progress);
+      const feedback = element("div");
+      card.append(button("View HR feedback", async () => {
+        const generation = sessionGeneration;
+        const result = await api(`/api/applications/${application.id}/candidate-feedback`);
+        ensureCurrent(generation);
+        if (result.status !== "current") { feedback.replaceChildren(element("p", "No current feedback has been shared.")); return; }
+        feedback.replaceChildren(element("p", `HR assessment range: ${result.lower} - ${result.upper}`),
+          element("p", result.explanation), element("p", result.notice));
+      }), feedback);
     }
     const offers = element("div");
     card.append(button("View offers", () => showOffers(application, offers)), offers);
@@ -240,6 +301,8 @@ function renderApplications(applications, jobs) {
     }
     if (user.role === "hr") {
       card.append(element("p", `Candidate ${application.candidate_id}`));
+      const feedback = element("div");
+      card.append(button("Manage candidate feedback", () => manageFeedback(application, feedback)), feedback);
       const label = element("label", "Select for HR comparison ");
       const checkbox = element("input"); checkbox.type = "checkbox";
       label.append(checkbox); card.append(label); compareSelection.push({ id: application.id, checkbox });
