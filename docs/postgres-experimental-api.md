@@ -8,8 +8,14 @@ jobs, application submission and listing, HR keyword screening and advancement,
 local candidate interview booking, cancellation, explicit HR completion, local
 cancellation notices, and offers with candidate response and explicit HR hire
 are implemented. A dedicated browser interface supports these actions. Graph
-workflows, calendar and email delivery, policy chat, and the dashboard remain
+workflows, calendar and email delivery, and policy chat remain
 unavailable in this mode.
+
+The HR-only dashboard reports current application statuses, recorded screening
+events, and time to hire by job. The average is the number of days from
+submission to the latest recorded hire decision for currently hired applications;
+missing, invalid or negative durations are excluded. It is not a comparison
+with manual screening or evidence of time saved. No applicants yields no average.
 
 HR may reject a submitted, advanced, or offered application with a nonempty
 reason through the browser or API. The decision atomically withdraws a presented offer and cancels future

@@ -25,7 +25,7 @@ function signedOut() {
   $("password").value = "";
   $("resume").value = "";
   $("slot-form").reset();
-  for (const id of ["applications", "interviews", "notices"]) $(id).replaceChildren();
+  for (const id of ["applications", "interviews", "notices", "dashboard-results"]) $(id).replaceChildren();
 }
 
 async function api(path, options = {}) {
@@ -376,6 +376,7 @@ async function openWorkspace(account) {
   }
   $("login-panel").hidden = true; $("workspace").hidden = false; $("logout").hidden = false;
   $("candidate-upload").hidden = user.role !== "candidate"; $("hr-slots").hidden = user.role !== "hr";
+  $("hr-dashboard").hidden = user.role !== "hr";
   $("welcome").textContent = `Welcome, ${user.display_name}`;
   $("role-description").textContent = user.role === "hr" ? "Review applications and manage interview slots." : "Apply and manage your interviews.";
   await refresh();
@@ -392,6 +393,22 @@ $("login-form").addEventListener("submit", (event) => {
 });
 $("logout").addEventListener("click", () => action($("logout"), async () => { const generation = ++sessionGeneration; await api("/api/auth/logout", { method: "POST" }); ensureCurrent(generation); signedOut(); message("Signed out."); }));
 $("refresh").addEventListener("click", () => action($("refresh"), async () => { const generation = sessionGeneration; await refresh(); ensureCurrent(generation); message("Refreshed."); }));
+$("load-dashboard").addEventListener("click", () => action($("load-dashboard"), async () => {
+  const generation = sessionGeneration;
+  const data = await api('/api/dashboard/jobs');
+  ensureCurrent(generation);
+  const nodes = [element('p', data.definition)];
+  for (const job of data.jobs) {
+    const row = element('article');
+    row.append(element('h3', job.title));
+    row.append(element('p', `Applications: ${job.applications_total} | Screening events: ${job.screening_events}`));
+    row.append(element('p', job.pipeline.length ? job.pipeline.map((item) => `${item.status}: ${item.count}`).join(' | ') : 'No applications.'));
+    const metric = job.time_to_hire;
+    row.append(element('p', metric.average_days === null ? 'Time to hire: unavailable (no valid recorded hires).' : `Average time to hire: ${metric.average_days} days (${metric.count} recorded hires).`));
+    nodes.push(row);
+  }
+  $('dashboard-results').replaceChildren(...nodes);
+}));
 $("more-notices").addEventListener("click", () => action($("more-notices"), () => loadNotices(true)));
 $("upload-form").addEventListener("submit", (event) => {
   event.preventDefault();

@@ -11,6 +11,7 @@ import re
 import secrets
 import time
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
 from pathlib import Path, PurePath
 from threading import BoundedSemaphore
 from typing import Annotated
@@ -204,6 +205,59 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
             raise HTTPException(status_code=401, detail='Authentication required')
         if actor['role'] != user.role or (role and actor['role'] != role):
             raise HTTPException(status_code=403, detail='Access denied')
+
+    @app.get('/api/dashboard/jobs')
+    def dashboard_jobs(request: Request, user: Annotated[User, Depends(authenticate)]):
+        """Current pipeline and recorded screening activity for each job."""
+        with connect() as db:
+            # All metrics come from one database snapshot. The session and
+            # account are locked until the response is ready to commit.
+            db.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+            authorize_locked(db, request, user, 'hr')
+            jobs = db.execute('SELECT id,title FROM jobs ORDER BY title,id').fetchall()
+            apps = db.execute('SELECT id,job_id,status,created_at FROM applications').fetchall()
+            events = db.execute("""SELECT e.application_id,e.action,e.details,e.created_at FROM audit_events e
+                JOIN applications a ON a.id=e.application_id
+                WHERE e.action IN ('screened','decision') ORDER BY e.id DESC""").fetchall()
+            screening_counts = {}
+            hire_times = {}
+            for event in events:
+                if event['action'] == 'screened':
+                    screening_counts[event['application_id']] = screening_counts.get(event['application_id'], 0) + 1
+                else:
+                    try:
+                        detail = json.loads(event['details'])
+                        if isinstance(detail, dict) and detail.get('decision') == 'hire':
+                            hire_times.setdefault(event['application_id'], event['created_at'])
+                    except (TypeError, ValueError):
+                        continue
+            groups = {j['id']: {'job_id': j['id'], 'title': j['title'], 'applications_total': 0,
+                'screening_events': 0, 'statuses': {}, 'durations': []} for j in jobs}
+            for item in apps:
+                group = groups[item['job_id']]
+                group['applications_total'] += 1
+                group['statuses'][item['status']] = group['statuses'].get(item['status'], 0) + 1
+                group['screening_events'] += screening_counts.get(item['id'], 0)
+                if item['status'] == 'hired' and item['id'] in hire_times:
+                    try:
+                        elapsed = (datetime.fromisoformat(hire_times[item['id']]) -
+                                   datetime.fromisoformat(item['created_at'])).total_seconds() / 86400
+                        if elapsed >= 0:
+                            group['durations'].append(elapsed)
+                    except (ValueError, TypeError, OverflowError):
+                        pass
+            output = []
+            for group in groups.values():
+                durations = group.pop('durations')
+                statuses = group.pop('statuses')
+                group['pipeline'] = [{'status': k, 'count': v} for k, v in sorted(statuses.items())]
+                group['time_to_hire'] = {'average_days': round(sum(durations) / len(durations), 2) if durations else None,
+                                         'count': len(durations)}
+                output.append(group)
+            authorize_locked(db, request, user, 'hr')
+            return {'jobs': output, 'definition': 'Current status counts and recorded screening events for retained applications. '
+                    'Time to hire is days from submission to the latest recorded hire decision for currently hired '
+                    'applications; missing, invalid or negative durations are excluded. Not a manual baseline.'}
 
     @app.get('/api/health')
     def health():
