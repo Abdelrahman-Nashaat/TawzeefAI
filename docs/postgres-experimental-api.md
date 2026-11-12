@@ -8,8 +8,23 @@ jobs, application submission and listing, HR keyword screening and advancement,
 local candidate interview booking, cancellation, explicit HR completion, local
 cancellation notices, and offers with candidate response and explicit HR hire
 are implemented. A dedicated browser interface supports these actions. Graph
-workflows, calendar and email delivery, and policy chat remain
+workflows, saved policy conversations, calendar and email delivery remain
 unavailable in this mode.
+
+Candidate, employee and HR accounts can search authorized synthetic knowledge
+documents. HR can add text documents with a title, audience, collection and
+optional page; past-hire patterns are restricted to HR. Search filters documents
+by role before lexical ranking, returning excerpts and citations or an abstention.
+It is not a generative answer, semantic retrieval, or the full vector RAG flow.
+Document changes are audited without storing document text in the audit row.
+Documents are limited to 4,000 characters each and 500 active documents; the
+local interface accepts synthetic material only.
+HR can deactivate a document using `POST /api/knowledge/documents/{id}/deactivate`;
+the current browser provides document creation and search but no document list
+or deactivation control.
+New experimental schemas include an `employee` demo account using the same
+demo-password convention as other accounts. Existing schemas are not reseeded;
+create a new disposable schema to use that account if it is absent.
 
 The HR-only dashboard reports current application statuses, recorded screening
 events, and time to hire by job. The average is the number of days from

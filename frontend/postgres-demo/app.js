@@ -25,7 +25,8 @@ function signedOut() {
   $("password").value = "";
   $("resume").value = "";
   $("slot-form").reset();
-  for (const id of ["applications", "interviews", "notices", "dashboard-results"]) $(id).replaceChildren();
+  for (const id of ["applications", "interviews", "notices", "dashboard-results", "knowledge-results"]) $(id).replaceChildren();
+  $("knowledge-form").reset(); $("knowledge-add").reset();
 }
 
 async function api(path, options = {}) {
@@ -475,16 +476,19 @@ async function refresh() {
 async function openWorkspace(account) {
   const generation = sessionGeneration;
   user = account;
-  if (!["candidate", "hr"].includes(user.role)) {
+  if (!["candidate", "employee", "hr"].includes(user.role)) {
     await api("/api/auth/logout", { method: "POST" }); ensureCurrent(generation); signedOut();
     throw new Error("This demo interface supports candidate and HR accounts only.");
   }
   $("login-panel").hidden = true; $("workspace").hidden = false; $("logout").hidden = false;
   $("candidate-upload").hidden = user.role !== "candidate"; $("hr-slots").hidden = user.role !== "hr";
   $("hr-dashboard").hidden = user.role !== "hr";
+  $("knowledge-add").hidden = user.role !== "hr";
+  for (const id of ["applications-panel", "interviews-panel", "notices-panel"]) $(id).hidden = user.role === "employee";
   $("welcome").textContent = `Welcome, ${user.display_name}`;
-  $("role-description").textContent = user.role === "hr" ? "Review applications and manage interview slots." : "Apply and manage your interviews.";
-  await refresh();
+  $("role-description").textContent = user.role === "hr" ? "Review applications and manage interview slots." :
+    user.role === "employee" ? "Search the documents available to employees." : "Apply and manage your interviews.";
+  if (user.role !== "employee") await refresh();
 }
 
 $("login-form").addEventListener("submit", (event) => {
@@ -497,7 +501,32 @@ $("login-form").addEventListener("submit", (event) => {
   });
 });
 $("logout").addEventListener("click", () => action($("logout"), async () => { const generation = ++sessionGeneration; await api("/api/auth/logout", { method: "POST" }); ensureCurrent(generation); signedOut(); message("Signed out."); }));
-$("refresh").addEventListener("click", () => action($("refresh"), async () => { const generation = sessionGeneration; await refresh(); ensureCurrent(generation); message("Refreshed."); }));
+$("refresh").addEventListener("click", () => action($("refresh"), async () => { const generation = sessionGeneration; if (user.role !== "employee") await refresh(); ensureCurrent(generation); message("Refreshed."); }));
+$("knowledge-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  action(event.submitter, async () => {
+    const generation = sessionGeneration;
+    const result = await api('/api/knowledge/answer', jsonPost({question: $("knowledge-question").value}));
+    ensureCurrent(generation);
+    const nodes = [element('p', result.notice)];
+    if (!result.sources.length) nodes.push(element('p', 'No relevant source found. Contact HR.'));
+    for (const source of result.sources) {
+      const item = element('article');
+      item.append(element('h3', `${source.title}${source.page ? ` - page ${source.page}` : ''}`), element('pre', source.text));
+      nodes.push(item);
+    }
+    $("knowledge-results").replaceChildren(...nodes);
+  });
+});
+$("knowledge-add").addEventListener("submit", (event) => {
+  event.preventDefault();
+  action(event.submitter, async () => {
+    const generation = sessionGeneration, page = $("knowledge-page").value;
+    await api('/api/knowledge/documents/text', jsonPost({title: $("knowledge-title").value, text: $("knowledge-text").value,
+      audience: $("knowledge-audience").value, collection: $("knowledge-collection").value, page: page ? Number(page) : null}));
+    ensureCurrent(generation); $("knowledge-add").reset(); message('Synthetic document added.');
+  });
+});
 $("load-dashboard").addEventListener("click", () => action($("load-dashboard"), async () => {
   const generation = sessionGeneration;
   const data = await api('/api/dashboard/jobs');

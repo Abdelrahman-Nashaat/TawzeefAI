@@ -40,6 +40,9 @@ from app.blind import redact_resume
 from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_document_text
 from app.postgres_feedback import DDL as FEEDBACK_DDL
 from app.postgres_feedback import install_routes as install_feedback_routes
+from app.postgres_knowledge import AUDIT_DDL as KNOWLEDGE_AUDIT_DDL
+from app.postgres_knowledge import DDL as KNOWLEDGE_DDL
+from app.postgres_knowledge import install_routes as install_knowledge_routes
 from app.postgres_rubric import DDL as RUBRIC_DDL
 from app.postgres_rubric import HISTORY_DDL, HISTORY_INDEX
 from app.postgres_rubric import install_routes as install_rubric_routes
@@ -133,7 +136,7 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
                 for statement in _DDL:
                     db.execute(statement)
                 db.execute('INSERT INTO metadata VALUES (%s)', (_SCHEMA_VERSION,))
-                for username, role in (('candidate','candidate'), ('candidate2','candidate'), ('hr','hr')):
+                for username, role in (('candidate','candidate'), ('candidate2','candidate'), ('employee','employee'), ('hr','hr')):
                     db.execute('INSERT INTO users(username,display_name,role,password_hash) VALUES (%s,%s,%s,%s)',
                                (username, 'Demo ' + username, role, hash_password(username + '-demo-only')))
                 jobs = json.loads(FIXTURE_FILE.read_text(encoding='utf-8'))['jobs']
@@ -148,6 +151,8 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
             db.execute(HISTORY_DDL)
             db.execute(HISTORY_INDEX)
             db.execute(FEEDBACK_DDL)
+            db.execute(KNOWLEDGE_DDL)
+            db.execute(KNOWLEDGE_AUDIT_DDL)
             # Additive and idempotent for schemas created by earlier demo versions.
             db.execute('''CREATE TABLE IF NOT EXISTS screening_history (
                 audit_event_id bigint PRIMARY KEY REFERENCES audit_events(id), score_json text NOT NULL)''')
@@ -428,5 +433,6 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
 
     install_rubric_routes(app, connect, authenticate, authorize_locked)
     install_feedback_routes(app, connect, authenticate, authorize_locked)
+    install_knowledge_routes(app, connect, authenticate, authorize_locked)
     install_routes(app, connect, authenticate, authorize_locked)
     return app

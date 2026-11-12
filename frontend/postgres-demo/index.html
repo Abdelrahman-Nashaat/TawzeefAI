@@ -47,9 +47,21 @@
         <button id="load-dashboard" type="button">Load dashboard</button>
         <div id="dashboard-results"></div>
       </section>
-      <section><h2>Applications</h2><div id="applications"></div></section>
-      <section><h2>Interviews</h2><div id="interviews"></div></section>
-      <section><h2>Cancellation notices</h2><div id="notices"></div><button id="more-notices" hidden>Load older notices</button></section>
+      <section id="knowledge-panel"><h2>Knowledge search</h2>
+        <p>Search synthetic documents available to your role. Results are excerpts, not verified answers.</p>
+        <form id="knowledge-form"><label>Question <input id="knowledge-question" maxlength="2000" required></label><button>Search</button></form>
+        <div id="knowledge-results"></div>
+        <form id="knowledge-add" hidden><h3>Add synthetic document</h3>
+          <label>Title <input id="knowledge-title" maxlength="200" required></label>
+          <label>Text <textarea id="knowledge-text" maxlength="4000" required></textarea></label>
+          <label>Audience <select id="knowledge-audience"><option value="public">Public</option><option value="staff">Staff</option><option value="hr">HR</option></select></label>
+          <label>Collection <select id="knowledge-collection"><option value="handbook">Handbook</option><option value="job_description">Job descriptions</option><option value="past_hire_patterns">Past hire patterns (HR only)</option></select></label>
+          <label>Page <input id="knowledge-page" type="number" min="1" max="100000"></label><button>Add document</button>
+        </form>
+      </section>
+      <section id="applications-panel"><h2>Applications</h2><div id="applications"></div></section>
+      <section id="interviews-panel"><h2>Interviews</h2><div id="interviews"></div></section>
+      <section id="notices-panel"><h2>Cancellation notices</h2><div id="notices"></div><button id="more-notices" hidden>Load older notices</button></section>
     </section>
   </main>
 </body>
