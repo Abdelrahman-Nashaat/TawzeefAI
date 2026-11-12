@@ -50,6 +50,8 @@ from app.postgres_rubric import HISTORY_DDL, HISTORY_INDEX
 from app.postgres_rubric import install_routes as install_rubric_routes
 from app.postgres_scheduling import DDL as SCHEDULING_DDL
 from app.postgres_scheduling import install_routes
+from app.postgres_submission_notices import DDL as SUBMISSION_NOTICE_DDL
+from app.postgres_submission_notices import install_routes as install_submission_notice_routes
 from app.recruitment import (
     FIXTURE_FILE,
     application_view,
@@ -149,6 +151,7 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
                                   ('required_skills','preferred_skills','responsibilities'))))
             for statement in SCHEDULING_DDL:
                 db.execute(statement)
+            db.execute(SUBMISSION_NOTICE_DDL)
             db.execute(RUBRIC_DDL)
             db.execute(HISTORY_DDL)
             db.execute(HISTORY_INDEX)
@@ -438,5 +441,6 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
     install_job_routes(app, connect, authenticate, authorize_locked)
     install_feedback_routes(app, connect, authenticate, authorize_locked)
     install_knowledge_routes(app, connect, authenticate, authorize_locked)
+    install_submission_notice_routes(app, connect, authenticate, authorize_locked)
     install_routes(app, connect, authenticate, authorize_locked)
     return app

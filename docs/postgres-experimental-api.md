@@ -61,6 +61,12 @@ interviews, creating candidate notices and audit entries. An accepted offer
 blocks rejection because this experimental mode has no accepted-offer
 resolution workflow. No email or external calendar action is sent.
 
+Each new submission also creates a local HR notice in the same transaction.
+HR can open the paginated inbox in the demo or via `GET /api/hr/submission-notices`
+and mark a notice read for their own account. It does not change the application
+or send an external message. Notices contain IDs rather than résumé contents;
+existing applications without a recorded notice are not backfilled.
+
 HR can call `POST /api/applications/{id}/screen` for a submitted application.
 The score, screening history, and audit record are saved together. This applies
 automatic identity masking, which is incomplete and has not been reviewed by a

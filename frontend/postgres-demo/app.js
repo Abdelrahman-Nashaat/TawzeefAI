@@ -3,6 +3,7 @@
 const $ = (id) => document.getElementById(id);
 let user = null;
 let noticeCursor = null;
+let submissionCursor = null;
 let sessionGeneration = 0;
 let jobRevision = null;
 class StaleSession extends Error {}
@@ -20,6 +21,8 @@ function signedOut() {
   sessionGeneration++;
   user = null;
   noticeCursor = null;
+  submissionCursor = null;
+  $("more-submissions").hidden = true;
   $("workspace").hidden = true;
   $("login-panel").hidden = false;
   $("logout").hidden = true;
@@ -27,7 +30,7 @@ function signedOut() {
   $("resume").value = "";
   $("slot-form").reset();
   $("hr-job-form").reset(); $("hr-job-id").disabled = false; jobRevision = null;
-  for (const id of ["applications", "interviews", "notices", "dashboard-results", "knowledge-results", "knowledge-documents", "hr-job-list"]) $(id).replaceChildren();
+  for (const id of ["applications", "interviews", "notices", "submission-notices", "dashboard-results", "knowledge-results", "knowledge-documents", "hr-job-list"]) $(id).replaceChildren();
   $("knowledge-form").reset(); $("knowledge-add").reset();
 }
 
@@ -466,6 +469,28 @@ async function loadNotices(append = false) {
   $("more-notices").hidden = !noticeCursor;
 }
 
+async function loadSubmissionNotices(append = false) {
+  const generation = sessionGeneration;
+  const query = append && submissionCursor ? `?before=${submissionCursor}` : "";
+  const data = await api(`/api/hr/submission-notices${query}`);
+  ensureCurrent(generation);
+  const target = $("submission-notices");
+  if (!append) target.replaceChildren();
+  if (!append && !data.items.length) target.append(element("p", "No new application notices."));
+  for (const item of data.items) {
+    const card = element("article");
+    card.append(element("p", `Application ${item.application_id}, job ${item.submitted_job_id}: ${item.is_read ? "Read" : "Unread"}`));
+    if (!item.is_read) card.append(button("Mark read", async () => {
+      const current = sessionGeneration;
+      await api(`/api/hr/submission-notices/${item.id}/read`, {method: "POST"});
+      ensureCurrent(current); await loadSubmissionNotices(); ensureCurrent(current); message("Notice marked read.");
+    }));
+    target.append(card);
+  }
+  submissionCursor = data.next_before;
+  $("more-submissions").hidden = !submissionCursor;
+}
+
 async function refresh() {
   const generation = sessionGeneration;
   const [jobs, applications, interviews] = await Promise.all([api("/api/jobs"), api("/api/applications"), api("/api/interviews")]);
@@ -485,6 +510,7 @@ async function openWorkspace(account) {
   $("login-panel").hidden = true; $("workspace").hidden = false; $("logout").hidden = false;
   $("candidate-upload").hidden = user.role !== "candidate"; $("hr-slots").hidden = user.role !== "hr";
   $("hr-dashboard").hidden = user.role !== "hr";
+  $("submission-notices-panel").hidden = user.role !== "hr";
   $("hr-jobs").hidden = user.role !== "hr";
   $("knowledge-add").hidden = user.role !== "hr";
   $("knowledge-management").hidden = user.role !== "hr";
@@ -578,6 +604,8 @@ $("load-dashboard").addEventListener("click", () => action($("load-dashboard"), 
   $('dashboard-results').replaceChildren(...nodes);
 }));
 $("more-notices").addEventListener("click", () => action($("more-notices"), () => loadNotices(true)));
+$("load-submissions").addEventListener("click", () => action($("load-submissions"), () => loadSubmissionNotices()));
+$("more-submissions").addEventListener("click", () => action($("more-submissions"), () => loadSubmissionNotices(true)));
 $("new-hr-job").addEventListener("click", () => {
   $("hr-job-form").reset(); $("hr-job-id").disabled = false; jobRevision = null;
 });
