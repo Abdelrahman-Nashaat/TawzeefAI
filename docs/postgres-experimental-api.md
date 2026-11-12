@@ -14,12 +14,13 @@ verified.
 This opt-in development slice is for synthetic data only. It is not the full
 application or a migration. It stores demo users, jobs, sessions, applications,
 notices, audit events, screening records, slots, and interviews in one PostgreSQL schema.
-SQLite data is not read or migrated. Only health, login, logout, session identity,
+SQLite data is not read or migrated. Health, login, logout, session identity,
 jobs, application submission and listing, HR keyword screening and advancement,
 local candidate interview booking, cancellation, explicit HR completion, local
 cancellation notices, and offers with candidate response and explicit HR hire
-are implemented. A dedicated browser interface supports these actions. Saved
-policy conversations, calendar and email delivery remain unavailable in this mode.
+are implemented. A dedicated browser interface supports these actions and saved
+extractive knowledge conversations. Calendar and email delivery remain unavailable
+in this mode.
 
 HR can run a read-only LangGraph review from an application. Five deterministic
 specialists summarize parsed sections, the current audited rubric range, status,
