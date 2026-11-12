@@ -42,6 +42,7 @@ from app.postgres_conversations import DDL as CONVERSATION_DDL
 from app.postgres_conversations import install_routes as install_conversation_routes
 from app.postgres_feedback import DDL as FEEDBACK_DDL
 from app.postgres_feedback import install_routes as install_feedback_routes
+from app.postgres_graph_review import install_routes as install_graph_review_routes
 from app.postgres_jobs import DDL as JOB_AUDIT_DDL
 from app.postgres_jobs import install_routes as install_job_routes
 from app.postgres_knowledge import AUDIT_DDL as KNOWLEDGE_AUDIT_DDL
@@ -444,6 +445,7 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
     install_rubric_routes(app, connect, authenticate, authorize_locked)
     install_job_routes(app, connect, authenticate, authorize_locked)
     install_feedback_routes(app, connect, authenticate, authorize_locked)
+    install_graph_review_routes(app, connect, authenticate, authorize_locked)
     install_knowledge_routes(app, connect, authenticate, authorize_locked)
     install_conversation_routes(app, connect, authenticate, authorize_locked)
     install_submission_notice_routes(app, connect, authenticate, authorize_locked)

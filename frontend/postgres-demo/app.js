@@ -334,6 +334,24 @@ function renderApplications(applications, jobs) {
     }
     if (user.role === "hr") {
       card.append(element("p", `Candidate ${application.candidate_id}`));
+      const graphForm = element("form");
+      const graphLabel = element("label", "Optional policy question ");
+      const graphQuestion = element("input");
+      graphQuestion.maxLength = 2000; graphLabel.append(graphQuestion);
+      const graphSubmit = element("button", "Run read-only specialist review");
+      graphSubmit.type = "submit";
+      const graphOutput = element("pre");
+      graphForm.append(graphLabel, graphSubmit, graphOutput);
+      graphForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const generation = sessionGeneration;
+        action(event.submitter, async () => {
+          const result = await api(`/api/applications/${application.id}/graph-review`, jsonPost({policy_question: graphQuestion.value}));
+          ensureCurrent(generation);
+          graphOutput.textContent = JSON.stringify(result, null, 2);
+        });
+      });
+      card.append(graphForm);
       const feedback = element("div");
       card.append(button("Manage candidate feedback", () => manageFeedback(application, feedback)), feedback);
       const label = element("label", "Select for HR comparison ");
