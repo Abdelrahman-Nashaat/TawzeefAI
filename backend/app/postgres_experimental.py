@@ -42,6 +42,7 @@ from app.postgres_conversations import DDL as CONVERSATION_DDL
 from app.postgres_conversations import install_routes as install_conversation_routes
 from app.postgres_feedback import DDL as FEEDBACK_DDL
 from app.postgres_feedback import install_routes as install_feedback_routes
+from app.postgres_graph_review import DDL as GRAPH_DRAFT_DDL
 from app.postgres_graph_review import install_routes as install_graph_review_routes
 from app.postgres_jobs import DDL as JOB_AUDIT_DDL
 from app.postgres_jobs import install_routes as install_job_routes
@@ -166,6 +167,7 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
             for statement in CONVERSATION_DDL:
                 db.execute(statement)
             db.execute(JOB_AUDIT_DDL)
+            db.execute(GRAPH_DRAFT_DDL)
             # Additive and idempotent for schemas created by earlier demo versions.
             db.execute('''CREATE TABLE IF NOT EXISTS screening_history (
                 audit_event_id bigint PRIMARY KEY REFERENCES audit_events(id), score_json text NOT NULL)''')

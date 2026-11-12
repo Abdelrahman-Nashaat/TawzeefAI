@@ -352,6 +352,45 @@ function renderApplications(applications, jobs) {
         });
       });
       card.append(graphForm);
+      const draftPanel = element("div");
+      card.append(button("Save supervised review", async () => {
+        const generation = sessionGeneration;
+        const result = await api(`/api/applications/${application.id}/graph-review-drafts`, jsonPost({policy_question: graphQuestion.value}));
+        ensureCurrent(generation); graphQuestion.value = "";
+        draftPanel.replaceChildren(element("p", `Saved review ${result.id}. Reopen it to acknowledge or discard.`));
+      }), button("Propose advancement for HR approval", async () => {
+        const generation = sessionGeneration;
+        const result = await api(`/api/applications/${application.id}/graph-review-drafts`, jsonPost({policy_question: graphQuestion.value, intent: "advance"}));
+        ensureCurrent(generation); graphQuestion.value = "";
+        draftPanel.replaceChildren(element("p", `Saved proposal ${result.id}. Reopen to review and approve or discard.`));
+      }), button("Open saved reviews", async () => {
+        const generation = sessionGeneration;
+        const drafts = await api(`/api/applications/${application.id}/graph-review-drafts`);
+        ensureCurrent(generation);
+        const list = element("div");
+        if (!drafts.length) list.append(element("p", "No saved reviews."));
+        for (const draft of drafts) {
+          const row = element("div"); row.append(element("p", `Review ${draft.id}: ${draft.status}`));
+          row.append(button("Open review", async () => {
+            const current = sessionGeneration;
+            const opened = await api(`/api/graph-review-drafts/${draft.id}`);
+            ensureCurrent(current);
+            const view = element("div");
+            view.append(element("pre", opened.stale ? "Sources or availability changed; start a new review." : JSON.stringify(opened.result, null, 2)));
+            if (opened.status === "pending") {
+              for (const reviewed of (opened.stale ? [false] : [true, false])) {
+                view.append(button(reviewed ? (opened.intent === "advance" ? "Approve advancement" : "Acknowledge review") : "Discard review", async () => {
+                  const active = sessionGeneration;
+                  await api(`/api/graph-review-drafts/${draft.id}/resume`, jsonPost({reviewed}));
+                  ensureCurrent(active); draftPanel.replaceChildren(element("p", reviewed ? (opened.intent === "advance" ? "Application advanced by HR." : "Review acknowledged. No decision made.") : "Review discarded."));
+                }));
+              }
+            }
+            draftPanel.replaceChildren(view);
+          })); list.append(row);
+        }
+        draftPanel.replaceChildren(list);
+      }), draftPanel);
       const feedback = element("div");
       card.append(button("Manage candidate feedback", () => manageFeedback(application, feedback)), feedback);
       const label = element("label", "Select for HR comparison ");

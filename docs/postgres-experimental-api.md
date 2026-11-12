@@ -1,5 +1,16 @@
 # Experimental PostgreSQL API
 
+The HR demo can save a supervised review and reopen it after restart. The
+database retains the policy question, reviewer, status and a fingerprint;
+it does not retain the graph output or source excerpts. Reopening recomputes
+the review, and acknowledgment requires the source, results and availability
+to remain unchanged. A stale review can be discarded. An advance proposal is
+available for a submitted application with a current HR rubric assessment; it
+advances only after explicit HR approval and records the decision atomically.
+An ordinary review acknowledgment makes no recruitment decision. This is an
+application-level durable review, not a persisted LangGraph checkpoint. Use
+synthetic information only; questions remain until the demo database is removed.
+
 The demo also supports saved, role-scoped extractive knowledge conversations.
 Each account may create up to 100 conversations with up to 100 questions each.
 Questions and source identifiers with fingerprints are stored in PostgreSQL;
