@@ -40,6 +40,8 @@ from app.blind import redact_resume
 from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_document_text
 from app.postgres_feedback import DDL as FEEDBACK_DDL
 from app.postgres_feedback import install_routes as install_feedback_routes
+from app.postgres_jobs import DDL as JOB_AUDIT_DDL
+from app.postgres_jobs import install_routes as install_job_routes
 from app.postgres_knowledge import AUDIT_DDL as KNOWLEDGE_AUDIT_DDL
 from app.postgres_knowledge import DDL as KNOWLEDGE_DDL
 from app.postgres_knowledge import install_routes as install_knowledge_routes
@@ -153,6 +155,7 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
             db.execute(FEEDBACK_DDL)
             db.execute(KNOWLEDGE_DDL)
             db.execute(KNOWLEDGE_AUDIT_DDL)
+            db.execute(JOB_AUDIT_DDL)
             # Additive and idempotent for schemas created by earlier demo versions.
             db.execute('''CREATE TABLE IF NOT EXISTS screening_history (
                 audit_event_id bigint PRIMARY KEY REFERENCES audit_events(id), score_json text NOT NULL)''')
@@ -432,6 +435,7 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
             _SCREEN_WORKERS.release()
 
     install_rubric_routes(app, connect, authenticate, authorize_locked)
+    install_job_routes(app, connect, authenticate, authorize_locked)
     install_feedback_routes(app, connect, authenticate, authorize_locked)
     install_knowledge_routes(app, connect, authenticate, authorize_locked)
     install_routes(app, connect, authenticate, authorize_locked)

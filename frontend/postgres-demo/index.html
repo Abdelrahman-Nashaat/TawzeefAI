@@ -31,6 +31,20 @@
           <button>Submit application</button>
         </form>
       </section>
+      <section id="hr-jobs" hidden>
+        <h2>Manage synthetic jobs</h2>
+        <p>One skill or responsibility per line. After an application is submitted, create a new job ID for changes.</p>
+        <button id="list-hr-jobs" type="button">List jobs to edit</button><div id="hr-job-list"></div>
+        <form id="hr-job-form">
+          <label>Job ID <input id="hr-job-id" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*" required></label>
+          <label>Title <input id="hr-job-title" maxlength="200" required></label>
+          <label>Location <input id="hr-job-location" maxlength="200" required></label>
+          <label>Required skills <textarea id="hr-job-required" required></textarea></label>
+          <label>Preferred skills <textarea id="hr-job-preferred"></textarea></label>
+          <label>Responsibilities <textarea id="hr-job-responsibilities"></textarea></label>
+          <button type="submit">Save job</button><button id="new-hr-job" type="button">New job</button>
+        </form>
+      </section>
       <section id="hr-slots" hidden>
         <h2>Create an interview slot</h2>
         <p>Times use your browser's local time zone.</p>

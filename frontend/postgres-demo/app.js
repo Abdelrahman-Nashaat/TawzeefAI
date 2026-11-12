@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id);
 let user = null;
 let noticeCursor = null;
 let sessionGeneration = 0;
+let jobRevision = null;
 class StaleSession extends Error {}
 function ensureCurrent(generation) { if (generation !== sessionGeneration) throw new StaleSession(); }
 
@@ -25,7 +26,8 @@ function signedOut() {
   $("password").value = "";
   $("resume").value = "";
   $("slot-form").reset();
-  for (const id of ["applications", "interviews", "notices", "dashboard-results", "knowledge-results", "knowledge-documents"]) $(id).replaceChildren();
+  $("hr-job-form").reset(); $("hr-job-id").disabled = false; jobRevision = null;
+  for (const id of ["applications", "interviews", "notices", "dashboard-results", "knowledge-results", "knowledge-documents", "hr-job-list"]) $(id).replaceChildren();
   $("knowledge-form").reset(); $("knowledge-add").reset();
 }
 
@@ -483,6 +485,7 @@ async function openWorkspace(account) {
   $("login-panel").hidden = true; $("workspace").hidden = false; $("logout").hidden = false;
   $("candidate-upload").hidden = user.role !== "candidate"; $("hr-slots").hidden = user.role !== "hr";
   $("hr-dashboard").hidden = user.role !== "hr";
+  $("hr-jobs").hidden = user.role !== "hr";
   $("knowledge-add").hidden = user.role !== "hr";
   $("knowledge-management").hidden = user.role !== "hr";
   for (const id of ["applications-panel", "interviews-panel", "notices-panel"]) $(id).hidden = user.role === "employee";
@@ -567,6 +570,41 @@ $("load-dashboard").addEventListener("click", () => action($("load-dashboard"), 
   $('dashboard-results').replaceChildren(...nodes);
 }));
 $("more-notices").addEventListener("click", () => action($("more-notices"), () => loadNotices(true)));
+$("new-hr-job").addEventListener("click", () => {
+  $("hr-job-form").reset(); $("hr-job-id").disabled = false; jobRevision = null;
+});
+$("list-hr-jobs").addEventListener("click", () => action($("list-hr-jobs"), async () => {
+  const generation = sessionGeneration, jobs = await api('/api/hr/jobs');
+  ensureCurrent(generation);
+  const rows = jobs.map((job) => {
+    const row = element('p', `${job.title} (${job.id}) `);
+    row.append(button('Edit', async () => {
+      ensureCurrent(generation); jobRevision = job.revision;
+      $("hr-job-id").value = job.id; $("hr-job-id").disabled = true;
+      $("hr-job-title").value = job.title; $("hr-job-location").value = job.location;
+      $("hr-job-required").value = job.required_skills.join('\n');
+      $("hr-job-preferred").value = job.preferred_skills.join('\n');
+      $("hr-job-responsibilities").value = job.responsibilities.join('\n');
+    }));
+    return row;
+  });
+  $("hr-job-list").replaceChildren(...rows);
+}));
+$("hr-job-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  action(event.submitter, async () => {
+    const generation = sessionGeneration;
+    const lines = (id) => $(id).value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+    const job = {id: $("hr-job-id").value.trim(), title: $("hr-job-title").value,
+      location: $("hr-job-location").value, required_skills: lines('hr-job-required'),
+      preferred_skills: lines('hr-job-preferred'), responsibilities: lines('hr-job-responsibilities')};
+    const options = jobRevision ? {method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({job, expected_revision: jobRevision})} : jsonPost(job);
+    await api(jobRevision ? `/api/hr/jobs/${encodeURIComponent(job.id)}` : '/api/hr/jobs', options);
+    ensureCurrent(generation); $("hr-job-form").reset(); $("hr-job-id").disabled = false; jobRevision = null;
+    $("hr-job-list").replaceChildren(); await refresh(); ensureCurrent(generation); message('Job saved.');
+  });
+});
 $("upload-form").addEventListener("submit", (event) => {
   event.preventDefault();
   action(event.submitter, async () => {

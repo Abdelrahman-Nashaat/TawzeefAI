@@ -11,6 +11,12 @@ are implemented. A dedicated browser interface supports these actions. Graph
 workflows, saved policy conversations, calendar and email delivery remain
 unavailable in this mode.
 
+HR can create synthetic jobs and edit a job while it has no applications using
+the browser or `/api/hr/jobs`. Once any application is submitted, that job is
+immutable: create a new job ID for revised requirements. This preserves the
+meaning of earlier screenings and decisions. Concurrent HR edits require a
+fresh revision. Job create and edit operations are recorded in `job_audit`.
+
 Candidate, employee and HR accounts can search authorized synthetic knowledge
 documents. HR can add text documents with a title, audience, collection and
 optional page; past-hire patterns are restricted to HR. Search filters documents
