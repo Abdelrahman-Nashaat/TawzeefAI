@@ -195,6 +195,10 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 if draft['intent'] == 'advance':
                     if result['status']['application_status'] != 'submitted' or result['matching']['status'] != 'current' or event_id is None:
                         raise HTTPException(status_code=409, detail='A current HR rubric review is required')
+                    if not db.execute('''SELECT 1 FROM users u JOIN applications a ON a.candidate_id=u.id
+                        WHERE a.id=%s AND u.active=1 AND u.role='candidate' FOR SHARE OF u''',
+                                      (draft['application_id'],)).fetchone():
+                        raise HTTPException(status_code=409, detail='An active candidate is required')
                     db.execute("""UPDATE applications SET status='advanced', updated_at=to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') WHERE id=%s""", (draft['application_id'],))
                     db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'decision',%s)",
                                (draft['application_id'], user.id, json.dumps({'decision': 'advance', 'rubric_event_id': event_id, 'draft_id': draft_id})))

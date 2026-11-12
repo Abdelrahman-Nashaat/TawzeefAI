@@ -3,6 +3,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from test_postgres_experimental_api import db_for, login, mode, resume_bytes  # noqa: F401
 from test_postgres_scheduling import wait_for_lock
@@ -117,3 +118,30 @@ def test_new_review_or_policy_revocation_invalidates_advance(mode):  # noqa: F81
         with db_for(mode) as db:
             assert db.execute('SELECT status FROM applications WHERE id=%s', (app_id,)).fetchone()['status'] == 'submitted'
             assert db.execute("SELECT count(*) AS n FROM audit_events WHERE application_id=%s AND action='decision'", (app_id,)).fetchone()['n'] == 0
+
+
+@pytest.mark.parametrize('account_change', ['inactive', 'other_role'])
+def test_advance_rejects_ineligible_candidate_account(mode, account_change):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
+        app_id = create_application(candidate)
+        login(hr, 'hr')
+        source = hr.get(f'/api/applications/{app_id}/rubric-source').json()
+        start = next(i for i, char in enumerate(source['resume_text']) if not char.isspace())
+        categories = ('mandatory_skills', 'preferred_skills', 'experience', 'projects', 'education')
+        items = [{'category': category, 'score': None} for category in categories]
+        items[0] = {'category': categories[0], 'score': 75, 'start': start, 'end': start + 1}
+        assert hr.post(f'/api/applications/{app_id}/rubric-assessment', json={'source_digest': source['source_digest'], 'items': items}).status_code == 200
+        response = hr.post(f'/api/applications/{app_id}/graph-review-drafts', json={'intent': 'advance'})
+        assert response.status_code == 201, response.text
+        draft_id = response.json()['id']
+        with db_for(mode) as db:
+            if account_change == 'inactive':
+                db.execute("UPDATE users SET active=0 WHERE username='candidate'")
+            else:
+                db.execute("UPDATE users SET role='employee' WHERE username='candidate'")
+        response = hr.post(f'/api/graph-review-drafts/{draft_id}/resume', json={'reviewed': True})
+        assert response.status_code == 409, response.text
+        with db_for(mode) as db:
+            assert db.execute('SELECT status FROM applications WHERE id=%s', (app_id,)).fetchone()['status'] == 'submitted'
+            assert db.execute('SELECT status FROM graph_review_drafts WHERE id=%s', (draft_id,)).fetchone()['status'] == 'pending'
+            assert db.execute("SELECT count(*) AS n FROM audit_events WHERE application_id=%s AND action IN ('decision', 'graph_review_reviewed')", (app_id,)).fetchone()['n'] == 0
