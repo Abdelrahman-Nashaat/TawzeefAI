@@ -2,6 +2,7 @@
 import hashlib
 import math
 import os
+import re
 from threading import BoundedSemaphore
 from typing import Annotated, Literal
 
@@ -14,6 +15,19 @@ from app.knowledge import ROLE_AUDIENCES, Source, _document_passages, _rank_lexi
 
 _HYBRID_BUSY = BoundedSemaphore(1)
 _HYBRID_MAX_PASSAGES = 200
+
+
+def _unique_policy_title(question, sources):
+    """Offer one authorized title match as an unverified excerpt, or abstain."""
+    terms = _tokens(question)
+    if len(terms) != 1 or not re.search(r'(?<!\w)policy(?!\w)', question, re.IGNORECASE):
+        return []
+    term = next(iter(terms))
+    if len(term) < 4 or term not in re.findall(r'[^\W_]+', question.casefold()):
+        return []
+    matches = [source for source in sources if term in re.findall(r'[^\W_]+', source.title.casefold())
+               and re.search(r'(?<!\w)policy(?!\w)', source.title, re.IGNORECASE)]
+    return [(1.0, matches[0])] if len(matches) == 1 else []
 
 
 def _vector_literal(values):
@@ -168,6 +182,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
             else:
                 sources = [Source(id=f"pg-doc-{r['id']}", title=r['title'], text=r['body'], page=r['page']) for r in rows]
             ranked = _rank_lexical(_tokens(payload.question), sources)[:3]
+            if not ranked and not payload.experimental_hybrid:
+                ranked = _unique_policy_title(payload.question, sources)
             suggestions = []
             if payload.experimental_hybrid:
                 try:

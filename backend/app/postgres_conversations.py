@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import User
 from app.knowledge import ROLE_AUDIENCES, Source, _rank_lexical, _tokens
+from app.postgres_knowledge import _unique_policy_title
 
 DDL = (
     '''CREATE TABLE IF NOT EXISTS knowledge_conversations (
@@ -92,6 +93,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
             sources = [Source(id=f"pg-doc-{r['id']}", title=r['title'], text=r['body'], page=r['page']) for r in rows]
             by_id = {f"pg-doc-{row['id']}": row for row in rows}
             ranked = _rank_lexical(_tokens(question), sources)[:3]
+            if not ranked:
+                ranked = _unique_policy_title(question, sources)
             refs = [{'id': by_id[source.id]['id'], 'digest': _digest(by_id[source.id])} for _, source in ranked]
             row = db.execute('''INSERT INTO knowledge_conversation_turns(conversation_id,question,sources_json)
                 VALUES (%s,%s,%s) RETURNING id,created_at''',
