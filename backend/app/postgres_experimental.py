@@ -160,6 +160,8 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
             db.execute(HISTORY_INDEX)
             db.execute(FEEDBACK_DDL)
             db.execute(KNOWLEDGE_DDL)
+            db.execute('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS job_id text')
+            db.execute('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS section text')
             db.execute(KNOWLEDGE_AUDIT_DDL)
             for statement in CONVERSATION_DDL:
                 db.execute(statement)

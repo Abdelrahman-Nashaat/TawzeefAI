@@ -562,6 +562,7 @@ $("knowledge-form").addEventListener("submit", (event) => {
   action(event.submitter, async () => {
     const generation = sessionGeneration;
     const result = await api('/api/knowledge/answer', jsonPost({question: $("knowledge-question").value,
+      job_id: $("knowledge-job-filter").value.trim() || null, section: $("knowledge-section-filter").value.trim() || null,
       experimental_hybrid: event.submitter?.value === 'hybrid'}));
     ensureCurrent(generation);
     const nodes = [element('p', result.notice)];
@@ -569,13 +570,13 @@ $("knowledge-form").addEventListener("submit", (event) => {
       'No lexical match found. Contact HR for an answer.' : 'No relevant source found. Contact HR.'));
     for (const source of result.sources) {
       const item = element('article');
-      item.append(element('h3', `${source.title}${source.page ? ` - page ${source.page}` : ''}`), element('pre', source.text));
+      item.append(element('h3', `${source.title}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
       nodes.push(item);
     }
     if (result.suggestions?.length) nodes.push(element('p', 'Unverified semantic leads: review the sources; they may not answer the question.'));
     for (const source of result.suggestions || []) {
       const item = element('article');
-      item.append(element('h3', `${source.title}${source.page ? ` - page ${source.page}` : ''}`), element('pre', source.text));
+      item.append(element('h3', `${source.title}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
       nodes.push(item);
     }
     $("knowledge-results").replaceChildren(...nodes);
@@ -589,7 +590,7 @@ function showConversationTurns(items) {
     if (item.mode === 'source_unavailable') block.append(element('p', 'A saved source is no longer available.'));
     else if (item.mode === 'abstain') block.append(element('p', 'No supporting excerpt found.'));
     for (const source of item.sources || []) {
-      block.append(element('h4', `${source.title}${source.page ? ` - page ${source.page}` : ''}`), element('pre', source.text));
+      block.append(element('h4', `${source.title}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
     }
     turns.push(block);
   }
@@ -626,7 +627,7 @@ $("conversation-form").addEventListener('submit', event => {
   action(event.submitter, async () => {
     const session = sessionGeneration, view = conversationGeneration, id = conversationId;
     if (id === null) throw new Error('Select a conversation first.');
-    await api(`/api/knowledge/conversations/${id}/turns`, jsonPost({question: $("conversation-question").value}));
+    await api(`/api/knowledge/conversations/${id}/turns`, jsonPost({question: $("conversation-question").value, job_id: $("conversation-job-filter").value.trim() || null, section: $("conversation-section-filter").value.trim() || null}));
     ensureCurrent(session); if (view !== conversationGeneration || id !== conversationId) return;
     $("conversation-form").reset(); await selectConversation(id);
   });
@@ -636,7 +637,8 @@ $("knowledge-add").addEventListener("submit", (event) => {
   action(event.submitter, async () => {
     const generation = sessionGeneration, page = $("knowledge-page").value;
     await api('/api/knowledge/documents/text', jsonPost({title: $("knowledge-title").value, text: $("knowledge-text").value,
-      audience: $("knowledge-audience").value, collection: $("knowledge-collection").value, page: page ? Number(page) : null}));
+      audience: $("knowledge-audience").value, collection: $("knowledge-collection").value, page: page ? Number(page) : null,
+      job_id: $("knowledge-job-id").value.trim() || null, section: $("knowledge-section").value.trim() || null}));
     ensureCurrent(generation); $("knowledge-add").reset(); message('Synthetic document added.');
   });
 });
@@ -647,7 +649,7 @@ async function loadKnowledgeDocuments() {
   const nodes = [];
   if (!result.items.length) nodes.push(element('p', 'No active documents.'));
   for (const document of result.items) {
-    const row = element('p', `${document.title} - ${document.collection} - ${document.audience}${document.page ? ` - page ${document.page}` : ''} `);
+    const row = element('p', `${document.title} - ${document.collection} - ${document.audience}${document.page ? ` - page ${document.page}` : ''}${document.job_id ? ` - job ${document.job_id}` : ''}${document.section ? ` - ${document.section}` : ''} `);
     row.append(button('Deactivate', async () => {
       ensureCurrent(generation);
       await api(`/api/knowledge/documents/${document.id}/deactivate`, {method: 'POST'});

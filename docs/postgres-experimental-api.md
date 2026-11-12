@@ -229,3 +229,15 @@ be the latest, source-current and integrity-checked, with at least one scored
 category. The decision records this event ID, not résumé text. A later review or
 source change invalidates the proposed action. This is an API-only synthetic-data
 experiment: saving an assessment itself does not advance, reject, or schedule.
+
+## Knowledge metadata filters
+
+HR can optionally record a job ID and section for each synthetic text document.
+Users can filter extractive, experimental hybrid, and saved-conversation searches
+by exact job ID and section. Only currently authorized documents are considered;
+returned sources include the supplied metadata. The job ID is a label, not a
+verified foreign-key link, and section names are entered by HR rather than
+automatically detected. Existing documents retain empty metadata. Saved excerpts
+become unavailable when their source metadata changes; previously saved excerpts
+from documents with no metadata remain compatible. This does not provide a
+complete section-based ingestion pipeline or establish answer accuracy.

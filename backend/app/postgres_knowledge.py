@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 
 from fastapi import Depends, HTTPException, Request
 from psycopg import sql
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.auth import User
 from app.knowledge import ROLE_AUDIENCES, Source, _document_passages, _rank_lexical, _tokens
@@ -94,7 +94,30 @@ AUDIT_DDL = '''CREATE TABLE IF NOT EXISTS knowledge_audit (
     created_at timestamptz NOT NULL DEFAULT clock_timestamp())'''
 
 
-class Document(BaseModel):
+class Metadata(BaseModel):
+    job_id: str | None = Field(default=None, max_length=64, pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
+    section: str | None = Field(default=None, max_length=200)
+
+    @field_validator('section')
+    @classmethod
+    def valid_section(cls, value):
+        if value is None:
+            return None
+        if not value.strip() or any(ord(char) < 32 for char in value):
+            raise ValueError('Section must be a nonempty single-line value')
+        return value.strip()
+
+
+def source_dict(source, metadata):
+    result = {'id': source.id, 'title': source.title, 'page': source.page, 'text': source.text}
+    row = metadata[source.id]
+    for key in ('job_id', 'section'):
+        if row[key] is not None:
+            result[key] = row[key]
+    return result
+
+
+class Document(Metadata):
     title: str = Field(min_length=1, max_length=200)
     text: str = Field(min_length=1, max_length=4000)
     audience: Literal['public', 'staff', 'hr']
@@ -102,7 +125,7 @@ class Document(BaseModel):
     page: int | None = Field(default=None, ge=1, le=100000)
 
 
-class Question(BaseModel):
+class Question(Metadata):
     question: str = Field(min_length=1, max_length=2000)
     collection: Literal['handbook', 'job_description', 'past_hire_patterns'] | None = None
     experimental_hybrid: bool = False
@@ -114,10 +137,10 @@ def install_routes(app, connect, authenticate, authorize_locked):
         """List active document metadata for HR without returning document bodies."""
         with connect() as db:
             authorize_locked(db, request, user, 'hr')
-            rows = db.execute('''SELECT id,title,audience,collection,page FROM knowledge_documents
+            rows = db.execute('''SELECT id,title,audience,collection,page,job_id,section FROM knowledge_documents
                 WHERE active ORDER BY id DESC LIMIT 500 FOR SHARE''').fetchall()
             authorize_locked(db, request, user, 'hr')
-            return {'items': [dict(row) for row in rows]}
+            return {'items': [{key: value for key, value in dict(row).items() if key not in ('job_id', 'section') or value is not None} for row in rows]}
 
     @app.post('/api/knowledge/documents/text', status_code=201)
     def create(payload: Document, request: Request, user: Annotated[User, Depends(authenticate)]):
@@ -131,12 +154,12 @@ def install_routes(app, connect, authenticate, authorize_locked):
             db.execute("SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext('knowledge-documents-v1'))")
             if db.execute('SELECT count(*) AS n FROM knowledge_documents WHERE active').fetchone()['n'] >= 500:
                 raise HTTPException(status_code=409, detail='Experimental knowledge capacity reached')
-            row = db.execute('''INSERT INTO knowledge_documents(title,body,audience,collection,page,created_by)
-                VALUES (%s,%s,%s,%s,%s,%s) RETURNING id,title,audience,collection,page''',
-                (title, body, payload.audience, payload.collection, payload.page, user.id)).fetchone()
+            row = db.execute('''INSERT INTO knowledge_documents(title,body,audience,collection,page,job_id,section,created_by)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id,title,audience,collection,page,job_id,section''',
+                (title, body, payload.audience, payload.collection, payload.page, payload.job_id, payload.section, user.id)).fetchone()
             db.execute("INSERT INTO knowledge_audit(document_id,actor_id,action) VALUES (%s,%s,'created')", (row['id'], user.id))
             authorize_locked(db, request, user, 'hr')
-            return dict(row)
+            return {key: value for key, value in dict(row).items() if key not in ('job_id', 'section') or value is not None}
 
     @app.post('/api/knowledge/documents/{document_id}/deactivate')
     def deactivate(document_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
@@ -170,17 +193,23 @@ def install_routes(app, connect, authenticate, authorize_locked):
             authorize_locked(db, request, user)
             # Filter before retrieval and keep selected records locked until the
             # session recheck so a revoked document cannot escape mid-response.
-            rows = db.execute('''SELECT id,title,body,page,collection FROM knowledge_documents
+            rows = db.execute('''SELECT id,title,body,page,collection,job_id,section FROM knowledge_documents
                 WHERE active AND audience = ANY(%s) AND (collection <> 'past_hire_patterns' OR %s = 'hr')
-                AND (%s::text IS NULL OR collection=%s) ORDER BY id LIMIT 500 FOR SHARE''',
-                (list(ROLE_AUDIENCES[user.role]), user.role, payload.collection, payload.collection)).fetchall()
+                AND (%s::text IS NULL OR collection=%s)
+                AND (%s::text IS NULL OR job_id=%s) AND (%s::text IS NULL OR section=%s)
+                ORDER BY id LIMIT 500 FOR SHARE''',
+                (list(ROLE_AUDIENCES[user.role]), user.role, payload.collection, payload.collection,
+                 payload.job_id, payload.job_id, payload.section, payload.section)).fetchall()
+            metadata = {}
             if payload.experimental_hybrid:
                 sources = []
                 for row in rows:
                     for passage in _document_passages({'id': row['id'], 'title': row['title'], 'text': row['body']}):
                         sources.append(Source(id=passage.id, title=passage.title, text=passage.text, page=row['page']))
+                        metadata[passage.id] = row
             else:
                 sources = [Source(id=f"pg-doc-{r['id']}", title=r['title'], text=r['body'], page=r['page']) for r in rows]
+                metadata = {source.id: row for source, row in zip(sources, rows, strict=True)}
             ranked = _rank_lexical(_tokens(payload.question), sources)[:3]
             if not ranked and not payload.experimental_hybrid:
                 ranked = _unique_policy_title(payload.question, sources)
@@ -195,10 +224,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 suggestions = [source for _, source in semantic if source.id not in lexical_ids]
             authorize_locked(db, request, user)
             return {'mode': 'extractive' if ranked else 'abstain',
-                    'sources': [{'id': source.id, 'title': source.title, 'page': source.page, 'text': source.text}
-                                for _, source in ranked],
-                    'suggestions': [{'id': source.id, 'title': source.title, 'page': source.page, 'text': source.text}
-                                    for source in suggestions],
+                    'sources': [source_dict(source, metadata) for _, source in ranked],
+                    'suggestions': [source_dict(source, metadata) for source in suggestions],
                     'notice': ('Experimental semantic leads are unverified; review each source. No external service was called.'
                                if payload.experimental_hybrid else
                                'Synthetic local excerpts only; verify the cited source. No model or external service was called.')}

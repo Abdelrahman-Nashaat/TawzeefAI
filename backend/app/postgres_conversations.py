@@ -8,11 +8,11 @@ import json
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from app.auth import User
 from app.knowledge import ROLE_AUDIENCES, Source, _rank_lexical, _tokens
-from app.postgres_knowledge import _unique_policy_title
+from app.postgres_knowledge import Metadata, _unique_policy_title, source_dict
 
 DDL = (
     '''CREATE TABLE IF NOT EXISTS knowledge_conversations (
@@ -29,19 +29,22 @@ DDL = (
 )
 
 
-class Turn(BaseModel):
+class Turn(Metadata):
     question: str = Field(min_length=1, max_length=2000)
 
 
 def _digest(row):
     value = [row['id'], row['title'], row['body'], row['page'], row['collection'], row['audience']]
+    if row['job_id'] is not None or row['section'] is not None:
+        value.extend([row['job_id'], row['section']])
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
-def _documents(db, role):
-    return db.execute('''SELECT id,title,body,page,collection,audience FROM knowledge_documents
+def _documents(db, role, job_id=None, section=None):
+    return db.execute('''SELECT id,title,body,page,collection,audience,job_id,section FROM knowledge_documents
         WHERE active AND audience=ANY(%s) AND (collection <> 'past_hire_patterns' OR %s='hr')
-        ORDER BY id LIMIT 500 FOR SHARE''', (list(ROLE_AUDIENCES[role]), role)).fetchall()
+        AND (%s::text IS NULL OR job_id=%s) AND (%s::text IS NULL OR section=%s)
+        ORDER BY id LIMIT 500 FOR SHARE''', (list(ROLE_AUDIENCES[role]), role, job_id, job_id, section, section)).fetchall()
 
 
 def _owner(db, conversation_id, user):
@@ -89,7 +92,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
             if db.execute('SELECT count(*) AS n FROM knowledge_conversation_turns WHERE conversation_id=%s',
                           (conversation_id,)).fetchone()['n'] >= 100:
                 raise HTTPException(status_code=409, detail='Conversation turn limit reached')
-            rows = _documents(db, user.role)
+            rows = _documents(db, user.role, payload.job_id, payload.section)
             sources = [Source(id=f"pg-doc-{r['id']}", title=r['title'], text=r['body'], page=r['page']) for r in rows]
             by_id = {f"pg-doc-{row['id']}": row for row in rows}
             ranked = _rank_lexical(_tokens(question), sources)[:3]
@@ -102,8 +105,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
             authorize_locked(db, request, user)
             return {'id': row['id'], 'created_at': row['created_at'], 'question': question,
                     'mode': 'extractive' if refs else 'abstain',
-                    'sources': [{'id': source.id, 'title': source.title, 'page': source.page, 'text': source.text}
-                                for _, source in ranked],
+                    'sources': [source_dict(source, by_id) for _, source in ranked],
                     'notice': 'Unverified excerpts from synthetic documents; no external service was called.'}
 
     @app.get('/api/knowledge/conversations/{conversation_id}/turns')
@@ -124,9 +126,9 @@ def install_routes(app, connect, authenticate, authorize_locked):
                                     ref['id'] in docs and _digest(docs[ref['id']]) == ref['digest'] for ref in refs)
                 except (TypeError, ValueError, KeyError):
                     available, refs = False, []
-                excerpts = [{'id': f"pg-doc-{ref['id']}", 'title': docs[ref['id']]['title'],
-                             'page': docs[ref['id']]['page'], 'text': docs[ref['id']]['body']}
-                            for ref in refs] if available else []
+                excerpts = [source_dict(Source(id=f"pg-doc-{ref['id']}", title=docs[ref['id']]['title'],
+                             page=docs[ref['id']]['page'], text=docs[ref['id']]['body']),
+                             {f"pg-doc-{ref['id']}": docs[ref['id']]}) for ref in refs] if available else []
                 output.append({'id': turn['id'], 'question': turn['question'], 'created_at': turn['created_at'],
                                'mode': ('extractive' if excerpts else 'abstain') if available else 'source_unavailable',
                                'sources': excerpts})
