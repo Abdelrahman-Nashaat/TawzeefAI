@@ -32,4 +32,3 @@ def test_dashboard_uses_recorded_pipeline_and_hire_times(mode):  # noqa: F811
         assert all(row['time_to_hire']['average_days'] is None for row in data['jobs'] if row['job_id'] != job)
         assert 'manual baseline' in data['definition']
         assert 'resume_text' not in response.text
-
