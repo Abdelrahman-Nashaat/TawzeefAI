@@ -1,5 +1,16 @@
 # Experimental PostgreSQL API
 
+The demo also supports saved, role-scoped extractive knowledge conversations.
+Each account may create up to 100 conversations with up to 100 questions each.
+Questions and source identifiers with fingerprints are stored in PostgreSQL;
+source passages are reconstructed only while the documents remain active,
+unchanged, and accessible to the account's current role. Changed or revoked
+sources make that saved turn unavailable. Conversations are not portable across
+role changes, and this mode has no conversation deletion interface. Use only
+synthetic questions and documents. Saved conversations do not use hybrid search,
+model-generated answers, or an external service, and excerpt relevance is not
+verified.
+
 This opt-in development slice is for synthetic data only. It is not the full
 application or a migration. It stores demo users, jobs, sessions, applications,
 notices, audit events, screening records, slots, and interviews in one PostgreSQL schema.

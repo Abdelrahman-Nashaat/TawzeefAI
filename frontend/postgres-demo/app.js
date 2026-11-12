@@ -6,6 +6,8 @@ let noticeCursor = null;
 let submissionCursor = null;
 let sessionGeneration = 0;
 let jobRevision = null;
+let conversationId = null;
+let conversationGeneration = 0;
 class StaleSession extends Error {}
 function ensureCurrent(generation) { if (generation !== sessionGeneration) throw new StaleSession(); }
 
@@ -22,6 +24,8 @@ function signedOut() {
   user = null;
   noticeCursor = null;
   submissionCursor = null;
+  conversationId = null;
+  conversationGeneration++;
   $("more-submissions").hidden = true;
   $("workspace").hidden = true;
   $("login-panel").hidden = false;
@@ -32,6 +36,9 @@ function signedOut() {
   $("hr-job-form").reset(); $("hr-job-id").disabled = false; jobRevision = null;
   for (const id of ["applications", "interviews", "notices", "submission-notices", "dashboard-results", "knowledge-results", "knowledge-documents", "hr-job-list"]) $(id).replaceChildren();
   $("knowledge-form").reset(); $("knowledge-add").reset();
+  $("conversation-form").reset(); $("conversation-form").hidden = true;
+  $("conversation-current").textContent = "No conversation selected.";
+  $("conversation-list-results").replaceChildren(); $("conversation-turns").replaceChildren();
 }
 
 async function api(path, options = {}) {
@@ -554,6 +561,56 @@ $("knowledge-form").addEventListener("submit", (event) => {
       nodes.push(item);
     }
     $("knowledge-results").replaceChildren(...nodes);
+  });
+});
+function showConversationTurns(items) {
+  const turns = [];
+  for (const item of items) {
+    const block = element('article');
+    block.append(element('h4', `Question: ${item.question}`));
+    if (item.mode === 'source_unavailable') block.append(element('p', 'A saved source is no longer available.'));
+    else if (item.mode === 'abstain') block.append(element('p', 'No supporting excerpt found.'));
+    for (const source of item.sources || []) {
+      block.append(element('h4', `${source.title}${source.page ? ` - page ${source.page}` : ''}`), element('pre', source.text));
+    }
+    turns.push(block);
+  }
+  $("conversation-turns").replaceChildren(...turns);
+}
+async function selectConversation(id) {
+  const session = sessionGeneration, view = ++conversationGeneration;
+  conversationId = null; $("conversation-form").hidden = true;
+  $("conversation-form").reset(); $("conversation-turns").replaceChildren();
+  $("conversation-current").textContent = 'Loading conversation...';
+  const result = await api(`/api/knowledge/conversations/${id}/turns`);
+  ensureCurrent(session); if (view !== conversationGeneration) return;
+  conversationId = id; $("conversation-current").textContent = `Conversation ${id}`;
+  $("conversation-form").hidden = false; showConversationTurns(result.items);
+}
+$("conversation-new").addEventListener('click', () => action($("conversation-new"), async () => {
+  const session = sessionGeneration, view = ++conversationGeneration;
+  conversationId = null; $("conversation-form").hidden = true;
+  $("conversation-form").reset(); $("conversation-turns").replaceChildren();
+  $("conversation-current").textContent = 'Creating conversation...';
+  const result = await api('/api/knowledge/conversations', {method: 'POST'});
+  ensureCurrent(session); if (view !== conversationGeneration) return;
+  conversationId = result.id; $("conversation-current").textContent = `Conversation ${result.id}`;
+  $("conversation-form").hidden = false;
+}));
+$("conversation-list").addEventListener('click', () => action($("conversation-list"), async () => {
+  const session = sessionGeneration;
+  const result = await api('/api/knowledge/conversations'); ensureCurrent(session);
+  const rows = result.items.map(item => button(`Conversation ${item.id}`, () => selectConversation(item.id)));
+  $("conversation-list-results").replaceChildren(...(rows.length ? rows : [element('p', 'No saved conversations.')]));
+}));
+$("conversation-form").addEventListener('submit', event => {
+  event.preventDefault();
+  action(event.submitter, async () => {
+    const session = sessionGeneration, view = conversationGeneration, id = conversationId;
+    if (id === null) throw new Error('Select a conversation first.');
+    await api(`/api/knowledge/conversations/${id}/turns`, jsonPost({question: $("conversation-question").value}));
+    ensureCurrent(session); if (view !== conversationGeneration || id !== conversationId) return;
+    $("conversation-form").reset(); await selectConversation(id);
   });
 });
 $("knowledge-add").addEventListener("submit", (event) => {

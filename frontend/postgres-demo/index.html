@@ -65,6 +65,16 @@
         <p>Search synthetic documents available to your role. Results are excerpts, not verified answers.</p>
         <form id="knowledge-form"><label>Question <input id="knowledge-question" maxlength="2000" required></label><button>Search</button><button type="submit" value="hybrid">Experimental hybrid search</button></form>
         <div id="knowledge-results"></div>
+        <section aria-labelledby="conversation-heading">
+          <h3 id="conversation-heading">Saved conversations</h3>
+          <p>Questions are stored locally. Saved excerpts are shown only while their sources remain accessible and unchanged.</p>
+          <button id="conversation-new" type="button">New conversation</button>
+          <button id="conversation-list" type="button">List conversations</button>
+          <div id="conversation-list-results"></div>
+          <p id="conversation-current">No conversation selected.</p>
+          <form id="conversation-form" hidden><label>Question <input id="conversation-question" maxlength="2000" required></label><button>Ask and save</button></form>
+          <div id="conversation-turns"></div>
+        </section>
         <form id="knowledge-add" hidden><h3>Add synthetic document</h3>
           <label>Title <input id="knowledge-title" maxlength="200" required></label>
           <label>Text <textarea id="knowledge-text" maxlength="4000" required></textarea></label>

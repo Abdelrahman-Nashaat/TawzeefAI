@@ -38,6 +38,8 @@ from app.auth import (
 from app.auth_store import InvalidAccount, issue_session, session_user
 from app.blind import redact_resume
 from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_document_text
+from app.postgres_conversations import DDL as CONVERSATION_DDL
+from app.postgres_conversations import install_routes as install_conversation_routes
 from app.postgres_feedback import DDL as FEEDBACK_DDL
 from app.postgres_feedback import install_routes as install_feedback_routes
 from app.postgres_jobs import DDL as JOB_AUDIT_DDL
@@ -158,6 +160,8 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
             db.execute(FEEDBACK_DDL)
             db.execute(KNOWLEDGE_DDL)
             db.execute(KNOWLEDGE_AUDIT_DDL)
+            for statement in CONVERSATION_DDL:
+                db.execute(statement)
             db.execute(JOB_AUDIT_DDL)
             # Additive and idempotent for schemas created by earlier demo versions.
             db.execute('''CREATE TABLE IF NOT EXISTS screening_history (
@@ -441,6 +445,7 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
     install_job_routes(app, connect, authenticate, authorize_locked)
     install_feedback_routes(app, connect, authenticate, authorize_locked)
     install_knowledge_routes(app, connect, authenticate, authorize_locked)
+    install_conversation_routes(app, connect, authenticate, authorize_locked)
     install_submission_notice_routes(app, connect, authenticate, authorize_locked)
     install_routes(app, connect, authenticate, authorize_locked)
     return app
