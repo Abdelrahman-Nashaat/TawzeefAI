@@ -85,6 +85,26 @@ async function showSlots(application, container) {
   container.replaceChildren(list);
 }
 
+async function showPrivateSlots(application, container) {
+  const generation = sessionGeneration;
+  const slots = await api(`/api/applications/${application.id}/private-slots`);
+  ensureCurrent(generation);
+  const list = element("div");
+  if (!slots.length) list.append(element("p", "No upcoming reserved slots."));
+  for (const slot of slots) {
+    const line = element("p", `${date(slot.start_at)} - ${date(slot.end_at)} | ${slot.interviewer} `);
+    if (slot.booked) line.append(element("span", "Booked; cancel the interview before withdrawing."));
+    else line.append(button("Withdraw reservation", async () => {
+      const current = sessionGeneration;
+      await api(`/api/slots/${slot.id}/withdraw`, {method: "POST"});
+      ensureCurrent(current); await showPrivateSlots(application, container);
+      ensureCurrent(current); message("Reservation withdrawn.");
+    }));
+    list.append(line);
+  }
+  container.replaceChildren(list);
+}
+
 async function showOffers(application, container) {
   const generation = sessionGeneration;
   const role = user.role;
@@ -331,6 +351,28 @@ function renderApplications(applications, jobs) {
         card.append(rejectionForm);
       }
       if (application.status === "advanced") {
+        const reservationForm = element("form");
+        const startLabel = element("label", "Reserved start "), start = element("input");
+        const endLabel = element("label", "Reserved end "), end = element("input");
+        const interviewerLabel = element("label", "Interviewer "), interviewer = element("input");
+        start.type = end.type = "datetime-local"; start.required = end.required = interviewer.required = true;
+        interviewer.maxLength = 120;
+        startLabel.append(start); endLabel.append(end); interviewerLabel.append(interviewer);
+        const reserve = element("button", "Reserve slot for this candidate"); reserve.type = "submit";
+        const reservations = element("div");
+        reservationForm.append(startLabel, endLabel, interviewerLabel, reserve);
+        reservationForm.addEventListener("submit", (event) => {
+          event.preventDefault();
+          action(event.submitter, async () => {
+            const generation = sessionGeneration;
+            const from = new Date(start.value), to = new Date(end.value);
+            if (Number.isNaN(from.valueOf()) || Number.isNaN(to.valueOf())) throw new Error("Enter valid slot times.");
+            await api(`/api/applications/${application.id}/private-slots`, jsonPost({start_at: from.toISOString(), end_at: to.toISOString(), interviewer: interviewer.value}));
+            ensureCurrent(generation); reservationForm.reset(); await showPrivateSlots(application, reservations);
+            ensureCurrent(generation); message("Slot reserved locally for this candidate.");
+          });
+        });
+        card.append(reservationForm, button("View reserved slots", () => showPrivateSlots(application, reservations)), reservations);
         const offerForm = element("form");
         const label = element("label", "Offer details ");
         const input = element("textarea");

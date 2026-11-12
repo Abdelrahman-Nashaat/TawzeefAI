@@ -36,6 +36,16 @@ score does not itself decide advancement. HR can create future slots with
 `GET /api/slots?application_id=...` and book one with
 `POST /api/slots/{id}/book`. `GET /api/interviews` lets a candidate retrieve
 their own bookings and HR retrieve all bookings, including after restart.
+For an advanced application, HR can reserve a future slot specifically for
+its current candidate with `POST /api/applications/{id}/private-slots` and
+list its upcoming reservations with `GET` on the same path. The candidate can
+see and book it only for that application. HR can withdraw an unbooked private
+slot with `POST /api/slots/{slot_id}/withdraw`; cancel an existing booking first.
+Rejection or hiring withdraws the application's private slots. The browser
+interface supports reservation and withdrawal in the HR application card.
+An application whose owner changes cannot use the former owner's reservation.
+On startup the experimental schema adds reservation columns; stop older server
+versions before upgrading. No invitations or external messages are sent.
 Booking is recorded locally; no email or calendar invitation is delivered.
 Candidates may view their current persisted stage in the browser or via
 `GET /api/workflows/{id}/progress`. The stage excludes HR notes and scores;
