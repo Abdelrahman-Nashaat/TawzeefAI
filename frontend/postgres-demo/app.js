@@ -25,7 +25,7 @@ function signedOut() {
   $("password").value = "";
   $("resume").value = "";
   $("slot-form").reset();
-  for (const id of ["applications", "interviews", "notices", "dashboard-results", "knowledge-results"]) $(id).replaceChildren();
+  for (const id of ["applications", "interviews", "notices", "dashboard-results", "knowledge-results", "knowledge-documents"]) $(id).replaceChildren();
   $("knowledge-form").reset(); $("knowledge-add").reset();
 }
 
@@ -484,6 +484,7 @@ async function openWorkspace(account) {
   $("candidate-upload").hidden = user.role !== "candidate"; $("hr-slots").hidden = user.role !== "hr";
   $("hr-dashboard").hidden = user.role !== "hr";
   $("knowledge-add").hidden = user.role !== "hr";
+  $("knowledge-management").hidden = user.role !== "hr";
   for (const id of ["applications-panel", "interviews-panel", "notices-panel"]) $(id).hidden = user.role === "employee";
   $("welcome").textContent = `Welcome, ${user.display_name}`;
   $("role-description").textContent = user.role === "hr" ? "Review applications and manage interview slots." :
@@ -527,6 +528,28 @@ $("knowledge-add").addEventListener("submit", (event) => {
     ensureCurrent(generation); $("knowledge-add").reset(); message('Synthetic document added.');
   });
 });
+async function loadKnowledgeDocuments() {
+  const generation = sessionGeneration;
+  const result = await api('/api/knowledge/documents');
+  ensureCurrent(generation);
+  const nodes = [];
+  if (!result.items.length) nodes.push(element('p', 'No active documents.'));
+  for (const document of result.items) {
+    const row = element('p', `${document.title} - ${document.collection} - ${document.audience}${document.page ? ` - page ${document.page}` : ''} `);
+    row.append(button('Deactivate', async () => {
+      ensureCurrent(generation);
+      await api(`/api/knowledge/documents/${document.id}/deactivate`, {method: 'POST'});
+      ensureCurrent(generation);
+      await loadKnowledgeDocuments();
+      ensureCurrent(generation);
+      $("knowledge-results").replaceChildren();
+      message('Document deactivated.');
+    }));
+    nodes.push(row);
+  }
+  $("knowledge-documents").replaceChildren(...nodes);
+}
+$("knowledge-list").addEventListener("click", () => action($("knowledge-list"), loadKnowledgeDocuments));
 $("load-dashboard").addEventListener("click", () => action($("load-dashboard"), async () => {
   const generation = sessionGeneration;
   const data = await api('/api/dashboard/jobs');

@@ -19,9 +19,10 @@ It is not a generative answer, semantic retrieval, or the full vector RAG flow.
 Document changes are audited without storing document text in the audit row.
 Documents are limited to 4,000 characters each and 500 active documents; the
 local interface accepts synthetic material only.
-HR can deactivate a document using `POST /api/knowledge/documents/{id}/deactivate`;
-the current browser provides document creation and search but no document list
-or deactivation control.
+HR can list active document metadata in the browser or through
+`GET /api/knowledge/documents`, and deactivate documents from the browser or via
+`POST /api/knowledge/documents/{id}/deactivate`. The list excludes document bodies;
+deactivated documents no longer appear in search or the active document list.
 New experimental schemas include an `employee` demo account using the same
 demo-password convention as other accounts. Existing schemas are not reseeded;
 create a new disposable schema to use that account if it is absent.

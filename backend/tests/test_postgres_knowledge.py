@@ -5,6 +5,26 @@ from test_postgres_experimental_api import db_for, login, mode  # noqa: F401
 from app.main import create_app
 
 
+def test_hr_can_list_and_deactivate_knowledge_without_exposing_bodies(mode):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as hr, TestClient(create_app(seed_demo=True)) as candidate:
+        login(hr, 'hr')
+        login(candidate, 'candidate')
+        result = hr.post('/api/knowledge/documents/text', json={'title': 'Public leave',
+            'text': 'Annual leave requires manager approval.', 'audience': 'public', 'collection': 'handbook', 'page': 2})
+        assert result.status_code == 201
+        document_id = result.json()['id']
+        assert candidate.get('/api/knowledge/documents').status_code == 403
+        assert candidate.post(f'/api/knowledge/documents/{document_id}/deactivate').status_code == 403
+        listed = hr.get('/api/knowledge/documents')
+        assert listed.status_code == 200
+        assert listed.json()['items'] == [{'id': document_id, 'title': 'Public leave',
+            'audience': 'public', 'collection': 'handbook', 'page': 2}]
+        assert candidate.post('/api/knowledge/answer', json={'question': 'annual leave'}).json()['mode'] == 'extractive'
+        assert hr.post(f'/api/knowledge/documents/{document_id}/deactivate').status_code == 200
+        assert hr.get('/api/knowledge/documents').json()['items'] == []
+        assert candidate.post('/api/knowledge/answer', json={'question': 'annual leave'}).json()['mode'] == 'abstain'
+
+
 def test_knowledge_access_and_persistence(mode):  # noqa: F811
     app = create_app(seed_demo=True)
     with TestClient(app) as hr, TestClient(app) as candidate, TestClient(app) as employee:

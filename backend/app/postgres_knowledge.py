@@ -35,6 +35,16 @@ class Question(BaseModel):
 
 
 def install_routes(app, connect, authenticate, authorize_locked):
+    @app.get('/api/knowledge/documents')
+    def list_documents(request: Request, user: Annotated[User, Depends(authenticate)]):
+        """List active document metadata for HR without returning document bodies."""
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+            rows = db.execute('''SELECT id,title,audience,collection,page FROM knowledge_documents
+                WHERE active ORDER BY id DESC LIMIT 500 FOR SHARE''').fetchall()
+            authorize_locked(db, request, user, 'hr')
+            return {'items': [dict(row) for row in rows]}
+
     @app.post('/api/knowledge/documents/text', status_code=201)
     def create(payload: Document, request: Request, user: Annotated[User, Depends(authenticate)]):
         title, body = payload.title.strip(), payload.text.strip()
