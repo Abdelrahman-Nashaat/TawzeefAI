@@ -510,11 +510,19 @@ $("knowledge-form").addEventListener("submit", (event) => {
   event.preventDefault();
   action(event.submitter, async () => {
     const generation = sessionGeneration;
-    const result = await api('/api/knowledge/answer', jsonPost({question: $("knowledge-question").value}));
+    const result = await api('/api/knowledge/answer', jsonPost({question: $("knowledge-question").value,
+      experimental_hybrid: event.submitter?.value === 'hybrid'}));
     ensureCurrent(generation);
     const nodes = [element('p', result.notice)];
-    if (!result.sources.length) nodes.push(element('p', 'No relevant source found. Contact HR.'));
+    if (!result.sources.length) nodes.push(element('p', result.suggestions?.length ?
+      'No lexical match found. Contact HR for an answer.' : 'No relevant source found. Contact HR.'));
     for (const source of result.sources) {
+      const item = element('article');
+      item.append(element('h3', `${source.title}${source.page ? ` - page ${source.page}` : ''}`), element('pre', source.text));
+      nodes.push(item);
+    }
+    if (result.suggestions?.length) nodes.push(element('p', 'Unverified semantic leads: review the sources; they may not answer the question.'));
+    for (const source of result.suggestions || []) {
       const item = element('article');
       item.append(element('h3', `${source.title}${source.page ? ` - page ${source.page}` : ''}`), element('pre', source.text));
       nodes.push(item);

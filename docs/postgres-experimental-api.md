@@ -21,7 +21,8 @@ Candidate, employee and HR accounts can search authorized synthetic knowledge
 documents. HR can add text documents with a title, audience, collection and
 optional page; past-hire patterns are restricted to HR. Search filters documents
 by role before lexical ranking, returning excerpts and citations or an abstention.
-It is not a generative answer, semantic retrieval, or the full vector RAG flow.
+The default is lexical and extractive; it is not a generative answer or the
+full vector RAG flow.
 Document changes are audited without storing document text in the audit row.
 Documents are limited to 4,000 characters each and 500 active documents; the
 local interface accepts synthetic material only.
@@ -29,6 +30,21 @@ HR can list active document metadata in the browser or through
 `GET /api/knowledge/documents`, and deactivate documents from the browser or via
 `POST /api/knowledge/documents/{id}/deactivate`. The list excludes document bodies;
 deactivated documents no longer appear in search or the active document list.
+An optional **Experimental hybrid search** button also computes local E5
+embeddings over role-authorized passages and searches them using pgvector. The
+lexical excerpts remain distinct from semantic-only suggestions: suggestions
+are unverified leads, not answers or proof of support. This path requires the
+`postgres` and `semantic` extras, the pinned local model, an operator-provisioned
+pgvector extension, `TAWZEEF_POSTGRES_KNOWLEDGE_HYBRID=1`, and
+`TAWZEEF_EMBEDDING_MODEL_DIR`. See `local-semantic-experiment.md` for the model.
+The application never installs the database extension. It limits each query to
+200 authorized passages, re-embeds them on every request, uses an uncalibrated
+0.80 similarity cutoff, and returns 503 if the
+optional path is unavailable; the standard lexical search remains available.
+Embeddings are retained in `knowledge_vectors` in the experimental schema,
+including vectors of later-deactivated documents, until the schema is removed.
+Search always restricts vector IDs to current authorized active documents. Use
+only synthetic data. No external model or network service is called.
 New experimental schemas include an `employee` demo account using the same
 demo-password convention as other accounts. Existing schemas are not reseeded;
 create a new disposable schema to use that account if it is absent.

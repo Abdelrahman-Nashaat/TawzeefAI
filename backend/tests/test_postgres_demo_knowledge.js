@@ -12,10 +12,10 @@ class Node {
 const nodes = new Map();
 const document = {getElementById(id) { if (!nodes.has(id)) nodes.set(id,new Node()); return nodes.get(id); },createElement() { return new Node(); }};
 const response = (data,status=200) => ({status,ok:status>=200&&status<300,json:async()=>data});
-let pending;
-const fetch = async (path) => {
+let pending, requested;
+const fetch = async (path, options) => {
   if (path === '/api/auth/me') return response({},401);
-  if (path === '/api/knowledge/answer') return new Promise(resolve=>{ pending=resolve; });
+  if (path === '/api/knowledge/answer') { requested = JSON.parse(options.body); return new Promise(resolve=>{ pending=resolve; }); }
   if (path==='/api/jobs' || path==='/api/applications' || path==='/api/interviews') return response([]);
   if (path.includes('interview-cancellations')) return response({items:[],next_before:null});
   throw Error('Unexpected request '+path);
@@ -34,6 +34,14 @@ async function run() {
   pending(response({notice:'Excerpts only',sources:[{title:'Policy',page:4,text:'<img src=x>'}]}));
   await tick();
   assert.equal(nodes.get('knowledge-results').children[1].children[1].textContent,'<img src=x>');
+  const hybrid = new Node(); hybrid.value = 'hybrid';
+  nodes.get('knowledge-form').listeners.submit({preventDefault(){},submitter:hybrid});
+  await tick();
+  assert.equal(requested.experimental_hybrid, true);
+  pending(response({notice:'Experimental leads',sources:[],suggestions:[{title:'Possible policy',page:3,text:'Unverified <img>'}]}));
+  await tick();
+  assert.match(nodes.get('knowledge-results').children[2].textContent,/Unverified semantic leads/);
+  assert.equal(nodes.get('knowledge-results').children[3].children[1].textContent,'Unverified <img>');
   nodes.get('knowledge-form').listeners.submit({preventDefault(){},submitter:new Node()});
   await tick();
   vm.runInContext('signedOut()',context);
