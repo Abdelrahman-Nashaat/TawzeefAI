@@ -457,6 +457,17 @@ function renderApplications(applications, jobs) {
                   ensureDraftView(current, viewGeneration);
                   await renderReview();
                 }));
+                view.append(button("Complete remaining preparation", async () => {
+                  ensureDraftView(current, viewGeneration);
+                  try { await api(`/api/graph-review-drafts/${draft.id}/prepare-all`, {method: "POST"}); }
+                  catch (error) {
+                    ensureDraftView(current, viewGeneration);
+                    draftPanel.replaceChildren(element("p", "Preparation stopped. Reopen the review to inspect saved progress."));
+                    throw error;
+                  }
+                  ensureDraftView(current, viewGeneration);
+                  await renderReview();
+                }));
               }
               if (!opened.stale && opened.preparation?.ready) view.append(element("p", `Suggested next step: ${opened.preparation.suggested_step}. HR must decide.`));
               for (const reviewed of (opened.stale || (opened.preparation && !opened.preparation.ready) ? [false] : [true, false])) {

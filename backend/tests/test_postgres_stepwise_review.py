@@ -121,3 +121,51 @@ def test_concurrent_preparations_serialize_each_stage(mode):  # noqa: F811
         progress = hr.get(f'/api/graph-review-drafts/{draft_id}').json()['preparation']
         assert progress['completed'] == ['parser', 'matching', 'status']
         assert progress['next'] == 'scheduling'
+
+
+def test_prepare_all_resumes_after_partial_failure_without_decision(mode, monkeypatch):  # noqa: F811
+    import app.postgres_graph_review as graph_review
+
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True), raise_server_exceptions=False) as hr:
+        app_id = create_application(candidate)
+        login(hr, 'hr')
+        assess(hr, app_id)
+        draft = hr.post(f'/api/applications/{app_id}/graph-review-preparations',
+                        json={'intent': 'advance', 'slot': slot_proposal()}).json()['id']
+        assert candidate.post(f'/api/graph-review-drafts/{draft}/prepare-all').status_code == 403
+        original = graph_review._advance_preparation
+        calls = 0
+        def interrupted(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise RuntimeError('Synthetic interruption')
+            return original(*args, **kwargs)
+        monkeypatch.setattr(graph_review, '_advance_preparation', interrupted)
+        assert hr.post(f'/api/graph-review-drafts/{draft}/prepare-all').status_code == 500
+        monkeypatch.setattr(graph_review, '_advance_preparation', original)
+        state = hr.get(f'/api/graph-review-drafts/{draft}').json()['preparation']
+        assert state['completed'] == ['parser', 'matching', 'status']
+        with db_for(mode) as db:
+            assert db.execute('SELECT status FROM applications WHERE id=%s', (app_id,)).fetchone()['status'] == 'submitted'
+            assert db.execute('SELECT count(*) AS n FROM interview_slots').fetchone()['n'] == 0
+        resumed = hr.post(f'/api/graph-review-drafts/{draft}/prepare-all')
+        assert resumed.status_code == 200 and resumed.json()['preparation']['ready'] is True
+        assert hr.post(f'/api/graph-review-drafts/{draft}/prepare-all').json()['preparation']['ready'] is True
+        with db_for(mode) as db:
+            assert db.execute('SELECT status FROM applications WHERE id=%s', (app_id,)).fetchone()['status'] == 'submitted'
+            assert db.execute('SELECT count(*) AS n FROM interview_slots').fetchone()['n'] == 0
+        assert hr.post(f'/api/graph-review-drafts/{draft}/resume', json={'reviewed': True}).status_code == 200
+
+
+def test_concurrent_prepare_all_is_idempotent(mode):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
+        app_id = create_application(candidate)
+        login(hr, 'hr')
+        draft = hr.post(f'/api/applications/{app_id}/graph-review-preparations', json={}).json()['id']
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            requests = [pool.submit(hr.post, f'/api/graph-review-drafts/{draft}/prepare-all') for _ in range(2)]
+            results = [request.result(timeout=60) for request in requests]
+        assert all(result.status_code == 200 and result.json()['preparation']['ready'] for result in results)
+        with db_for(mode) as db:
+            assert db.execute('SELECT status FROM applications WHERE id=%s', (app_id,)).fetchone()['status'] == 'submitted'

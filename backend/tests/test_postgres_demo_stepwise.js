@@ -21,6 +21,7 @@ const fetch=async(path,opts={})=>{
   if(path==='/api/graph-review-drafts/9') return response({status:'pending',intent:'advance',stale:false,result:{},slot:proposedSlot,
     preparation:{completed:ready?['parser','matching','status','scheduling','policy']:['parser'],next:ready?'human_review':'matching',ready,suggested_step:ready?'review_advance':null}});
   if(path==='/api/graph-review-drafts/9/prepare') { ready=true; return response({}); }
+  if(path==='/api/graph-review-drafts/9/prepare-all') { ready=true; return response({}); }
   if(path==='/api/graph-review-drafts/9/resume') return response({});
   if(path==='/api/applications') return response([{id:7,status:'advanced',job_id:'j',candidate_id:4}]);
   if(path==='/api/hr/interview-cancellations') return response({items:[],next_before:null});
@@ -38,7 +39,8 @@ async function run(){
   await click('Start resumable advancement proposal');
   await click('Open saved reviews'); await click('Open review');
   assert(find('Continue preparation')); assert(!find('Approve advancement'));
-  await click('Continue preparation');
+  await click('Complete remaining preparation');
+  assert.equal(requests.filter(r=>r.path.endsWith('/prepare-all')).length,1);
   assert(find('Approve advancement'));
   assert.equal(requests.filter(r=>r.path.endsWith('/resume')).length,0);
   await click('Approve advancement');

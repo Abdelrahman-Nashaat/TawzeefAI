@@ -8,6 +8,12 @@ review. The API supports a private-slot proposal at
 `POST /api/applications/{id}/graph-review-preparations`; subsequent calls to
 `POST /api/graph-review-drafts/{id}/prepare` run one stage each. The browser
 also supports advancement with a candidate-specific private slot in this flow.
+HR may select **Complete remaining preparation** or call
+`POST /api/graph-review-drafts/{id}/prepare-all` to run remaining stages in
+order. Each stage commits separately and rechecks the session, authorization,
+and source snapshot. If a stage fails, reopen the review to inspect its saved
+progress. Preparation does not make a recruitment decision or send a message;
+HR must still inspect and explicitly approve the completed review.
 A changed source or
 availability invalidates the draft, which can still be discarded. Concurrent
 requests serialize on the draft and scheduling locks.

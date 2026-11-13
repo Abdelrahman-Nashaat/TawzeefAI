@@ -384,8 +384,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
             authorize_locked(db, request, user, 'hr')
             return {'id': draft['id'], 'status': 'pending', 'preparation': progress}
 
-    @app.post('/api/graph-review-drafts/{draft_id}/prepare')
-    def continue_preparation(draft_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
+    def prepare_one(draft_id, request, user, *, accept_ready=False):
+        """Run at most one stage and commit it before returning."""
         with connect() as db:
             authorize_locked(db, request, user, 'hr')
             lock_scheduling(db)
@@ -398,9 +398,27 @@ def install_routes(app, connect, authenticate, authorize_locked):
             result, digest, _ = _snapshot(db, draft['application_id'], draft['question'])
             if _bind_slot(digest, draft['slot_proposal']) != draft['fingerprint']:
                 raise HTTPException(status_code=409, detail='Review changed; discard it and start again')
+            state = _preparation_state(db, draft)
+            if accept_ready and _preparation_progress(state)['ready']:
+                authorize_locked(db, request, user, 'hr')
+                return {'id': draft_id, 'status': 'pending', 'preparation': _preparation_progress(state)}
             progress = _advance_preparation(db, draft, result)
             authorize_locked(db, request, user, 'hr')
             return {'id': draft_id, 'status': 'pending', 'preparation': progress}
+
+    @app.post('/api/graph-review-drafts/{draft_id}/prepare')
+    def continue_preparation(draft_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
+        return prepare_one(draft_id, request, user)
+
+    @app.post('/api/graph-review-drafts/{draft_id}/prepare-all')
+    def prepare_all(draft_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
+        # Every call has its own DB transaction. A failure keeps earlier stages
+        # committed and retryable; each stage rechecks authorization and sources.
+        for _ in range(len(_STAGES) + 1):
+            result = prepare_one(draft_id, request, user, accept_ready=True)
+            if result['preparation']['ready']:
+                return result
+        raise HTTPException(status_code=409, detail='Review preparation did not finish')
 
     @app.get('/api/applications/{application_id}/graph-review-drafts')
     def list_drafts(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
