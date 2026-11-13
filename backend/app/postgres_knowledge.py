@@ -20,6 +20,7 @@ from app.knowledge import ROLE_AUDIENCES, Source, _document_passages, _rank_lexi
 
 _HYBRID_BUSY = BoundedSemaphore(1)
 _HYBRID_MAX_PASSAGES = 200
+_PDF_EXTRACTION_SLOTS = BoundedSemaphore(2)
 
 
 def _unique_policy_title(question, sources):
@@ -138,16 +139,21 @@ class Question(Metadata):
 
 def install_routes(app, connect, authenticate, authorize_locked):
     async def read_pdf(request, filename):
-        content = bytearray()
-        async for chunk in request.stream():
-            if len(content) + len(chunk) > MAX_FILE_BYTES:
-                raise HTTPException(status_code=413, detail='File exceeds 5 MiB limit')
-            content.extend(chunk)
+        if not _PDF_EXTRACTION_SLOTS.acquire(blocking=False):
+            raise HTTPException(status_code=503, detail='PDF processing is busy; try again')
         try:
-            pages = await run_in_threadpool(extract_pdf_pages, filename, bytes(content))
-        except DocumentTextError as exc:
-            raise HTTPException(status_code=422, detail={'code': exc.code, 'message': str(exc)}) from exc
-        return pages, pdf_preview_digest(pages, None, bytes(content), None), hashlib.sha256(content).hexdigest()
+            content = bytearray()
+            async for chunk in request.stream():
+                if len(content) + len(chunk) > MAX_FILE_BYTES:
+                    raise HTTPException(status_code=413, detail='File exceeds 5 MiB limit')
+                content.extend(chunk)
+            try:
+                pages = await run_in_threadpool(extract_pdf_pages, filename, bytes(content))
+            except DocumentTextError as exc:
+                raise HTTPException(status_code=422, detail={'code': exc.code, 'message': str(exc)}) from exc
+            return pages, pdf_preview_digest(pages, None, bytes(content), None), hashlib.sha256(content).hexdigest()
+        finally:
+            _PDF_EXTRACTION_SLOTS.release()
 
     @app.post('/api/knowledge/documents/pdf-preview')
     async def preview_pdf(request: Request, user: Annotated[User, Depends(authenticate)], filename: str = 'document.pdf'):

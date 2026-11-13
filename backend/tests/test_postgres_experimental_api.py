@@ -381,3 +381,61 @@ def test_pdf_session_revoked_during_extraction(mode, monkeypatch, reason):
         with db_for(mode) as db:
             assert db.execute('SELECT count(*) AS n FROM knowledge_documents').fetchone()['n'] == 0
             assert db.execute('SELECT count(*) AS n FROM knowledge_audit').fetchone()['n'] == 0
+            db.execute("UPDATE users SET active=1 WHERE username='hr'")
+        monkeypatch.setattr(knowledge, 'extract_pdf_pages', original)
+        login(hr, 'hr')
+        assert hr.post('/api/knowledge/documents/pdf-preview', params={'filename':'policy.pdf'}, content=content).status_code == 200
+
+
+def test_pdf_processing_saturation_and_slot_cleanup(mode, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    import app.postgres_knowledge as knowledge
+
+    content = pdf_bytes()
+    with TestClient(create_app(seed_demo=True)) as hr:
+        login(hr, 'hr')
+        path = '/api/knowledge/documents/pdf-preview'
+        params = {'filename':'policy.pdf'}
+        # Failed buffering and extraction must not consume a processing slot.
+        assert hr.post(path, params=params, content=b'x' * (5 * 1024 * 1024 + 1)).status_code == 413
+        assert hr.post(path, params=params, content=b'not a PDF').status_code == 422
+        original = knowledge.extract_pdf_pages
+        def fail_extract(filename, data):
+            raise RuntimeError('Simulated unexpected extraction failure')
+        monkeypatch.setattr(knowledge, 'extract_pdf_pages', fail_extract)
+        with pytest.raises(RuntimeError, match='Simulated unexpected extraction failure'):
+            hr.post(path, params=params, content=content)
+        monkeypatch.setattr(knowledge, 'extract_pdf_pages', original)
+        preview = hr.post(path, params=params, content=content)
+        assert preview.status_code == 200
+        import_params = {'filename':'policy.pdf', 'title':'Synthetic', 'audience':'hr', 'collection':'handbook',
+                         'digest':preview.json()['digest']}
+        both_entered, release = threading.Event(), threading.Event()
+        lock = threading.Lock()
+        count = 0
+
+        def slow_extract(filename, data):
+            nonlocal count
+            with lock:
+                count += 1
+                if count == 2:
+                    both_entered.set()
+            if not release.wait(15):
+                raise RuntimeError('Timed out waiting for test release')
+            return original(filename, data)
+
+        monkeypatch.setattr(knowledge, 'extract_pdf_pages', slow_extract)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(hr.post, path, params=params, content=content)
+            second = pool.submit(hr.post, '/api/knowledge/documents/pdf', params=import_params, content=content)
+            try:
+                assert both_entered.wait(10), 'Two PDF operations did not enter extraction'
+                assert hr.post(path, params=params, content=content).status_code == 503
+                assert hr.post('/api/knowledge/documents/pdf', params=import_params, content=content).status_code == 503
+            finally:
+                release.set()
+            assert first.result(timeout=15).status_code == 200
+            assert second.result(timeout=15).status_code == 201
+        monkeypatch.setattr(knowledge, 'extract_pdf_pages', original)
+        assert hr.post(path, params=params, content=content).status_code == 200

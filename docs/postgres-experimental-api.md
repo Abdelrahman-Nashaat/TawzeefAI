@@ -265,6 +265,8 @@ text may still omit visual content on pages with a text layer, so review it
 against the source. Uploads are limited to 5 MiB, 100 pages, 200,000 extracted
 characters, 5,000 preview lines and 100 resulting segments. The existing
 500-active-segment capacity applies atomically to each import.
+At most two PDF previews and imports per application process can buffer or
+extract at once; additional requests receive HTTP 503 and can be retried.
 
 HR can optionally record a job ID and section for each synthetic text document.
 Users can filter extractive, experimental hybrid, and saved-conversation searches
