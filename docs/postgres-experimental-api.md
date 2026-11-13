@@ -134,6 +134,8 @@ withdraws unanswered offers and private slots in one transaction. An accepted
 offer or an interview in progress requires contacting HR. HR can view and mark
 withdrawal notices read independently. The operation sends no email and does
 not change any external calendar; saved calendar files do not update automatically.
+Interview start times are rechecked near the end of the transaction; time can
+still advance between that final check and the database commit.
 SQLite data is not read or migrated. Health, login, logout, session identity,
 jobs, application submission and listing, HR keyword screening and advancement,
 local candidate interview booking, cancellation, explicit HR completion, local

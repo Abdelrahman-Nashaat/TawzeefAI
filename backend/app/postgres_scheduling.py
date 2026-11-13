@@ -137,12 +137,14 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=409, detail='Application cannot be withdrawn from this status')
             if db.execute("SELECT 1 FROM job_offers WHERE application_id=%s AND status='accepted'", (application_id,)).fetchone():
                 raise HTTPException(status_code=409, detail='Contact HR to resolve the accepted offer')
-            if db.execute("""SELECT 1 FROM interviews WHERE application_id=%s AND status='scheduled'
-                AND NOT completed AND start_at<=clock_timestamp() AND end_at>clock_timestamp()""", (application_id,)).fetchone():
-                raise HTTPException(status_code=409, detail='Contact HR about the interview in progress')
             offers = db.execute("SELECT id,recipient_id FROM job_offers WHERE application_id=%s AND status='presented' FOR UPDATE", (application_id,)).fetchall()
-            interviews = db.execute("""SELECT id,candidate_id FROM interviews WHERE application_id=%s AND status='scheduled'
-                AND NOT completed AND start_at>clock_timestamp() FOR UPDATE""", (application_id,)).fetchall()
+            # Lock all not-ended interviews in one query. Splitting the in-progress
+            # and future queries could miss an interview that starts between them.
+            interviews = db.execute("""SELECT id,candidate_id,start_at>clock_timestamp() AS is_future
+                FROM interviews WHERE application_id=%s AND status='scheduled'
+                AND NOT completed AND end_at>clock_timestamp() FOR UPDATE""", (application_id,)).fetchall()
+            if any(not interview['is_future'] for interview in interviews):
+                raise HTTPException(status_code=409, detail='Contact HR about the interview in progress')
             if any(offer['recipient_id'] != user.id for offer in offers) or any(interview['candidate_id'] != user.id for interview in interviews):
                 raise HTTPException(status_code=409, detail='Application ownership is inconsistent')
             for offer in offers:
@@ -162,6 +164,12 @@ def install_routes(app, connect, authenticate, authorize_locked):
             db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'application_withdrawn','{}')", (application_id, user.id))
             db.execute('INSERT INTO candidate_application_withdrawals(application_id,candidate_id) VALUES (%s,%s)', (application_id, user.id))
             authorize_locked(db, request, user, 'candidate')
+            # Recheck at the end of the transaction: an interview may have
+            # started after it was selected and locally cancelled above.
+            if interviews and db.execute('''SELECT 1 FROM interviews
+                WHERE id=ANY(%s) AND start_at<=clock_timestamp() LIMIT 1''',
+                ([interview['id'] for interview in interviews],)).fetchone():
+                raise HTTPException(status_code=409, detail='Contact HR about the interview in progress')
             return {'id': application_id, 'status': 'withdrawn'}
 
     @app.get('/api/hr/application-withdrawals')

@@ -1,5 +1,6 @@
 """Candidate withdrawal is private, atomic and does not make HR decisions."""
 from concurrent.futures import ThreadPoolExecutor
+from time import monotonic
 
 from fastapi.testclient import TestClient
 from test_postgres_cancellation_lifecycle import book
@@ -70,3 +71,25 @@ def test_accepted_offer_blocks_withdrawal_and_accept_race_is_serialized(mode):  
             assert (app, offer_status) in {('withdrawn', 'withdrawn'), ('offered', 'accepted')}
         if app == 'offered':
             assert candidate.post(f'/api/applications/{application}/withdraw', json={'confirmed': True}).status_code == 409
+
+
+def test_interview_starting_before_final_check_rolls_back_withdrawal(mode):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
+        application, slot = ready_booking(candidate, hr)
+        interview = book(candidate, application, slot)
+        with db_for(mode) as db:
+            db.execute("""CREATE FUNCTION delay_withdrawal_notice() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN PERFORM pg_sleep(4); RETURN NEW; END $$""")
+            db.execute('''CREATE TRIGGER delay_withdrawal BEFORE INSERT ON candidate_application_withdrawals
+                FOR EACH ROW EXECUTE FUNCTION delay_withdrawal_notice()''')
+            db.execute("""UPDATE interviews SET start_at=clock_timestamp()+interval '3 seconds',
+                end_at=clock_timestamp()+interval '1 hour' WHERE id=%s""", (interview,))
+        started = monotonic()
+        result = candidate.post(f'/api/applications/{application}/withdraw', json={'confirmed': True})
+        assert monotonic() - started >= 3.5, 'The test did not reach the delayed final transaction stage'
+        assert result.status_code == 409, result.text
+        with db_for(mode) as db:
+            assert db.execute('SELECT status FROM applications WHERE id=%s', (application,)).fetchone()['status'] == 'advanced'
+            assert db.execute('SELECT status FROM interviews WHERE id=%s', (interview,)).fetchone()['status'] == 'scheduled'
+            assert db.execute('SELECT count(*) AS n FROM candidate_application_withdrawals').fetchone()['n'] == 0
+            assert db.execute('SELECT count(*) AS n FROM candidate_interview_cancellations').fetchone()['n'] == 0
