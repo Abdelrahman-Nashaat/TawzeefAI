@@ -371,23 +371,31 @@ function renderApplications(applications, jobs) {
       draftInterviewer.maxLength = 120;
       draftStartLabel.append(draftStart); draftEndLabel.append(draftEnd); draftInterviewerLabel.append(draftInterviewer);
       const proposeSlot = element("button", "Propose advancement and private slot"); proposeSlot.type = "submit";
+      const resumableSlot = element("button", "Start resumable advancement and private slot"); resumableSlot.type = "submit";
       slotDraftForm.append(draftStartLabel, draftEndLabel, draftInterviewerLabel,
-        element("p", "The candidate must book the slot after HR approves the proposal."), proposeSlot);
+        element("p", "The candidate must book the slot after HR approves the proposal."), proposeSlot, resumableSlot);
       slotDraftForm.addEventListener("submit", (event) => {
         event.preventDefault();
+        if (proposeSlot.disabled || resumableSlot.disabled) return;
+        const submitter = event.submitter || proposeSlot;
+        proposeSlot.disabled = resumableSlot.disabled = true;
         const generation = sessionGeneration;
-        action(event.submitter, async () => {
+        action(submitter, async () => {
           ensureCurrent(draftGeneration);
           const view = ++draftViewGeneration;
           const from = new Date(draftStart.value), to = new Date(draftEnd.value);
           if (!draftStart.value || !draftEnd.value || Number.isNaN(from.valueOf()) || Number.isNaN(to.valueOf())) throw new Error("Enter valid slot times.");
-          const result = await api(`/api/applications/${application.id}/graph-review-drafts`, jsonPost({
+          const resumable = submitter === resumableSlot;
+          const endpoint = resumable ? "graph-review-preparations" : "graph-review-drafts";
+          const result = await api(`/api/applications/${application.id}/${endpoint}`, jsonPost({
             policy_question: graphQuestion.value, intent: "advance",
             slot: {start_at: from.toISOString(), end_at: to.toISOString(), interviewer: draftInterviewer.value}
           }));
           ensureDraftView(generation, view); slotDraftForm.reset(); graphQuestion.value = "";
-          draftPanel.replaceChildren(element("p", `Saved proposal ${result.id}. Reopen to review and approve or discard.`));
-        });
+          draftPanel.replaceChildren(element("p", resumable
+            ? `Proposal ${result.id} started. Open saved reviews to continue preparation.`
+            : `Saved proposal ${result.id}. Reopen to review and approve or discard.`));
+        }).finally(() => { proposeSlot.disabled = resumableSlot.disabled = false; });
       });
       card.append(button("Start resumable review", async () => {
         ensureCurrent(draftGeneration);

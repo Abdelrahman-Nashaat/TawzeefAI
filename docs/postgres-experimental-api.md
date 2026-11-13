@@ -7,7 +7,8 @@ approval is available only after all stages complete and HR inspects the
 review. The API supports a private-slot proposal at
 `POST /api/applications/{id}/graph-review-preparations`; subsequent calls to
 `POST /api/graph-review-drafts/{id}/prepare` run one stage each. The browser
-currently exposes review and advancement without a slot. A changed source or
+also supports advancement with a candidate-specific private slot in this flow.
+A changed source or
 availability invalidates the draft, which can still be discarded. Concurrent
 requests serialize on the draft and scheduling locks.
 
