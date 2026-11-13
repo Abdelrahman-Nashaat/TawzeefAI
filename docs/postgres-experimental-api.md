@@ -23,6 +23,10 @@ are shown for HR review. Job IDs are manually supplied metadata, not verified
 links, and past-hire patterns are leads rather than qualification criteria.
 Changed returned sources invalidate a pending review. Reviews created before
 this behavior retain their previous handbook-only retrieval.
+When a review includes a knowledge question, supported document imports and
+review approval are serialized so an import cannot appear between the final
+retrieval check and approval commit. Direct SQL writes that bypass application
+locking are not covered.
 A changed source or
 availability invalidates the draft, which can still be discarded. Concurrent
 requests serialize on the draft and scheduling locks.

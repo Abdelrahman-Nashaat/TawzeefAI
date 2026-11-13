@@ -316,6 +316,12 @@ def _specialist_nodes(db, application_id, question, *, all_collections=False):
     def policy(_state):
         if not question.strip():
             return {'policy': {'status': 'not_requested', 'sources': []}}
+        # Knowledge imports take this advisory lock exclusively before adding
+        # rows. Hold the shared lock through review commit so a new relevant
+        # source cannot appear between snapshot validation and HR approval.
+        # Review paths already hold scheduling/application locks; import paths
+        # do not acquire those locks, preserving a single lock order.
+        db.execute("SELECT pg_advisory_xact_lock_shared(hashtext(current_schema()), hashtext('knowledge-documents-v1'))")
         if all_collections:
             # A generic handbook is applicable to every role; job descriptions
             # and past-hire patterns must be bound to this exact job.  Pattern
