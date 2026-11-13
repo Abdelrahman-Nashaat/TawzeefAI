@@ -128,6 +128,12 @@ not answer accuracy or reliability across questions.
 This opt-in development slice is for synthetic data only. It is not the full
 application or a migration. It stores demo users, jobs, sessions, applications,
 notices, audit events, screening records, slots, and interviews in one PostgreSQL schema.
+Candidates may explicitly withdraw a submitted, advanced or offered application.
+The operation records the change and an HR notice, cancels future local interviews,
+withdraws unanswered offers and private slots in one transaction. An accepted
+offer or an interview in progress requires contacting HR. HR can view and mark
+withdrawal notices read independently. The operation sends no email and does
+not change any external calendar; saved calendar files do not update automatically.
 SQLite data is not read or migrated. Health, login, logout, session identity,
 jobs, application submission and listing, HR keyword screening and advancement,
 local candidate interview booking, cancellation, explicit HR completion, local

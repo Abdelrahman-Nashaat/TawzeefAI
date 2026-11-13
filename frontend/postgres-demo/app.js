@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id);
 let user = null;
 let noticeCursor = null;
 let submissionCursor = null;
+let withdrawalCursor = null;
 let sessionGeneration = 0;
 let jobRevision = null;
 let conversationId = null;
@@ -25,6 +26,7 @@ function signedOut() {
   user = null;
   noticeCursor = null;
   submissionCursor = null;
+  withdrawalCursor = null;
   conversationId = null;
   conversationGeneration++;
   $("more-submissions").hidden = true;
@@ -35,7 +37,8 @@ function signedOut() {
   $("resume").value = "";
   $("slot-form").reset();
   $("hr-job-form").reset(); $("hr-job-id").disabled = false; jobRevision = null;
-  for (const id of ["applications", "interviews", "notices", "submission-notices", "dashboard-results", "knowledge-results", "knowledge-documents", "hr-job-list"]) $(id).replaceChildren();
+  for (const id of ["applications", "interviews", "notices", "submission-notices", "withdrawal-notices", "dashboard-results", "knowledge-results", "knowledge-documents", "hr-job-list"]) $(id).replaceChildren();
+  $("more-withdrawals").hidden = true;
   $("knowledge-form").reset(); $("knowledge-add").reset(); $("knowledge-pdf").reset();
   pdfReview = null; $("knowledge-pdf-preview").replaceChildren(); $("knowledge-pdf-import").disabled = true;
   $("conversation-form").reset(); $("conversation-form").hidden = true;
@@ -312,6 +315,15 @@ function renderApplications(applications, jobs) {
     card.append(element("h3", `${title} - application ${application.id}`));
     card.append(element("p", `Status: ${application.status}`));
     if (user.role === "candidate") {
+      if (["submitted", "advanced", "offered"].includes(application.status)) {
+        card.append(button("Withdraw application", async () => {
+          if (!window.confirm("Withdraw this application? Future interviews and unanswered offers will be cancelled locally. Contact HR if you have accepted an offer.")) return;
+          const generation = sessionGeneration;
+          await api(`/api/applications/${application.id}/withdraw`, jsonPost({confirmed: true}));
+          ensureCurrent(generation); await refresh(); ensureCurrent(generation);
+          message("Application withdrawn locally. No email or calendar update was sent.");
+        }));
+      }
       const progress = element("p");
       card.append(button("View current stage", async () => {
         const generation = sessionGeneration;
@@ -730,6 +742,26 @@ async function loadSubmissionNotices(append = false) {
   $("more-submissions").hidden = !submissionCursor;
 }
 
+async function loadWithdrawalNotices(append = false) {
+  const generation = sessionGeneration;
+  const query = append && withdrawalCursor ? `?before=${withdrawalCursor}` : "";
+  const data = await api(`/api/hr/application-withdrawals${query}`); ensureCurrent(generation);
+  const target = $("withdrawal-notices");
+  if (!append) target.replaceChildren();
+  if (!append && !data.items.length) target.append(element("p", "No application withdrawals."));
+  for (const item of data.items) {
+    const card = element("article");
+    card.append(element("p", `Application ${item.application_id}: ${item.is_read ? "Read" : "Unread"}`));
+    if (!item.is_read) card.append(button("Mark read", async () => {
+      const current = sessionGeneration;
+      await api(`/api/hr/application-withdrawals/${item.id}/read`, {method: "POST"});
+      ensureCurrent(current); await loadWithdrawalNotices(); ensureCurrent(current); message("Notice marked read.");
+    }));
+    target.append(card);
+  }
+  withdrawalCursor = data.next_before; $("more-withdrawals").hidden = !withdrawalCursor;
+}
+
 async function refresh() {
   const generation = sessionGeneration;
   const [jobs, applications, interviews] = await Promise.all([api("/api/jobs"), api("/api/applications"), api("/api/interviews")]);
@@ -750,6 +782,7 @@ async function openWorkspace(account) {
   $("candidate-upload").hidden = user.role !== "candidate"; $("hr-slots").hidden = user.role !== "hr";
   $("hr-dashboard").hidden = user.role !== "hr";
   $("submission-notices-panel").hidden = user.role !== "hr";
+  $("withdrawal-notices-panel").hidden = user.role !== "hr";
   $("hr-jobs").hidden = user.role !== "hr";
   $("knowledge-add").hidden = user.role !== "hr";
   $("knowledge-pdf").hidden = user.role !== "hr";
@@ -983,6 +1016,8 @@ $("load-dashboard").addEventListener("click", () => action($("load-dashboard"), 
 $("more-notices").addEventListener("click", () => action($("more-notices"), () => loadNotices(true)));
 $("load-submissions").addEventListener("click", () => action($("load-submissions"), () => loadSubmissionNotices()));
 $("more-submissions").addEventListener("click", () => action($("more-submissions"), () => loadSubmissionNotices(true)));
+$("load-withdrawals").addEventListener("click", () => action($("load-withdrawals"), () => loadWithdrawalNotices()));
+$("more-withdrawals").addEventListener("click", () => action($("more-withdrawals"), () => loadWithdrawalNotices(true)));
 $("new-hr-job").addEventListener("click", () => {
   $("hr-job-form").reset(); $("hr-job-id").disabled = false; jobRevision = null;
 });

@@ -437,7 +437,7 @@ def create_postgres_app(*, seed_demo: bool, require_new_schema: bool = False, on
                     AND (status='accepted' OR (status='presented' AND %s='offered')) LIMIT 1''',
                     (application_id, user.id, status)).fetchone()
                 stage = status if offer else 'unavailable'
-            elif status == 'rejected':
+            elif status in ('rejected', 'withdrawn'):
                 stage = status
             else:
                 interview = db.execute('''SELECT completed FROM interviews WHERE application_id=%s
