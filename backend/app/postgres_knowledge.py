@@ -36,6 +36,31 @@ _PDF_SUBMIT_LOCK = Lock()
 _PDF_EXECUTOR_FAILED = False
 
 
+def _has_cited_sentences(answer, sources):
+    """Conservatively require an allowed citation in each sentence or line.
+
+    Citation coverage is a format check, not evidence of entailment. Sentence
+    splitting is intentionally conservative and may reject valid model output.
+    """
+    if not _has_valid_citations(answer, sources):
+        return False
+    boundary = re.compile(r'[.!?؟](?:[ \t]*\[[^\[\]\n]{1,128}\])*(?=\s|$)|\n+')
+    chunks = []
+    start = 0
+    for match in boundary.finditer(answer):
+        chunks.append(answer[start:match.end()])
+        start = match.end()
+    chunks.append(answer[start:])
+    substantive = False
+    for chunk in chunks:
+        without_citations = re.sub(r'\[[^\[\]\n]{1,128}\]', '', chunk)
+        if any(character.isalnum() for character in without_citations):
+            substantive = True
+            if not re.search(r'\[[^\[\]\n]{1,128}\]', chunk):
+                return False
+    return substantive
+
+
 def _extract_pdf_with_digest(filename, content):
     pages = extract_pdf_pages(filename, content)
     return pages, pdf_preview_digest(pages, None, content, None), hashlib.sha256(content).hexdigest()
@@ -408,7 +433,10 @@ def install_routes(app, connect, authenticate, authorize_locked):
                     answer_text = generate_with_groq(payload.question, [
                         {'id': source.id, 'title': source.title, 'text': source.text[:4000]} for source in selected
                     ])
-                    if _has_valid_citations(answer_text, selected):
+                    # Some providers emit full-width citation brackets. Normalize
+                    # delimiters before strict identifier and coverage checks.
+                    answer_text = re.sub(r'【([^【】\[\]\n]{1,128})】', r'[\1]', answer_text)
+                    if '【' not in answer_text and '】' not in answer_text and _has_cited_sentences(answer_text, selected):
                         mode = 'groq'
                         notice = ('AI-generated using excerpts sent to Groq; valid citation IDs do not establish factual '
                                   'accuracy. Verify every claim against the sources.')

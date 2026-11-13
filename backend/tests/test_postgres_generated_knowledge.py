@@ -113,3 +113,32 @@ def test_title_only_fallback_does_not_send_to_provider(mode, monkeypatch):  # no
         assert result['mode'] == 'extractive' and result['answer'] is None
         assert [source['title'] for source in result['sources']] == ['Synthetic leave policy']
         assert 'no question or excerpts were sent to Groq' in result['notice']
+
+
+@pytest.mark.parametrize(('template', 'expected_mode'), [
+    ('First claim [{id}]. Unsupported second claim.', 'extractive'),
+    ('First claim [{id}]. Second claim [{id}].', 'groq'),
+    ('First claim. 【{id}】 Second claim 【{id}】.', 'groq'),
+    ('First claim 【unknown】.', 'extractive'),
+    ('First claim 【{id}】.\nUnsupported line', 'extractive'),
+    ('【{id}】', 'extractive'),
+    ('First claim 【{id}].', 'extractive'),
+])
+def test_generated_sentence_coverage_and_citation_delimiters(mode, monkeypatch, template, expected_mode):  # noqa: F811
+    import app.postgres_knowledge as knowledge
+
+    monkeypatch.setenv('TAWZEEF_POSTGRES_ENABLE_GROQ', '1')
+    monkeypatch.setenv('GROQ_API_KEY', 'synthetic-test-only')
+    monkeypatch.setattr(knowledge, 'generate_with_groq', lambda _q, passages: template.format(id=passages[0]['id']))
+    with TestClient(create_app(seed_demo=True)) as hr, TestClient(create_app(seed_demo=True)) as candidate:
+        login(hr, 'hr')
+        login(candidate, 'candidate')
+        setup_documents(hr)
+        response = candidate.post('/api/knowledge/answer', json={'question': 'annual leave', 'generate_answer': True})
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result['mode'] == expected_mode
+        if expected_mode == 'groq':
+            assert '【' not in result['answer'] and '】' not in result['answer']
+        else:
+            assert result['answer'] is None and result['sources']

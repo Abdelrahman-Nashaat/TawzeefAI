@@ -103,8 +103,10 @@ sending the question and role-authorized, lexical-matched source excerpts to
 Groq. It requires `TAWZEEF_POSTGRES_ENABLE_GROQ=1` and a `GROQ_API_KEY` in the
 server environment; it is disabled by default. Do not use real candidate or
 organizational data in this synthetic demo. The answer is displayed only when
-its citation IDs refer to retrieved excerpts; invalid citations or provider
-failure fall back to excerpts. No provider call is made when retrieval abstains.
+each substantive sentence or line includes a retrieved citation ID; invalid or
+missing citations or provider failure fall back to excerpts. Full-width citation
+brackets are normalized before checking IDs. This conservative format check can
+reject valid answers. No provider call is made when retrieval abstains.
 A valid citation does not prove factual correctness or protect against prompt
 injection; compare the answer with the source. Generated answers are not stored
 in saved conversations. Provider access is limited to one request per process;
