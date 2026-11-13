@@ -81,6 +81,14 @@ def install_routes(app, connect, authenticate, authorize_locked):
             authorize_locked(db, request, user)
             return {'items': [dict(row) for row in rows]}
 
+    @app.delete('/api/knowledge/conversations/{conversation_id}', status_code=204)
+    def delete_conversation(conversation_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
+        with connect() as db:
+            authorize_locked(db, request, user)
+            _owner(db, conversation_id, user)
+            db.execute('DELETE FROM knowledge_conversations WHERE id=%s', (conversation_id,))
+            authorize_locked(db, request, user)
+
     @app.post('/api/knowledge/conversations/{conversation_id}/turns', status_code=201)
     def ask(conversation_id: int, payload: Turn, request: Request, user: Annotated[User, Depends(authenticate)]):
         question = payload.question.strip()

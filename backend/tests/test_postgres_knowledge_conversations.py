@@ -83,3 +83,41 @@ def test_changed_source_and_role_hide_previously_saved_excerpts(mode):  # noqa: 
         response = hr.get(f'/api/knowledge/conversations/{cid}/turns')
         assert response.status_code in (403, 404)
         assert 'confidential exception' not in response.text
+
+
+def test_delete_is_owner_scoped_and_cascades_saved_turns(mode):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as owner, TestClient(create_app(seed_demo=True)) as other:
+        login(owner, 'candidate')
+        login(other, 'candidate2')
+        cid = owner.post('/api/knowledge/conversations').json()['id']
+        assert owner.post(f'/api/knowledge/conversations/{cid}/turns', json={'question': 'annual leave'}).status_code == 201
+        assert other.delete(f'/api/knowledge/conversations/{cid}').status_code == 404
+        assert len(owner.get(f'/api/knowledge/conversations/{cid}/turns').json()['items']) == 1
+        assert owner.delete(f'/api/knowledge/conversations/{cid}').status_code == 204
+        assert owner.get(f'/api/knowledge/conversations/{cid}/turns').status_code == 404
+        assert owner.delete(f'/api/knowledge/conversations/{cid}').status_code == 404
+        with db_for(mode) as db:
+            assert db.execute('SELECT count(*) AS n FROM knowledge_conversations').fetchone()['n'] == 0
+            assert db.execute('SELECT count(*) AS n FROM knowledge_conversation_turns').fetchone()['n'] == 0
+
+
+def test_delete_rolls_back_if_session_expires_after_lock(mode, monkeypatch):  # noqa: F811
+    import time
+    from types import SimpleNamespace
+
+    import app.postgres_conversations as conv
+    import app.postgres_experimental as pg_app
+
+    with TestClient(create_app(seed_demo=True)) as client:
+        login(client, 'candidate')
+        cid = client.post('/api/knowledge/conversations').json()['id']
+        assert client.post(f'/api/knowledge/conversations/{cid}/turns', json={'question': 'annual leave'}).status_code == 201
+        original = conv._owner
+        def expire_after_lock(*args):
+            original(*args)
+            monkeypatch.setattr(pg_app, 'time', SimpleNamespace(time=lambda: time.time() + 365 * 86400))
+        monkeypatch.setattr(conv, '_owner', expire_after_lock)
+        assert client.delete(f'/api/knowledge/conversations/{cid}').status_code == 401
+        with db_for(mode) as db:
+            assert db.execute('SELECT count(*) AS n FROM knowledge_conversations').fetchone()['n'] == 1
+            assert db.execute('SELECT count(*) AS n FROM knowledge_conversation_turns').fetchone()['n'] == 1

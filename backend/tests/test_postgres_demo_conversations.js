@@ -12,12 +12,13 @@ class Node {
 const nodes = new Map();
 const document = {getElementById(id) { if (!nodes.has(id)) nodes.set(id,new Node()); return nodes.get(id); },createElement() { return new Node(); }};
 const response = (data,status=200) => ({status,ok:status>=200&&status<300,json:async()=>data});
-let delayed, savedQuestion;
+let delayed, savedQuestion, deleted;
 const fetch = async (path, options={}) => {
   if (path === '/api/auth/me') return response({},401);
   if (path === '/api/jobs' || path === '/api/applications' || path === '/api/interviews') return response([]);
   if (path.includes('interview-cancellations')) return response({items:[],next_before:null});
   if (path === '/api/knowledge/conversations' && options.method === 'POST') return response({id: 2});
+  if (path === '/api/knowledge/conversations/2' && options.method === 'DELETE') { deleted = path; return response(null, 204); }
   if (path === '/api/knowledge/conversations') return response({items:[{id:1},{id:2}]});
   if (path === '/api/knowledge/conversations/2/turns' && options.method === 'POST') {
     savedQuestion = JSON.parse(options.body).question; return response({id: 1});
@@ -26,7 +27,7 @@ const fetch = async (path, options={}) => {
   if (path === '/api/knowledge/conversations/1/turns') return new Promise(resolve=>{delayed=resolve;});
   throw Error('Unexpected request '+path);
 };
-const context=vm.createContext({document,fetch,URLSearchParams,console,Date,Error,Promise,setTimeout});
+const context=vm.createContext({document,fetch,URLSearchParams,console,Date,Error,Promise,setTimeout,window:{confirm:()=>true}});
 vm.runInContext(fs.readFileSync(process.argv[2],'utf8'),context);
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function run() {
@@ -49,5 +50,10 @@ async function run() {
   await vm.runInContext('openWorkspace({role:"employee",display_name:"Next"})',context);
   delayed(response({items:[{question:'private old',mode:'extractive',sources:[]}]})); await tick();
   assert.equal(nodes.get('conversation-turns').children.length,0);
+  nodes.get('conversation-new').listeners.click(); await tick();
+  nodes.get('conversation-delete').listeners.click(); await tick();
+  assert.equal(deleted,'/api/knowledge/conversations/2');
+  assert.equal(nodes.get('conversation-current').textContent,'No conversation selected.');
+  assert.equal(nodes.get('conversation-delete').hidden,true);
 }
 run().catch(error=>{console.error(error);process.exitCode=1;});

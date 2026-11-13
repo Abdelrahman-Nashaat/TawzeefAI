@@ -39,6 +39,7 @@ function signedOut() {
   $("knowledge-form").reset(); $("knowledge-add").reset(); $("knowledge-pdf").reset();
   pdfReview = null; $("knowledge-pdf-preview").replaceChildren(); $("knowledge-pdf-import").disabled = true;
   $("conversation-form").reset(); $("conversation-form").hidden = true;
+  $("conversation-delete").hidden = true;
   $("conversation-current").textContent = "No conversation selected.";
   $("conversation-list-results").replaceChildren(); $("conversation-turns").replaceChildren();
 }
@@ -692,22 +693,40 @@ function showConversationTurns(items) {
 async function selectConversation(id) {
   const session = sessionGeneration, view = ++conversationGeneration;
   conversationId = null; $("conversation-form").hidden = true;
+  $("conversation-delete").hidden = true;
   $("conversation-form").reset(); $("conversation-turns").replaceChildren();
   $("conversation-current").textContent = 'Loading conversation...';
   const result = await api(`/api/knowledge/conversations/${id}/turns`);
   ensureCurrent(session); if (view !== conversationGeneration) return;
   conversationId = id; $("conversation-current").textContent = `Conversation ${id}`;
+  $("conversation-delete").hidden = false;
   $("conversation-form").hidden = false; showConversationTurns(result.items);
 }
 $("conversation-new").addEventListener('click', () => action($("conversation-new"), async () => {
   const session = sessionGeneration, view = ++conversationGeneration;
   conversationId = null; $("conversation-form").hidden = true;
+  $("conversation-delete").hidden = true;
   $("conversation-form").reset(); $("conversation-turns").replaceChildren();
   $("conversation-current").textContent = 'Creating conversation...';
   const result = await api('/api/knowledge/conversations', {method: 'POST'});
   ensureCurrent(session); if (view !== conversationGeneration) return;
   conversationId = result.id; $("conversation-current").textContent = `Conversation ${result.id}`;
+  $("conversation-delete").hidden = false;
   $("conversation-form").hidden = false;
+}));
+$("conversation-delete").addEventListener('click', () => action($("conversation-delete"), async () => {
+  const session = sessionGeneration, view = conversationGeneration, id = conversationId;
+  if (id === null || !window.confirm('Delete this conversation and all its saved questions?')) return;
+  await api(`/api/knowledge/conversations/${id}`, {method: 'DELETE'});
+  ensureCurrent(session);
+  if (view === conversationGeneration && id === conversationId) {
+    conversationGeneration++; conversationId = null;
+    $("conversation-form").reset(); $("conversation-form").hidden = true;
+    $("conversation-delete").hidden = true; $("conversation-turns").replaceChildren();
+    $("conversation-current").textContent = 'No conversation selected.';
+  }
+  $("conversation-list-results").replaceChildren();
+  message('Conversation deleted.');
 }));
 $("conversation-list").addEventListener('click', () => action($("conversation-list"), async () => {
   const session = sessionGeneration;

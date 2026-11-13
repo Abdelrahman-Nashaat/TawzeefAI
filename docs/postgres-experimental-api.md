@@ -32,7 +32,8 @@ Questions and source identifiers with fingerprints are stored in PostgreSQL;
 source passages are reconstructed only while the documents remain active,
 unchanged, and accessible to the account's current role. Changed or revoked
 sources make that saved turn unavailable. Conversations are not portable across
-role changes, and this mode has no conversation deletion interface. Use only
+role changes. Owners can delete conversations for their current role and their
+saved questions through the browser or API. Use only
 synthetic questions and documents. Saved conversations do not use hybrid search,
 model-generated answers, or an external service, and excerpt relevance is not
 verified.
