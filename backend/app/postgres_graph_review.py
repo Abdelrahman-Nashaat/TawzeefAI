@@ -114,6 +114,7 @@ def _approval_graph(db, draft=None, expected=None):
         return {'reviewed': reviewed}
 
     graph = StateGraph(ApprovalState)
+    saver = PostgresSaver(db)
     if draft is not None and draft['checkpoint_version'] >= 2:
         names = _STAGES
         # Resume only the paused approval node. Do not re-read an unavailable
@@ -124,7 +125,12 @@ def _approval_graph(db, draft=None, expected=None):
             def record(state, specialist=specialist, name=name):
                 if specialist is None:
                     raise RuntimeError('Cannot replay specialist nodes while resuming a review')
-                result = specialist({})
+                # LangGraph may write checkpoints on a worker thread while a
+                # specialist reads through this same transactional connection.
+                # Share the saver's cursor lock so psycopg pipeline operations
+                # and domain reads cannot overlap on that connection.
+                with saver.lock:
+                    result = specialist({})
                 if expected is not None and result != {name if name != 'parser' else 'parsed': expected[name if name != 'parser' else 'parsed']}:
                     raise HTTPException(status_code=409, detail='Review changed while preparing; try again')
                 encoded = json.dumps(result, sort_keys=True, ensure_ascii=False, separators=(',', ':'), default=str)
@@ -153,7 +159,7 @@ def _approval_graph(db, draft=None, expected=None):
         graph.add_edge(START, 'human_review')
     graph.add_node('human_review', human_review)
     graph.add_edge('human_review', END)
-    return graph.compile(checkpointer=PostgresSaver(db))
+    return graph.compile(checkpointer=saver)
 
 
 def _approval_config(draft_id):
