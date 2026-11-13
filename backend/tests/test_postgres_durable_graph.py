@@ -123,8 +123,12 @@ def test_draft_persists_and_acknowledges_without_decision(mode):  # noqa: F811
         state = _approval_graph(db).get_state(_approval_config(draft_id))
         assert state.next == ('human_review',)
         assert len(state.interrupts) == 1
-        assert set(state.values) == {'draft_id', 'fingerprint', 'intent'}
+        assert set(state.values) == {'draft_id', 'fingerprint', 'intent', 'parser_digest',
+                                     'matching_digest', 'status_digest', 'scheduling_digest', 'policy_digest'}
+        assert all(len(state.values[key]) == 64 for key in state.values if key.endswith('_digest'))
         assert state.values['draft_id'] == draft_id
+        history = list(_approval_graph(db).get_state_history(_approval_config(draft_id)))
+        assert {sum(key.endswith('_digest') for key in entry.values) for entry in history} >= set(range(1, 6))
     with TestClient(create_app(seed_demo=True)) as hr:
         login(hr, 'hr')
         assert hr.get(f'/api/applications/{app_id}/graph-review-drafts').json()[0]['id'] == draft_id
@@ -195,6 +199,22 @@ def test_failed_final_audit_rolls_back_advance_slot_and_checkpoint(mode):  # noq
             assert db.execute('SELECT count(*) AS n FROM interview_slots').fetchone()['n'] == 1
 
 
+def test_v1_approval_checkpoint_can_still_resume(mode):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
+        app_id = create_application(candidate)
+        login(hr, 'hr')
+        draft_id = hr.post(f'/api/applications/{app_id}/graph-review-drafts', json={}).json()['id']
+        with db_for(mode) as db:
+            row = db.execute('UPDATE graph_review_drafts SET checkpoint_version=1 WHERE id=%s RETURNING *', (draft_id,)).fetchone()
+            db.execute('DELETE FROM checkpoint_writes WHERE thread_id=%s', (f'graph-review-{draft_id}',))
+            db.execute('DELETE FROM checkpoint_blobs WHERE thread_id=%s', (f'graph-review-{draft_id}',))
+            db.execute('DELETE FROM checkpoints WHERE thread_id=%s', (f'graph-review-{draft_id}',))
+            result = _approval_graph(db).invoke({'draft_id': draft_id, 'fingerprint': row['fingerprint'],
+                                                 'intent': row['intent']}, _approval_config(draft_id), durability='sync')
+            assert len(result['__interrupt__']) == 1
+        assert hr.post(f'/api/graph-review-drafts/{draft_id}/resume', json={'reviewed': True}).json()['status'] == 'reviewed'
+
+
 def test_legacy_draft_can_still_be_discarded(mode):  # noqa: F811
     with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
         app_id = create_application(candidate)
@@ -204,6 +224,24 @@ def test_legacy_draft_can_still_be_discarded(mode):  # noqa: F811
             db.execute('UPDATE graph_review_drafts SET checkpoint_version=0 WHERE id=%s', (draft_id,))
             db.execute('DELETE FROM checkpoints WHERE thread_id=%s', (f'graph-review-{draft_id}',))
         assert hr.post(f'/api/graph-review-drafts/{draft_id}/resume', json={'reviewed': False}).json()['status'] == 'discarded'
+
+
+def test_v2_discard_does_not_reload_unavailable_source(mode, monkeypatch):  # noqa: F811
+    from fastapi import HTTPException
+
+    import app.postgres_graph_review as review
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
+        app_id = create_application(candidate)
+        login(hr, 'hr')
+        draft_id = hr.post(f'/api/applications/{app_id}/graph-review-drafts', json={}).json()['id']
+        def unavailable(*args):
+            raise HTTPException(status_code=422, detail='Source is unavailable')
+        monkeypatch.setattr(review, '_source', unavailable)
+        opened = hr.get(f'/api/graph-review-drafts/{draft_id}')
+        assert opened.status_code == 200 and opened.json()['stale'] is True
+        response = hr.post(f'/api/graph-review-drafts/{draft_id}/resume', json={'reviewed': False})
+        assert response.status_code == 200, response.text
+        assert response.json()['status'] == 'discarded'
 
 
 def test_changed_source_blocks_acknowledgment_but_allows_discard(mode):  # noqa: F811

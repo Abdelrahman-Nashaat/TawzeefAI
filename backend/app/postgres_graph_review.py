@@ -79,9 +79,14 @@ class ApprovalState(TypedDict, total=False):
     fingerprint: str
     intent: str
     reviewed: bool
+    parser_digest: str
+    matching_digest: str
+    status_digest: str
+    scheduling_digest: str
+    policy_digest: str
 
 
-def _approval_graph(db):
+def _approval_graph(db, draft=None, expected=None):
     """Only identifiers and a digest enter checkpoint storage, never excerpts.
 
     The caller holds the draft lock and uses this same connection for the
@@ -94,8 +99,29 @@ def _approval_graph(db):
         return {'reviewed': reviewed}
 
     graph = StateGraph(ApprovalState)
+    if draft is not None and draft['checkpoint_version'] >= 2:
+        names = ('parser', 'matching', 'status', 'scheduling', 'policy')
+        # Resume only the paused approval node. Do not re-read an unavailable
+        # source when the reviewer merely discards an obsolete draft.
+        nodes = (_specialist_nodes(db, draft['application_id'], draft['question'])
+                 if expected is not None else [(name, None) for name in names])
+        for name, specialist in nodes:
+            def record(_state, specialist=specialist, name=name):
+                if specialist is None:
+                    raise RuntimeError('Cannot replay specialist nodes while resuming a review')
+                result = specialist({})
+                if expected is not None and result != {name if name != 'parser' else 'parsed': expected[name if name != 'parser' else 'parsed']}:
+                    raise HTTPException(status_code=409, detail='Review changed while preparing; try again')
+                encoded = json.dumps(result, sort_keys=True, ensure_ascii=False, separators=(',', ':'), default=str)
+                return {name + '_digest': hashlib.sha256(encoded.encode('utf-8')).hexdigest()}
+            graph.add_node(name, record)
+        graph.add_edge(START, 'parser')
+        for left, right in zip(('parser', 'matching', 'status', 'scheduling'), ('matching', 'status', 'scheduling', 'policy'), strict=True):
+            graph.add_edge(left, right)
+        graph.add_edge('policy', 'human_review')
+    else:
+        graph.add_edge(START, 'human_review')
     graph.add_node('human_review', human_review)
-    graph.add_edge(START, 'human_review')
     graph.add_edge('human_review', END)
     return graph.compile(checkpointer=PostgresSaver(db))
 
@@ -104,16 +130,17 @@ def _approval_config(draft_id):
     return {'configurable': {'thread_id': f'graph-review-{draft_id}'}}
 
 
-def _start_approval(db, draft_id, digest, intent):
-    result = _approval_graph(db).invoke(
+def _start_approval(db, draft, expected):
+    draft_id, digest, intent = draft['id'], draft['fingerprint'], draft['intent']
+    result = _approval_graph(db, draft, expected).invoke(
         {'draft_id': draft_id, 'fingerprint': digest, 'intent': intent},
         _approval_config(draft_id), durability='sync')
     if len(result.get('__interrupt__', ())) != 1:
         raise RuntimeError('The review did not pause for HR approval')
 
 
-def _resume_approval(db, draft, reviewed):
-    graph = _approval_graph(db)
+def _resume_approval(db, draft, reviewed, current_result=None):
+    graph = _approval_graph(db, draft)
     config = _approval_config(draft['id'])
     state = graph.get_state(config)
     if (state.next != ('human_review',) or
@@ -122,13 +149,26 @@ def _resume_approval(db, draft, reviewed):
             state.values.get('intent') != draft['intent'] or
             len(state.interrupts) != 1):
         raise HTTPException(status_code=409, detail='Review checkpoint is unavailable or inconsistent')
+    if draft['checkpoint_version'] == 2 and any(
+        not isinstance(state.values.get(name + '_digest'), str)
+        or len(state.values[name + '_digest']) != 64
+        for name in ('parser', 'matching', 'status', 'scheduling', 'policy')
+    ):
+        raise HTTPException(status_code=409, detail='Specialist checkpoints are unavailable or inconsistent')
+    if draft['checkpoint_version'] == 2 and reviewed:
+        for name in ('parser', 'matching', 'status', 'scheduling', 'policy'):
+            key = 'parsed' if name == 'parser' else name
+            encoded = json.dumps({key: current_result[key]}, sort_keys=True, ensure_ascii=False,
+                                 separators=(',', ':'), default=str)
+            if state.values[name + '_digest'] != hashlib.sha256(encoded.encode('utf-8')).hexdigest():
+                raise HTTPException(status_code=409, detail='Specialist checkpoint differs from the reviewed result')
     result = graph.invoke(Command(resume=reviewed), config, durability='sync')
     if result.get('reviewed') is not reviewed or result.get('__interrupt__'):
         raise RuntimeError('The review did not finish correctly')
 
 
-def review_graph(db, application_id, question):
-    """Build the specialists over the caller's already authorized transaction."""
+def _specialist_nodes(db, application_id, question):
+    """Build specialists over the caller's already authorized transaction."""
     row, masked, digest = _source(db, application_id)
     owner = db.execute('SELECT candidate_id FROM applications WHERE id=%s', (application_id,)).fetchone()['candidate_id']
 
@@ -183,9 +223,13 @@ def review_graph(db, application_id, question):
                            'sources': [{'id': s.id, 'title': s.title, 'page': s.page, 'text': s.text} for _, s in ranked],
                            'notice': 'Extractive leads; review the original policy.'}}
 
+    return [('parser', parser), ('matching', matching), ('status', status),
+            ('scheduling', scheduling), ('policy', policy)]
+
+
+def review_graph(db, application_id, question):
     graph = StateGraph(ReviewState)
-    for name, node in [('parser', parser), ('matching', matching), ('status', status),
-                       ('scheduling', scheduling), ('policy', policy)]:
+    for name, node in _specialist_nodes(db, application_id, question):
         graph.add_node(name, node)
     graph.add_edge(START, 'parser')
     graph.add_edge('parser', 'matching')
@@ -233,9 +277,9 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 validate_slot(db, application_id, payload.slot)
             digest = _bind_slot(digest, slot)
             row = db.execute('''INSERT INTO graph_review_drafts(application_id,owner_id,question,fingerprint,intent,status,slot_proposal,checkpoint_version)
-                VALUES (%s,%s,%s,%s,%s,'pending',%s::jsonb,1) RETURNING id''',
+                VALUES (%s,%s,%s,%s,%s,'pending',%s::jsonb,2) RETURNING *''',
                 (application_id, user.id, payload.policy_question, digest, payload.intent, json.dumps(slot) if slot else None)).fetchone()
-            _start_approval(db, row['id'], digest, payload.intent)
+            _start_approval(db, row, result)
             authorize_locked(db, request, user, 'hr')
             return {'id': row['id'], 'status': 'pending', 'intent': payload.intent, 'slot': slot, 'result': result}
 
@@ -258,7 +302,13 @@ def install_routes(app, connect, authenticate, authorize_locked):
                                (draft_id, user.id)).fetchone()
             if draft is None:
                 raise HTTPException(status_code=404, detail='Review not found')
-            result, digest, _ = _snapshot(db, draft['application_id'], draft['question'])
+            try:
+                result, digest, _ = _snapshot(db, draft['application_id'], draft['question'])
+            except HTTPException as exc:
+                if exc.status_code not in (404, 422):
+                    raise
+                authorize_locked(db, request, user, 'hr')
+                return {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'stale': True}
             digest = _bind_slot(digest, draft['slot_proposal'])
             authorize_locked(db, request, user, 'hr')
             if digest != draft['fingerprint']:
@@ -300,8 +350,10 @@ def install_routes(app, connect, authenticate, authorize_locked):
                             target_application_id,target_candidate_id) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
                             (slot.start_at, slot.end_at, slot.interviewer, key, user.id, draft['application_id'], candidate_id)).fetchone()
                         db.execute("INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (%s,%s,'created_private')", (created['id'], user.id))
-            if draft['checkpoint_version'] == 1:
-                _resume_approval(db, draft, payload.reviewed)
+            if draft['checkpoint_version'] not in (0, 1, 2):
+                raise HTTPException(status_code=409, detail='Unsupported review checkpoint version')
+            if draft['checkpoint_version'] in (1, 2):
+                _resume_approval(db, draft, payload.reviewed, result if payload.reviewed else None)
             status = 'reviewed' if payload.reviewed else 'discarded'
             db.execute('UPDATE graph_review_drafts SET status=%s WHERE id=%s', (status, draft_id))
             db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,%s,%s)",

@@ -9,12 +9,19 @@ available for a submitted application with a current HR rubric assessment; it
 advances only after explicit HR approval and records the decision atomically.
 An ordinary review acknowledgment makes no recruitment decision. This is an
 LangGraph approval interrupt persisted with the PostgreSQL checkpointer. The
-checkpoint stores the draft ID, intent and fingerprint, but not graph output,
-source passages or the question. Approval resumes the checkpoint in the same
+checkpoint stores the draft ID, intent, fingerprint and individual specialist
+output digests, but not graph output, source passages or the question. The five
+specialist nodes run before the approval interrupt and their outputs are checked
+against the review snapshot; the latest outputs are independently recomputed
+and checked again before approval. Approval resumes the checkpoint in the same
 database transaction as the HR action and audit, after rechecking current
 sources and authorization. Reviews made before checkpoint support retain their
-earlier application-level behavior. The five specialist outputs are recomputed;
-they are not themselves durable graph checkpoints. Use synthetic information
+earlier application-level behavior. Individual checkpoints contain output
+digests rather than plaintext, but low-entropy outputs may be guessed from
+their hashes. The specialist nodes do not yet exchange intermediate results
+or provide autonomous planning. Their checkpoints are committed together
+when draft creation succeeds; a failure during creation restarts all stages.
+Use synthetic information
 only; questions and checkpoint records remain until the demo database is removed.
 
 The advance draft API may additionally receive a `slot` object with `start_at`,
