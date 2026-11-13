@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import re
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, HTTPException, Request
 from pydantic import Field
@@ -32,11 +32,13 @@ DDL = (
     '''CREATE INDEX IF NOT EXISTS knowledge_turns_conversation ON knowledge_conversation_turns(conversation_id,id)''',
     '''ALTER TABLE knowledge_conversation_turns ADD COLUMN IF NOT EXISTS generated_answer text''',
     '''ALTER TABLE knowledge_conversation_turns ADD COLUMN IF NOT EXISTS suggestions_json text NOT NULL DEFAULT '[]' ''',
+    '''ALTER TABLE knowledge_conversation_turns ADD COLUMN IF NOT EXISTS collection_filter text''',
 )
 
 
 class Turn(Metadata):
     question: str = Field(min_length=1, max_length=2000)
+    collection: Literal['handbook', 'job_description', 'past_hire_patterns'] | None = None
     generate_answer: bool = False
     experimental_hybrid: bool = False
 
@@ -48,11 +50,13 @@ def _digest(row):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
-def _documents(db, role, job_id=None, section=None):
+def _documents(db, role, job_id=None, section=None, collection=None):
     return db.execute('''SELECT id,title,body,page,collection,audience,job_id,section FROM knowledge_documents
         WHERE active AND audience=ANY(%s) AND (collection <> 'past_hire_patterns' OR %s='hr')
         AND (%s::text IS NULL OR job_id=%s) AND (%s::text IS NULL OR section=%s)
-        ORDER BY id LIMIT 500 FOR SHARE''', (list(ROLE_AUDIENCES[role]), role, job_id, job_id, section, section)).fetchall()
+        AND (%s::text IS NULL OR collection=%s)
+        ORDER BY id LIMIT 500 FOR SHARE''',
+        (list(ROLE_AUDIENCES[role]), role, job_id, job_id, section, section, collection, collection)).fetchall()
 
 
 def _reconstruct(ref, docs):
@@ -153,7 +157,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=409, detail='Conversation turn limit reached')
             previous_id = turns[-1]['id'] if turns else None
             previous_question = turns[-1]['question'] if turns else ''
-            rows = _documents(db, user.role, payload.job_id, payload.section)
+            rows = _documents(db, user.role, payload.job_id, payload.section, payload.collection)
             sources, by_id = [], {}
             for row in rows:
                 if payload.experimental_hybrid:
@@ -212,15 +216,16 @@ def install_routes(app, connect, authenticate, authorize_locked):
                                        (conversation_id,)).fetchall()
             if len(current_turns) != len(turns) or (current_turns[-1]['id'] if current_turns else None) != previous_id:
                 raise HTTPException(status_code=409, detail='Conversation changed; review it before retrying')
-            current_docs = {row['id']: row for row in _documents(db, user.role, payload.job_id, payload.section)}
+            current_docs = {row['id']: row for row in _documents(db, user.role, payload.job_id, payload.section, payload.collection)}
             if any(ref['id'] not in current_docs or _digest(current_docs[ref['id']]) != ref['digest'] for ref in refs + leads):
                 raise HTTPException(status_code=409, detail='A source changed; review it before retrying')
-            row = db.execute('''INSERT INTO knowledge_conversation_turns(conversation_id,question,sources_json,generated_answer,suggestions_json)
-                VALUES (%s,%s,%s,%s,%s) RETURNING id,created_at''',
+            row = db.execute('''INSERT INTO knowledge_conversation_turns(conversation_id,question,sources_json,generated_answer,suggestions_json,collection_filter)
+                VALUES (%s,%s,%s,%s,%s,%s) RETURNING id,created_at''',
                 (conversation_id, question, json.dumps(refs, separators=(',', ':')), answer,
-                 json.dumps(leads, separators=(',', ':')))).fetchone()
+                 json.dumps(leads, separators=(',', ':')), payload.collection)).fetchone()
             authorize_locked(db, request, user)
             return {'id': row['id'], 'created_at': row['created_at'], 'question': question,
+                    'collection_filter': payload.collection,
                     'mode': 'groq' if answer else ('extractive' if refs else 'abstain'), 'answer': answer,
                     'sources': [source_dict(source, by_id) for _, source in ranked],
                     'suggestions': [source_dict(source, by_id) for source in suggestions],
@@ -231,7 +236,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
         with connect() as db:
             authorize_locked(db, request, user)
             _owner(db, conversation_id, user)
-            turns = db.execute('''SELECT id,question,sources_json,generated_answer,suggestions_json,created_at FROM knowledge_conversation_turns
+            turns = db.execute('''SELECT id,question,sources_json,generated_answer,suggestions_json,collection_filter,created_at FROM knowledge_conversation_turns
                 WHERE conversation_id=%s ORDER BY id LIMIT 100 FOR SHARE''', (conversation_id,)).fetchall()
             docs = {r['id']: r for r in _documents(db, user.role)}
             output = []
@@ -256,6 +261,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
                     leads_available, suggestions = False, []
                 suggestions = suggestions if leads_available else []
                 output.append({'id': turn['id'], 'question': turn['question'], 'created_at': turn['created_at'],
+                               'collection_filter': turn['collection_filter'],
                                'mode': ('groq' if answer else ('extractive' if excerpts else 'abstain')) if available else 'source_unavailable',
                                'answer': answer,
                                'sources': excerpts, 'suggestions': suggestions, 'suggestions_unavailable': not leads_available})

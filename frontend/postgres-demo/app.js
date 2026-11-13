@@ -815,7 +815,7 @@ $("knowledge-form").addEventListener("submit", (event) => {
     const generate = event.submitter?.value === 'generate';
     if (generate && !window.confirm('Send this question and matching excerpts to Groq for an AI-generated answer? Use synthetic data only.')) return;
     const result = await api('/api/knowledge/answer', jsonPost({question: $("knowledge-question").value,
-      job_id: $("knowledge-job-filter").value.trim() || null, section: $("knowledge-section-filter").value.trim() || null,
+      collection: $("knowledge-collection-filter").value || null, job_id: $("knowledge-job-filter").value.trim() || null, section: $("knowledge-section-filter").value.trim() || null,
       experimental_hybrid: event.submitter?.value === 'hybrid', generate_answer: generate}));
     ensureCurrent(generation);
     const nodes = [element('p', result.notice)];
@@ -824,13 +824,13 @@ $("knowledge-form").addEventListener("submit", (event) => {
       'No lexical match found. Contact HR for an answer.' : 'No relevant source found. Contact HR.'));
     for (const source of result.sources) {
       const item = element('article');
-      item.append(element('h3', `${source.id ? `[${source.id}] ` : ''}${source.title}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
+      item.append(element('h3', `${source.id ? `[${source.id}] ` : ''}${source.title}${source.collection ? ` - ${source.collection}` : ''}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
       nodes.push(item);
     }
     if (result.suggestions?.length) nodes.push(element('p', 'Unverified semantic leads: review the sources; they may not answer the question.'));
     for (const source of result.suggestions || []) {
       const item = element('article');
-      item.append(element('h3', `${source.title}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
+      item.append(element('h3', `${source.title}${source.collection ? ` - ${source.collection}` : ''}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
       nodes.push(item);
     }
     $("knowledge-results").replaceChildren(...nodes);
@@ -841,18 +841,19 @@ function showConversationTurns(items) {
   for (const item of items) {
     const block = element('article');
     block.append(element('h4', `Question: ${item.question}`));
+    if (item.collection_filter) block.append(element('p', `Collection: ${item.collection_filter}`));
     if (item.mode === 'source_unavailable') block.append(element('p', 'A saved source is no longer available.'));
     else if (item.mode === 'abstain') block.append(element('p', 'No supporting excerpt found.'));
     if (item.mode === 'groq' && item.answer) {
       block.append(element('p', 'Generated answer: verify each claim against its source.'), element('p', item.answer));
     }
     for (const source of item.sources || []) {
-      block.append(element('h4', `${source.title}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
+      block.append(element('h4', `${source.title}${source.collection ? ` - ${source.collection}` : ''}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
     }
     if (item.suggestions_unavailable) block.append(element('p', 'A saved semantic suggestion is no longer available.'));
     if (item.suggestions?.length) block.append(element('p', 'Unverified semantic suggestions; these are not supporting evidence.'));
     for (const source of item.suggestions || []) {
-      block.append(element('h4', `${source.title}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
+      block.append(element('h4', `${source.title}${source.collection ? ` - ${source.collection}` : ''}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
     }
     turns.push(block);
   }
@@ -909,7 +910,7 @@ $("conversation-form").addEventListener('submit', event => {
     if (id === null) throw new Error('Select a conversation first.');
     const generate = event.submitter?.value === 'generate';
     if (generate && !window.confirm('Send this question, the previous question in this conversation, and authorized excerpts to Groq? Use synthetic data only.')) return;
-    const saved = await api(`/api/knowledge/conversations/${id}/turns`, jsonPost({question: $("conversation-question").value, job_id: $("conversation-job-filter").value.trim() || null, section: $("conversation-section-filter").value.trim() || null, generate_answer: generate, experimental_hybrid: $("conversation-hybrid").checked === true}));
+    const saved = await api(`/api/knowledge/conversations/${id}/turns`, jsonPost({question: $("conversation-question").value, collection: $("conversation-collection-filter").value || null, job_id: $("conversation-job-filter").value.trim() || null, section: $("conversation-section-filter").value.trim() || null, generate_answer: generate, experimental_hybrid: $("conversation-hybrid").checked === true}));
     ensureCurrent(session); if (view !== conversationGeneration || id !== conversationId) return;
     $("conversation-form").reset(); await selectConversation(id);
     ensureCurrent(session); if (conversationId === id) message(saved.notice);

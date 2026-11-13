@@ -438,3 +438,13 @@ automatically detected. Existing documents retain empty metadata. Saved excerpts
 become unavailable when their source metadata changes; previously saved excerpts
 from documents with no metadata remain compatible. This does not provide a
 complete section-based ingestion pipeline or establish answer accuracy.
+
+## Knowledge collection selection
+
+One-off searches and saved conversation turns can optionally restrict retrieval
+to handbook, job descriptions, or past-hire patterns. The filter is applied
+before lexical ranking, embeddings, or any provider call. Past-hire patterns
+remain accessible only to HR. A saved turn records its selected collection;
+reopening it still requires each source to be active, unchanged, and currently
+authorized. Existing turns without a selection remain accessible under their
+existing source checks. This filter does not establish answer correctness.

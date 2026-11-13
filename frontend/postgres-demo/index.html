@@ -63,7 +63,7 @@
       </section>
       <section id="knowledge-panel"><h2>Knowledge search</h2>
         <p>Search synthetic documents available to your role. Results are excerpts, not verified answers.</p>
-        <form id="knowledge-form"><label>Question <input id="knowledge-question" maxlength="2000" required></label><label>Job ID filter <input id="knowledge-job-filter" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*"></label><label>Section filter <input id="knowledge-section-filter" maxlength="200"></label><button>Search</button><button type="submit" value="hybrid">Experimental hybrid search</button><button type="submit" value="generate">Generate answer using Groq</button></form>
+        <form id="knowledge-form"><label>Question <input id="knowledge-question" maxlength="2000" required></label><label>Collection <select id="knowledge-collection-filter"><option value="">All accessible collections</option><option value="handbook">Handbook</option><option value="job_description">Job descriptions</option><option value="past_hire_patterns">Past-hire patterns (HR only)</option></select></label><label>Job ID filter <input id="knowledge-job-filter" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*"></label><label>Section filter <input id="knowledge-section-filter" maxlength="200"></label><button>Search</button><button type="submit" value="hybrid">Experimental hybrid search</button><button type="submit" value="generate">Generate answer using Groq</button></form>
         <div id="knowledge-results"></div>
         <section aria-labelledby="conversation-heading">
           <h3 id="conversation-heading">Saved conversations</h3>
@@ -73,7 +73,7 @@
           <div id="conversation-list-results"></div>
           <p id="conversation-current">No conversation selected.</p>
           <button id="conversation-delete" type="button" hidden>Delete selected conversation</button>
-          <form id="conversation-form" hidden><label>Question <input id="conversation-question" maxlength="2000" required></label><label>Job ID filter <input id="conversation-job-filter" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*"></label><label>Section filter <input id="conversation-section-filter" maxlength="200"></label><label><input id="conversation-hybrid" type="checkbox"> Use experimental hybrid retrieval</label><button>Ask and save</button><button value="generate">Generate and save using Groq</button></form>
+          <form id="conversation-form" hidden><label>Question <input id="conversation-question" maxlength="2000" required></label><label>Collection <select id="conversation-collection-filter"><option value="">All accessible collections</option><option value="handbook">Handbook</option><option value="job_description">Job descriptions</option><option value="past_hire_patterns">Past-hire patterns (HR only)</option></select></label><label>Job ID filter <input id="conversation-job-filter" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*"></label><label>Section filter <input id="conversation-section-filter" maxlength="200"></label><label><input id="conversation-hybrid" type="checkbox"> Use experimental hybrid retrieval</label><button>Ask and save</button><button value="generate">Generate and save using Groq</button></form>
           <div id="conversation-turns"></div>
         </section>
         <form id="knowledge-add" hidden><h3>Add synthetic document</h3>

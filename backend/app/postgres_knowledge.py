@@ -191,6 +191,7 @@ class Metadata(BaseModel):
 def source_dict(source, metadata):
     result = {'id': source.id, 'title': source.title, 'page': source.page, 'text': source.text}
     row = metadata[source.id]
+    result['collection'] = row['collection']
     for key in ('job_id', 'section'):
         if row[key] is not None:
             result[key] = row[key]

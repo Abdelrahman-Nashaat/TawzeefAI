@@ -29,10 +29,12 @@ async function run() {
   assert.equal(nodes.get('knowledge-add').hidden,true);
   assert.equal(nodes.get('applications-panel').hidden,true);
   document.getElementById('knowledge-question').value='annual leave';
+  document.getElementById('knowledge-collection-filter').value='handbook';
   document.getElementById('knowledge-job-filter').value='data-analyst';
   document.getElementById('knowledge-section-filter').value='Benefits';
   nodes.get('knowledge-form').listeners.submit({preventDefault(){},submitter:new Node()});
   await tick();
+  assert.equal(requested.collection, 'handbook');
   assert.equal(requested.job_id, 'data-analyst');
   assert.equal(requested.section, 'Benefits');
   pending(response({notice:'Excerpts only',sources:[{title:'Policy',page:4,job_id:'data-analyst',section:'Benefits',text:'<img src=x>'}]}));
