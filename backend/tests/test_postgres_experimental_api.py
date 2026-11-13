@@ -502,7 +502,9 @@ def test_pdf_cancellation_holds_capacity_until_worker_finishes(mode, monkeypatch
 
 def test_pdf_slot_cleanup_during_buffer_cancellation_and_submit_failure(mode, monkeypatch):
     import asyncio
+    from fastapi import HTTPException
     import app.postgres_knowledge as knowledge
+    monkeypatch.setattr(knowledge, '_PDF_EXECUTOR_FAILED', False)
     content = pdf_bytes()
 
     class Request:
@@ -528,9 +530,53 @@ def test_pdf_slot_cleanup_during_buffer_cancellation_and_submit_failure(mode, mo
             await task
         original = knowledge._PDF_EXECUTOR.submit
         monkeypatch.setattr(knowledge._PDF_EXECUTOR, 'submit', fail_submit)
-        with pytest.raises(RuntimeError, match='Simulated executor failure'):
+        with pytest.raises(HTTPException) as error:
             await knowledge._read_pdf(Request(), 'policy.pdf')
+        assert error.value.status_code == 503
         monkeypatch.setattr(knowledge._PDF_EXECUTOR, 'submit', original)
+        # Recovery requires a process restart; reset the flag only for this test.
+        monkeypatch.setattr(knowledge, '_PDF_EXECUTOR_FAILED', False)
         assert (await knowledge._read_pdf(Request(), 'policy.pdf'))[0]
     entered = None
     asyncio.run(exercise())
+
+
+def test_pdf_thread_start_failure_never_runs_orphan(mode, monkeypatch):
+    import asyncio
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from fastapi import HTTPException
+    import app.postgres_knowledge as knowledge
+
+    content = pdf_bytes()
+    executor = ThreadPoolExecutor(max_workers=2)
+    monkeypatch.setattr(knowledge, '_PDF_EXECUTOR', executor)
+    monkeypatch.setattr(knowledge, '_PDF_EXECUTOR_FAILED', False)
+    extracted = []
+    monkeypatch.setattr(knowledge, '_extract_pdf_with_digest', lambda *args: extracted.append(args))
+
+    class Request:
+        async def stream(self):
+            yield content
+
+    def fail_start(self):
+        raise RuntimeError('Simulated thread-start failure after queueing')
+
+    async def exercise():
+        with monkeypatch.context() as scoped:
+            scoped.setattr(threading.Thread, 'start', fail_start)
+            with pytest.raises(HTTPException) as error:
+                await knowledge._read_pdf(Request(), 'policy.pdf')
+            assert error.value.status_code == 503
+        assert knowledge._PDF_EXECUTOR_FAILED
+        with pytest.raises(HTTPException) as error:
+            await knowledge._read_pdf(Request(), 'policy.pdf')
+        assert error.value.status_code == 503
+        # A later worker drains the queued task; its gate must reject extraction.
+        await asyncio.wrap_future(executor.submit(lambda: None))
+        assert extracted == []
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        executor.shutdown(wait=True)

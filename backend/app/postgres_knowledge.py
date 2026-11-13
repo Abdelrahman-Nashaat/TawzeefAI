@@ -7,7 +7,7 @@ import os
 import re
 import secrets
 from concurrent.futures import ThreadPoolExecutor
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Event, Lock
 from typing import Annotated, Literal
 
 from fastapi import Depends, HTTPException, Request
@@ -23,6 +23,8 @@ _HYBRID_BUSY = BoundedSemaphore(1)
 _HYBRID_MAX_PASSAGES = 200
 _PDF_EXTRACTION_SLOTS = BoundedSemaphore(2)
 _PDF_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix='knowledge-pdf')
+_PDF_SUBMIT_LOCK = Lock()
+_PDF_EXECUTOR_FAILED = False
 
 
 def _extract_pdf_with_digest(filename, content):
@@ -146,10 +148,14 @@ class Question(Metadata):
 
 
 async def _read_pdf(request, filename):
+    global _PDF_EXECUTOR_FAILED
     if not _PDF_EXTRACTION_SLOTS.acquire(blocking=False):
         raise HTTPException(status_code=503, detail='PDF processing is busy; try again')
     slot_owned = True
     try:
+        with _PDF_SUBMIT_LOCK:
+            if _PDF_EXECUTOR_FAILED:
+                raise HTTPException(status_code=503, detail='PDF processing is unavailable; restart the server')
         content = bytearray()
         async for chunk in request.stream():
             if len(content) + len(chunk) > MAX_FILE_BYTES:
@@ -158,9 +164,29 @@ async def _read_pdf(request, filename):
         # A cancelled request must not release capacity while its worker is
         # still extracting. The concurrent future completes only when the
         # underlying thread finishes (or a queued job is cancelled).
-        future = _PDF_EXECUTOR.submit(_extract_pdf_with_digest, filename, bytes(content))
-        future.add_done_callback(lambda _: _PDF_EXTRACTION_SLOTS.release())
-        slot_owned = False
+        gate = Event()
+        admitted = False
+        def guarded_extract():
+            gate.wait()
+            if admitted:
+                return _extract_pdf_with_digest(filename, bytes(content))
+            # submit() may queue work before raising; never execute an orphan.
+            return None
+        with _PDF_SUBMIT_LOCK:
+            if _PDF_EXECUTOR_FAILED:
+                raise HTTPException(status_code=503, detail='PDF processing is unavailable; restart the server')
+            try:
+                future = _PDF_EXECUTOR.submit(guarded_extract)
+            except BaseException as exc:
+                _PDF_EXECUTOR_FAILED = True
+                gate.set()
+                if isinstance(exc, Exception):
+                    raise HTTPException(status_code=503, detail='PDF processing is unavailable; restart the server') from exc
+                raise
+            future.add_done_callback(lambda _: _PDF_EXTRACTION_SLOTS.release())
+            slot_owned = False
+            admitted = True
+            gate.set()
         try:
             return await asyncio.wrap_future(future)
         except DocumentTextError as exc:
