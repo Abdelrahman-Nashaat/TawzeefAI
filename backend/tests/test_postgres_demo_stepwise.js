@@ -12,13 +12,13 @@ class Node {
 const ids=new Map();
 const document={getElementById(id){if(!ids.has(id))ids.set(id,new Node());return ids.get(id);},createElement(tag){return new Node(tag);}};
 const response=(data,status=200)=>({status,ok:status>=200&&status<300,json:async()=>data});
-const requests=[]; let ready=false, proposedSlot, proposedIntent='advance', consent=false;
+const requests=[]; let ready=false, proposedSlot, proposedIntent='advance', proposedTerms, consent=false;
 const fetch=async(path,opts={})=>{
   requests.push({path,opts});
   if(path==='/api/auth/me') return response({},401);
-  if(path==='/api/applications/7/graph-review-preparations') { const body=JSON.parse(opts.body); proposedSlot=body.slot; proposedIntent=body.intent; return response({id:9}); }
+  if(path==='/api/applications/7/graph-review-preparations') { const body=JSON.parse(opts.body); proposedSlot=body.slot; proposedIntent=body.intent; proposedTerms=body.offer_details; return response({id:9}); }
   if(path==='/api/applications/7/graph-review-drafts') return response([{id:9,status:'pending'}]);
-  if(path==='/api/graph-review-drafts/9') return response({status:'pending',intent:proposedIntent,stale:false,result:{},slot:proposedSlot,
+  if(path==='/api/graph-review-drafts/9') return response({status:'pending',intent:proposedIntent,stale:false,result:{},slot:proposedSlot,offer_details:proposedTerms,
     preparation:{completed:ready?['parser','matching','status','scheduling','policy']:['parser'],next:ready?'human_review':'matching',ready,suggested_step:ready?'review_advance':null}});
   if(path==='/api/graph-review-drafts/9/prepare') { ready=true; return response({}); }
   if(path==='/api/graph-review-drafts/9/prepare-all') { ready=true; return response({}); }
@@ -82,5 +82,15 @@ async function run(){
   assert(!find('Approve private slot'));
   await click('Complete remaining preparation'); await click('Approve private slot');
   assert.equal(requests.filter(r=>r.path.endsWith('/resume')).length,3);
+  vm.runInContext('renderApplications([{id:7,status:"advanced",job_id:"j",candidate_id:4}],[])',context);
+  const terms=find('Proposed offer terms ').children[0]; terms.value='Synthetic terms';
+  const startOffer=find('Start resumable offer review');
+  const offerForm=descendants(ids.get('applications')).find(n=>n.tag==='form' && n.children.includes(startOffer));
+  offerForm.handlers.submit({preventDefault(){},submitter:startOffer}); await tick(); await tick();
+  assert.equal(proposedIntent,'present_offer'); assert.equal(proposedTerms,'Synthetic terms');
+  ready=false; await click('Open saved reviews'); await click('Open review');
+  assert(find('Synthetic terms')); assert(!find('Approve offer'));
+  await click('Complete remaining preparation'); await click('Approve offer');
+  assert.equal(requests.filter(r=>r.path.endsWith('/resume')).length,4);
 }
 run().catch(error=>{console.error(error);process.exitCode=1;});

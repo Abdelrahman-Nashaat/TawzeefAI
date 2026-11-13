@@ -17,6 +17,7 @@ from app.auth import User
 from app.knowledge import Source, _rank_lexical, _tokens
 from app.postgres_ai_planner import allowed_actions, request_plan
 from app.postgres_feedback import current_review
+from app.postgres_offers import present_offer, validate_offer
 from app.postgres_rubric import _source
 from app.resume_structure import structure_resume
 from app.slots import SlotCreate
@@ -27,8 +28,9 @@ class ReviewRequest(BaseModel):
 
 
 class DraftRequest(ReviewRequest):
-    intent: Literal['review', 'advance', 'reserve_slot'] = 'review'
+    intent: Literal['review', 'advance', 'reserve_slot', 'present_offer'] = 'review'
     slot: SlotCreate | None = None
+    offer_details: str | None = Field(default=None, min_length=1, max_length=4000)
 
     @model_validator(mode='after')
     def slot_requires_advance(self):
@@ -36,6 +38,12 @@ class DraftRequest(ReviewRequest):
             raise ValueError('A slot proposal requires an advance or reserve-slot intent')
         if self.intent == 'reserve_slot' and self.slot is None:
             raise ValueError('A reserve-slot proposal requires a slot')
+        if self.intent == 'present_offer':
+            if self.offer_details is None or not self.offer_details.strip() or self.slot is not None:
+                raise ValueError('Offer intent requires offer details and no slot')
+            self.offer_details = self.offer_details.strip()
+        elif self.offer_details is not None:
+            raise ValueError('Offer details require offer intent')
         return self
 
 
@@ -48,7 +56,7 @@ DDL = '''CREATE TABLE IF NOT EXISTS graph_review_drafts (
     application_id bigint NOT NULL REFERENCES applications(id),
     owner_id bigint NOT NULL REFERENCES users(id),
     question text NOT NULL, fingerprint text NOT NULL,
-    intent text NOT NULL CHECK(intent IN ('review','advance','reserve_slot')),
+    intent text NOT NULL CHECK(intent IN ('review','advance','reserve_slot','present_offer')),
     status text NOT NULL CHECK(status IN ('pending','reviewed','discarded')),
     created_at timestamptz NOT NULL DEFAULT clock_timestamp())'''
 
@@ -62,6 +70,11 @@ def _fingerprint(source_digest, owner, result):
 def _bind_slot(digest, slot):
     # Keep fingerprints for older drafts stable when no slot was proposed.
     return _fingerprint(digest, None, slot) if slot else digest
+
+
+def _bind_proposal(digest, slot, offer_details):
+    bound = _bind_slot(digest, slot)
+    return _fingerprint(bound, 'present_offer', offer_details) if offer_details is not None else bound
 
 
 def _snapshot(db, application_id, question, *, all_collections=False):
@@ -407,16 +420,18 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=409, detail='A submitted application and current HR rubric review are required')
             if payload.intent == 'reserve_slot' and result['status']['application_status'] != 'advanced':
                 raise HTTPException(status_code=409, detail='An advanced application is required')
+            if payload.intent == 'present_offer':
+                validate_offer(db, application_id)
             slot = payload.slot.model_dump(mode='json') if payload.slot else None
             if payload.slot:
                 validate_slot(db, application_id, payload.slot)
-            digest = _bind_slot(digest, slot)
-            row = db.execute('''INSERT INTO graph_review_drafts(application_id,owner_id,question,fingerprint,intent,status,slot_proposal,checkpoint_version)
-                VALUES (%s,%s,%s,%s,%s,'pending',%s::jsonb,2) RETURNING *''',
-                (application_id, user.id, payload.policy_question, digest, payload.intent, json.dumps(slot) if slot else None)).fetchone()
+            digest = _bind_proposal(digest, slot, payload.offer_details)
+            row = db.execute('''INSERT INTO graph_review_drafts(application_id,owner_id,question,fingerprint,intent,status,slot_proposal,offer_details,checkpoint_version)
+                VALUES (%s,%s,%s,%s,%s,'pending',%s::jsonb,%s,2) RETURNING *''',
+                (application_id, user.id, payload.policy_question, digest, payload.intent, json.dumps(slot) if slot else None, payload.offer_details)).fetchone()
             _start_approval(db, row, result)
             authorize_locked(db, request, user, 'hr')
-            return {'id': row['id'], 'status': 'pending', 'intent': payload.intent, 'slot': slot, 'result': result}
+            return {'id': row['id'], 'status': 'pending', 'intent': payload.intent, 'slot': slot, 'offer_details': payload.offer_details, 'result': result}
 
     @app.post('/api/applications/{application_id}/graph-review-preparations', status_code=201)
     def begin_preparation(application_id: int, payload: DraftRequest, request: Request,
@@ -430,13 +445,15 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=409, detail='A submitted application and current HR rubric review are required')
             if payload.intent == 'reserve_slot' and result['status']['application_status'] != 'advanced':
                 raise HTTPException(status_code=409, detail='An advanced application is required')
+            if payload.intent == 'present_offer':
+                validate_offer(db, application_id)
             slot = payload.slot.model_dump(mode='json') if payload.slot else None
             if payload.slot:
                 validate_slot(db, application_id, payload.slot)
-            digest = _bind_slot(digest, slot)
-            draft = db.execute('''INSERT INTO graph_review_drafts(application_id,owner_id,question,fingerprint,intent,status,slot_proposal,checkpoint_version)
-                VALUES (%s,%s,%s,%s,%s,'pending',%s::jsonb,5) RETURNING *''',
-                (application_id, user.id, payload.policy_question, digest, payload.intent, json.dumps(slot) if slot else None)).fetchone()
+            digest = _bind_proposal(digest, slot, payload.offer_details)
+            draft = db.execute('''INSERT INTO graph_review_drafts(application_id,owner_id,question,fingerprint,intent,status,slot_proposal,offer_details,checkpoint_version)
+                VALUES (%s,%s,%s,%s,%s,'pending',%s::jsonb,%s,5) RETURNING *''',
+                (application_id, user.id, payload.policy_question, digest, payload.intent, json.dumps(slot) if slot else None, payload.offer_details)).fetchone()
             progress = _advance_preparation(db, draft, result, initial=True)
             authorize_locked(db, request, user, 'hr')
             return {'id': draft['id'], 'status': 'pending', 'preparation': progress}
@@ -454,7 +471,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=409, detail='Review cannot be prepared')
             result, digest, _ = _snapshot(db, draft['application_id'], draft['question'],
                                           all_collections=draft['checkpoint_version'] >= 5)
-            if _bind_slot(digest, draft['slot_proposal']) != draft['fingerprint']:
+            if _bind_proposal(digest, draft['slot_proposal'], draft['offer_details']) != draft['fingerprint']:
                 raise HTTPException(status_code=409, detail='Review changed; discard it and start again')
             state = _preparation_state(db, draft)
             if accept_ready and _preparation_progress(state)['ready']:
@@ -490,7 +507,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=409, detail='A pending resumable review is required')
             result, digest, _ = _snapshot(db, draft['application_id'], draft['question'],
                                           all_collections=draft['checkpoint_version'] >= 5)
-            if _bind_slot(digest, draft['slot_proposal']) != draft['fingerprint']:
+            if _bind_proposal(digest, draft['slot_proposal'], draft['offer_details']) != draft['fingerprint']:
                 raise HTTPException(status_code=409, detail='Review changed; start again')
             state = _preparation_state(db, draft)
             if not _preparation_progress(state)['ready']:
@@ -556,11 +573,11 @@ def install_routes(app, connect, authenticate, authorize_locked):
                     raise
                 authorize_locked(db, request, user, 'hr')
                 return {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'stale': True}
-            digest = _bind_slot(digest, draft['slot_proposal'])
+            digest = _bind_proposal(digest, draft['slot_proposal'], draft['offer_details'])
             authorize_locked(db, request, user, 'hr')
             if digest != draft['fingerprint']:
                 return {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'stale': True}
-            response = {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'slot': draft['slot_proposal'], 'stale': False, 'result': result}
+            response = {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'slot': draft['slot_proposal'], 'offer_details': draft['offer_details'], 'stale': False, 'result': result}
             if draft['checkpoint_version'] in (3, 4, 5) and draft['status'] == 'pending':
                 response['preparation'] = _preparation_progress(_preparation_state(db, draft))
                 authorize_locked(db, request, user, 'hr')
@@ -584,7 +601,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
             if payload.reviewed:
                 result, digest, event_id = _snapshot(db, draft['application_id'], draft['question'],
                                                     all_collections=draft['checkpoint_version'] >= 5)
-                digest = _bind_slot(digest, draft['slot_proposal'])
+                digest = _bind_proposal(digest, draft['slot_proposal'], draft['offer_details'])
                 if digest != draft['fingerprint']:
                     raise HTTPException(status_code=409, detail='Review changed; start a new review')
                 if draft['intent'] == 'advance':
@@ -605,6 +622,10 @@ def install_routes(app, connect, authenticate, authorize_locked):
                             target_application_id,target_candidate_id) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
                             (slot.start_at, slot.end_at, slot.interviewer, key, user.id, draft['application_id'], candidate_id)).fetchone()
                         db.execute("INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (%s,%s,'created_private')", (created['id'], user.id))
+                elif draft['intent'] == 'present_offer':
+                    if not draft['offer_details'] or not draft['offer_details'].strip():
+                        raise HTTPException(status_code=409, detail='Offer details are unavailable')
+                    present_offer(db, draft['application_id'], user, draft['offer_details'])
                 elif draft['intent'] == 'reserve_slot':
                     if result['status']['application_status'] != 'advanced' or not draft['slot_proposal']:
                         raise HTTPException(status_code=409, detail='An advanced application and slot are required')
@@ -626,6 +647,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
             notice = 'Application advanced by HR.' if payload.reviewed and draft['intent'] == 'advance' else 'No recruitment decision was made.'
             if payload.reviewed and draft['intent'] == 'advance' and draft['slot_proposal']:
                 notice = 'Application advanced and a private slot reserved by HR; the candidate must book it.'
+            elif payload.reviewed and draft['intent'] == 'present_offer':
+                notice = 'Offer presented locally; the candidate must respond.'
             elif payload.reviewed and draft['intent'] == 'reserve_slot':
                 notice = 'Private slot reserved by HR; the candidate must book it.'
             return {'id': draft_id, 'status': status, 'notice': notice}

@@ -49,6 +49,14 @@ HR approval revalidates current state and atomically records an advance
 and optional slot. A discarded in-progress review leaves its paused checkpoint
 in the synthetic demo database, but the closed draft cannot be continued.
 
+For an advanced application with an HR-confirmed completed interview and no
+active interview, HR can start a resumable offer review. The exact proposed
+terms are stored in the HR-only draft and shown again before approval; the
+checkpoint stores a fingerprint rather than the terms. Approval rechecks
+eligibility and presents the offer locally in the same transaction as the
+review and audit. The candidate must separately accept or decline. No email is
+sent; discarded drafts and their terms remain in the synthetic demo database.
+
 HR can optionally ask Groq for a next review action after preparation completes.
 The request sends only four bounded status fields and a server-defined list of
 review actions, not names, CVs, job descriptions, notes or policy excerpts.

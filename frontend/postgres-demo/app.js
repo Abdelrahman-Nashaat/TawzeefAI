@@ -483,6 +483,10 @@ function renderApplications(applications, jobs) {
               view.append(element("p", `Proposed private slot (UTC): ${opened.slot.start_at} to ${opened.slot.end_at}; interviewer: ${opened.slot.interviewer}`),
                 element("p", opened.intent === "reserve_slot" ? "Approval reserves this slot; the candidate must still book it." : "Approval advances the application and reserves this slot; the candidate must still book it."));
             }
+            if (!opened.stale && opened.intent === "present_offer") {
+              view.append(element("p", "Proposed offer terms (review before approval):"), element("pre", opened.offer_details));
+              view.append(element("p", "Approval presents these terms locally; the candidate must respond."));
+            }
             if (opened.status === "pending") {
               if (!opened.stale && opened.preparation && !opened.preparation.ready) {
                 view.append(element("p", `Preparation complete: ${opened.preparation.completed.join(", ")}. Next: ${opened.preparation.next}.`));
@@ -526,7 +530,7 @@ function renderApplications(applications, jobs) {
                 }));
               }
               for (const reviewed of (opened.stale || (opened.preparation && !opened.preparation.ready) ? [false] : [true, false])) {
-                view.append(button(reviewed ? (opened.intent === "reserve_slot" ? "Approve private slot" : opened.intent === "advance" ? (opened.slot ? "Approve advancement and private slot" : "Approve advancement") : "Acknowledge review") : "Discard review", async () => {
+                view.append(button(reviewed ? (opened.intent === "present_offer" ? "Approve offer" : opened.intent === "reserve_slot" ? "Approve private slot" : opened.intent === "advance" ? (opened.slot ? "Approve advancement and private slot" : "Approve advancement") : "Acknowledge review") : "Discard review", async () => {
                   ensureDraftView(current, viewGeneration);
                   const active = sessionGeneration;
                   try { await api(`/api/graph-review-drafts/${draft.id}/resume`, jsonPost({reviewed})); }
@@ -536,8 +540,8 @@ function renderApplications(applications, jobs) {
                     throw error;
                   }
                   ensureDraftView(active, viewGeneration);
-                  const confirmation = reviewed ? (opened.intent === "reserve_slot" ? "Private slot reserved. The candidate must book it." : opened.intent === "advance" ? (opened.slot ? "Application advanced and private slot reserved. The candidate must book it." : "Application advanced by HR.") : "Review acknowledged. No decision made.") : "Review discarded.";
-                  if (reviewed && ["advance", "reserve_slot"].includes(opened.intent)) {
+                  const confirmation = reviewed ? (opened.intent === "present_offer" ? "Offer presented locally. The candidate must respond." : opened.intent === "reserve_slot" ? "Private slot reserved. The candidate must book it." : opened.intent === "advance" ? (opened.slot ? "Application advanced and private slot reserved. The candidate must book it." : "Application advanced by HR.") : "Review acknowledged. No decision made.") : "Review discarded.";
+                  if (reviewed && ["advance", "reserve_slot", "present_offer"].includes(opened.intent)) {
                     try { await refresh(); ensureDraftView(active, viewGeneration); }
                     catch (error) {
                       ensureDraftView(active, viewGeneration);
@@ -556,6 +560,29 @@ function renderApplications(applications, jobs) {
         }
         draftPanel.replaceChildren(list);
       }), slotDraftForm, draftPanel);
+      if (application.status === "advanced") {
+        const offerReviewForm = element("form");
+        const offerReviewLabel = element("label", "Proposed offer terms ");
+        const offerReviewInput = element("textarea");
+        offerReviewInput.required = true; offerReviewInput.maxLength = 4000;
+        offerReviewLabel.append(offerReviewInput);
+        const offerReviewSubmit = element("button", "Start resumable offer review"); offerReviewSubmit.type = "submit";
+        offerReviewForm.append(offerReviewLabel, element("p", "HR must review and approve these terms before they are presented."), offerReviewSubmit);
+        offerReviewForm.addEventListener("submit", event => {
+          event.preventDefault();
+          action(event.submitter || offerReviewSubmit, async () => {
+            ensureCurrent(draftGeneration);
+            const generation = sessionGeneration, view = ++draftViewGeneration;
+            const details = offerReviewInput.value.trim();
+            if (!details) throw new Error("Enter offer terms.");
+            const result = await api(`/api/applications/${application.id}/graph-review-preparations`,
+              jsonPost({intent: "present_offer", offer_details: details, policy_question: graphQuestion.value}));
+            ensureDraftView(generation, view); offerReviewForm.reset(); graphQuestion.value = "";
+            draftPanel.replaceChildren(element("p", `Offer review ${result.id} started. Open saved reviews to continue preparation.`));
+          });
+        });
+        card.append(offerReviewForm);
+      }
       const feedback = element("div");
       card.append(button("Manage candidate feedback", () => manageFeedback(application, feedback)), feedback);
       const label = element("label", "Select for HR comparison ");

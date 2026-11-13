@@ -62,6 +62,31 @@ def hire(db, application_id, user, note):
     return db.execute('SELECT * FROM applications WHERE id=%s', (application_id,)).fetchone()
 
 
+def validate_offer(db, application_id):
+    """Check eligibility under the caller's scheduling lock and transaction."""
+    application = db.execute('SELECT * FROM applications WHERE id=%s FOR UPDATE', (application_id,)).fetchone()
+    if not application:
+        raise HTTPException(status_code=404, detail='Application not found')
+    if application['status'] != 'advanced':
+        raise HTTPException(status_code=409, detail='Application is not ready for an offer')
+    if not db.execute("SELECT 1 FROM users WHERE id=%s AND role='candidate' AND active=1 FOR SHARE", (application['candidate_id'],)).fetchone():
+        raise HTTPException(status_code=409, detail='An active candidate account is required')
+    if not db.execute("SELECT 1 FROM interviews WHERE application_id=%s AND candidate_id=%s AND completed AND status='scheduled' LIMIT 1", (application_id, application['candidate_id'])).fetchone():
+        raise HTTPException(status_code=409, detail='A completed interview is required')
+    if db.execute("SELECT 1 FROM interviews WHERE application_id=%s AND status='scheduled' AND end_at>clock_timestamp() LIMIT 1", (application_id,)).fetchone():
+        raise HTTPException(status_code=409, detail='Resolve active interviews before presenting an offer')
+    return application
+
+
+def present_offer(db, application_id, user, details):
+    application = validate_offer(db, application_id)
+    row = db.execute(f"INSERT INTO job_offers(application_id,recipient_id,details,status,created_by) VALUES (%s,%s,%s,'presented',%s) RETURNING {_FIELDS}",
+                     (application_id, application['candidate_id'], details, user.id)).fetchone()
+    _update_application(db, application_id, 'offered')
+    _audit(db, application_id, user.id, 'offer_presented', row['id'])
+    return dict(row)
+
+
 def install_routes(app, connect, authenticate, authorize_locked, guard):
     @app.get('/api/applications/{application_id}/offers')
     def list_offers(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
@@ -93,21 +118,7 @@ def install_routes(app, connect, authenticate, authorize_locked, guard):
         with connect() as db:
             authorize_locked(db, request, user, 'hr')
             guard(db)
-            application = db.execute('SELECT * FROM applications WHERE id=%s FOR UPDATE', (application_id,)).fetchone()
-            if not application:
-                raise HTTPException(status_code=404, detail='Application not found')
-            if application['status'] != 'advanced':
-                raise HTTPException(status_code=409, detail='Application is not ready for an offer')
-            if not db.execute("SELECT 1 FROM users WHERE id=%s AND role='candidate' AND active=1 FOR SHARE", (application['candidate_id'],)).fetchone():
-                raise HTTPException(status_code=409, detail='An active candidate account is required')
-            if not db.execute("SELECT 1 FROM interviews WHERE application_id=%s AND candidate_id=%s AND completed AND status='scheduled' LIMIT 1", (application_id, application['candidate_id'])).fetchone():
-                raise HTTPException(status_code=409, detail='A completed interview is required')
-            if db.execute("SELECT 1 FROM interviews WHERE application_id=%s AND status='scheduled' AND end_at>clock_timestamp() LIMIT 1", (application_id,)).fetchone():
-                raise HTTPException(status_code=409, detail='Resolve active interviews before presenting an offer')
-            row = db.execute(f"INSERT INTO job_offers(application_id,recipient_id,details,status,created_by) VALUES (%s,%s,%s,'presented',%s) RETURNING {_FIELDS}",
-                             (application_id, application['candidate_id'], details, user.id)).fetchone()
-            _update_application(db, application_id, 'offered')
-            _audit(db, application_id, user.id, 'offer_presented', row['id'])
+            row = present_offer(db, application_id, user, details)
             authorize_locked(db, request, user, 'hr')
             return dict(row)
 

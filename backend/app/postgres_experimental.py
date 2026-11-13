@@ -202,11 +202,12 @@ def create_postgres_app(*, seed_demo: bool, require_new_schema: bool = False, on
                         AND conname='graph_review_drafts_intent_check' ''').fetchone()
                     if not intent_check:
                         raise RuntimeError('Missing review intent constraint')
-                    if 'reserve_slot' not in intent_check['definition']:
+                    if 'present_offer' not in intent_check['definition']:
                         db.execute('ALTER TABLE graph_review_drafts DROP CONSTRAINT graph_review_drafts_intent_check')
-                        db.execute("ALTER TABLE graph_review_drafts ADD CONSTRAINT graph_review_drafts_intent_check CHECK (intent IN ('review','advance','reserve_slot'))")
+                        db.execute("ALTER TABLE graph_review_drafts ADD CONSTRAINT graph_review_drafts_intent_check CHECK (intent IN ('review','advance','reserve_slot','present_offer'))")
                     db.execute('CREATE INDEX IF NOT EXISTS audit_events_application_cursor ON audit_events(application_id,id DESC)')
                     db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS slot_proposal jsonb')
+                    db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS offer_details text')
                     db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS checkpoint_version integer NOT NULL DEFAULT 0')
                     # Additive and idempotent for schemas created by earlier demo versions.
                     db.execute('''CREATE TABLE IF NOT EXISTS screening_history (
