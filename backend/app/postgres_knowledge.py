@@ -52,6 +52,25 @@ def _vector_literal(values):
     return '[' + ','.join(str(value) for value in values) + ']'
 
 
+def _rerank_lexical_with_semantic(lexical, semantic):
+    """Fuse ranks only for lexically eligible sources; semantic hits are not proof.
+
+    Reciprocal rank fusion avoids treating incomparable BM25 and cosine values
+    as if they shared a scale. Ties retain lexical order. Sources appearing
+    only in semantic search remain separate, unverified suggestions.
+    """
+    semantic_ranks = {}
+    for position, (_, source) in enumerate(semantic, 1):
+        semantic_ranks.setdefault(source.id, position)
+    def fused(item):
+        position, (_, source) = item
+        score = 1 / (60 + position)
+        if source.id in semantic_ranks:
+            score += 1 / (60 + semantic_ranks[source.id])
+        return -score, position
+    return [item for _, item in sorted(enumerate(lexical, 1), key=fused)]
+
+
 def _load_embedder(directory):
     from app.hybrid_api import _load_model
     return _load_model(directory)
@@ -339,7 +358,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
             else:
                 sources = [Source(id=f"pg-doc-{r['id']}", title=r['title'], text=r['body'], page=r['page']) for r in rows]
                 metadata = {source.id: row for source, row in zip(sources, rows, strict=True)}
-            ranked = _rank_lexical(_tokens(payload.question), sources)[:3]
+            ranked = _rank_lexical(_tokens(payload.question), sources)
             if not ranked and not payload.experimental_hybrid:
                 ranked = _unique_policy_title(payload.question, sources)
             suggestions = []
@@ -349,12 +368,15 @@ def install_routes(app, connect, authenticate, authorize_locked):
                     semantic = _semantic_candidates(db, sources, payload.question, model)
                 except Exception as exc:
                     raise HTTPException(status_code=503, detail='Experimental hybrid search is unavailable') from exc
+                ranked = _rerank_lexical_with_semantic(ranked, semantic)
+            ranked = ranked[:3]
+            if payload.experimental_hybrid:
                 lexical_ids = {source.id for _, source in ranked}
                 suggestions = [source for _, source in semantic if source.id not in lexical_ids]
             authorize_locked(db, request, user)
             return {'mode': 'extractive' if ranked else 'abstain',
                     'sources': [source_dict(source, metadata) for _, source in ranked],
                     'suggestions': [source_dict(source, metadata) for source in suggestions],
-                    'notice': ('Experimental semantic leads are unverified; review each source. No external service was called.'
+                    'notice': ('Experimental semantic ranking and leads are unverified; review each source. No external service was called.'
                                if payload.experimental_hybrid else
                                'Synthetic local excerpts only; verify the cited source. No model or external service was called.')}

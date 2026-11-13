@@ -21,6 +21,41 @@ class Model:
                 else [0.0, 1.0] + [0.0] * 382 for text in texts]
 
 
+def test_hybrid_fuses_authorized_lexical_order_and_keeps_leads_separate(mode, monkeypatch):  # noqa: F811
+    import app.postgres_knowledge as knowledge
+
+    monkeypatch.setenv('TAWZEEF_POSTGRES_KNOWLEDGE_HYBRID', '1')
+    monkeypatch.setenv('TAWZEEF_EMBEDDING_MODEL_DIR', 'synthetic-test-model')
+    monkeypatch.setattr(knowledge, '_load_embedder', lambda _: object())
+    seen = []
+
+    def semantic(_db, sources, _question, _model):
+        seen.extend(source.title for source in sources)
+        by_title = {source.title: source for source in sources}
+        return [(0.99, by_title['Second']), (0.91, by_title['Lead'])]
+
+    monkeypatch.setattr(knowledge, '_semantic_candidates', semantic)
+    with TestClient(create_app(seed_demo=True)) as hr, TestClient(create_app(seed_demo=True)) as candidate:
+        login(hr, 'hr')
+        login(candidate, 'candidate')
+        for title, body, audience in [
+            ('First', 'Annual leave annual leave requires approval.', 'public'),
+            ('Second', 'Annual leave is ten days.', 'public'),
+            ('Lead', 'The holiday period differs.', 'public'),
+            ('Private', 'Annual leave confidential exception.', 'hr'),
+        ]:
+            assert hr.post('/api/knowledge/documents/text', json={'title': title, 'text': body,
+                'audience': audience, 'collection': 'handbook', 'page': 7}).status_code == 201
+        response = candidate.post('/api/knowledge/answer', json={'question': 'annual leave',
+                                  'experimental_hybrid': True})
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert [item['title'] for item in result['sources']] == ['Second', 'First']
+        assert [item['title'] for item in result['suggestions']] == ['Lead']
+        assert all(item['page'] == 7 for item in result['sources'] + result['suggestions'])
+        assert 'Private' not in seen and 'Private' not in response.text
+
+
 def test_pgvector_hybrid_access_revocation_and_expiry(mode, monkeypatch):  # noqa: F811
     import app.postgres_experimental as pg_app
     import app.postgres_knowledge as knowledge

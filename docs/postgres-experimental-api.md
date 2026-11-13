@@ -69,8 +69,11 @@ HR can list active document metadata in the browser or through
 `POST /api/knowledge/documents/{id}/deactivate`. The list excludes document bodies;
 deactivated documents no longer appear in search or the active document list.
 An optional **Experimental hybrid search** button also computes local E5
-embeddings over role-authorized passages and searches them using pgvector. The
-lexical excerpts remain distinct from semantic-only suggestions: suggestions
+embeddings over role-authorized passages and searches them using pgvector. It
+combines semantic and BM25 ranks with reciprocal rank fusion, reordering only
+passages that meet the lexical match gate. This is not a learned reranker and
+has not been shown to improve answer quality. The lexical excerpts remain
+distinct from semantic-only suggestions: suggestions
 are unverified leads, not answers or proof of support. This path requires the
 `postgres` and `semantic` extras, the pinned local model, an operator-provisioned
 pgvector extension, `TAWZEEF_POSTGRES_KNOWLEDGE_HYBRID=1`, and
