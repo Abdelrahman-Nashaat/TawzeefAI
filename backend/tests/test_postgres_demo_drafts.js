@@ -14,12 +14,15 @@ const document={getElementById(id){if(!ids.has(id))ids.set(id,new Node());return
 const response=(data,status=200)=>({status,ok:status>=200&&status<300,json:async()=>data});
 const requests=[];
 let stale=false;
+let advanced=false;
 const fetch=async(path,opts={})=>{
   requests.push({path,opts});
   if(path==='/api/auth/me') return response({},401);
   if(path==='/api/applications/7/graph-review-drafts') return response([{id:9,status:'pending'}]);
   if(path==='/api/graph-review-drafts/9') return response({status:'pending',intent:'advance',stale,result:{note:'Review this evidence'}});
-  if(path==='/api/graph-review-drafts/9/resume') return response({});
+  if(path==='/api/graph-review-drafts/9/resume') { advanced=JSON.parse(opts.body).reviewed; return response({}); }
+  if(path==='/api/applications') return response([{id:7,status:advanced?'advanced':'submitted',job_id:'j',candidate_id:4}]);
+  if(path==='/api/hr/interview-cancellations') return response({items:[],next_before:null});
   return response([]);
 };
 const context=vm.createContext({document,fetch,URLSearchParams,console,Date,Error,Promise,setTimeout});
@@ -37,7 +40,8 @@ async function run(){
   assert.equal(requests.filter(r=>r.path.endsWith('/resume')).length,0);
   await click('Approve advancement');
   assert.equal(JSON.parse(requests.find(r=>r.path.endsWith('/resume')).opts.body).reviewed,true);
-  assert(find('Application advanced by HR.'));
+  assert.equal(ids.get('message').textContent,'Application advanced by HR.');
+  assert(find('Status: advanced'));
   stale=true;
   await click('Open saved reviews');
   await click('Open review');

@@ -353,17 +353,47 @@ function renderApplications(applications, jobs) {
       });
       card.append(graphForm);
       const draftPanel = element("div");
+      const draftGeneration = sessionGeneration;
+      const slotDraftForm = element("form");
+      const draftStartLabel = element("label", "Proposed interview start (local time) "), draftStart = element("input");
+      const draftEndLabel = element("label", "Proposed interview end (local time) "), draftEnd = element("input");
+      const draftInterviewerLabel = element("label", "Proposed interviewer "), draftInterviewer = element("input");
+      draftStart.type = draftEnd.type = "datetime-local";
+      draftStart.required = draftEnd.required = draftInterviewer.required = true;
+      draftInterviewer.maxLength = 120;
+      draftStartLabel.append(draftStart); draftEndLabel.append(draftEnd); draftInterviewerLabel.append(draftInterviewer);
+      const proposeSlot = element("button", "Propose advancement and private slot"); proposeSlot.type = "submit";
+      slotDraftForm.append(draftStartLabel, draftEndLabel, draftInterviewerLabel,
+        element("p", "The candidate must book the slot after HR approves the proposal."), proposeSlot);
+      slotDraftForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const generation = sessionGeneration;
+        action(event.submitter, async () => {
+          ensureCurrent(draftGeneration);
+          const from = new Date(draftStart.value), to = new Date(draftEnd.value);
+          if (!draftStart.value || !draftEnd.value || Number.isNaN(from.valueOf()) || Number.isNaN(to.valueOf())) throw new Error("Enter valid slot times.");
+          const result = await api(`/api/applications/${application.id}/graph-review-drafts`, jsonPost({
+            policy_question: graphQuestion.value, intent: "advance",
+            slot: {start_at: from.toISOString(), end_at: to.toISOString(), interviewer: draftInterviewer.value}
+          }));
+          ensureCurrent(generation); slotDraftForm.reset(); graphQuestion.value = "";
+          draftPanel.replaceChildren(element("p", `Saved proposal ${result.id}. Reopen to review and approve or discard.`));
+        });
+      });
       card.append(button("Save supervised review", async () => {
+        ensureCurrent(draftGeneration);
         const generation = sessionGeneration;
         const result = await api(`/api/applications/${application.id}/graph-review-drafts`, jsonPost({policy_question: graphQuestion.value}));
         ensureCurrent(generation); graphQuestion.value = "";
         draftPanel.replaceChildren(element("p", `Saved review ${result.id}. Reopen it to acknowledge or discard.`));
       }), button("Propose advancement for HR approval", async () => {
+        ensureCurrent(draftGeneration);
         const generation = sessionGeneration;
         const result = await api(`/api/applications/${application.id}/graph-review-drafts`, jsonPost({policy_question: graphQuestion.value, intent: "advance"}));
         ensureCurrent(generation); graphQuestion.value = "";
         draftPanel.replaceChildren(element("p", `Saved proposal ${result.id}. Reopen to review and approve or discard.`));
       }), button("Open saved reviews", async () => {
+        ensureCurrent(draftGeneration);
         const generation = sessionGeneration;
         const drafts = await api(`/api/applications/${application.id}/graph-review-drafts`);
         ensureCurrent(generation);
@@ -372,17 +402,38 @@ function renderApplications(applications, jobs) {
         for (const draft of drafts) {
           const row = element("div"); row.append(element("p", `Review ${draft.id}: ${draft.status}`));
           row.append(button("Open review", async () => {
+            ensureCurrent(generation);
             const current = sessionGeneration;
             const opened = await api(`/api/graph-review-drafts/${draft.id}`);
             ensureCurrent(current);
             const view = element("div");
             view.append(element("pre", opened.stale ? "Sources or availability changed; start a new review." : JSON.stringify(opened.result, null, 2)));
+            if (!opened.stale && opened.slot) {
+              view.append(element("p", `Proposed private slot (UTC): ${opened.slot.start_at} to ${opened.slot.end_at}; interviewer: ${opened.slot.interviewer}`),
+                element("p", "Approval advances the application and reserves this slot; the candidate must still book it."));
+            }
             if (opened.status === "pending") {
               for (const reviewed of (opened.stale ? [false] : [true, false])) {
-                view.append(button(reviewed ? (opened.intent === "advance" ? "Approve advancement" : "Acknowledge review") : "Discard review", async () => {
+                view.append(button(reviewed ? (opened.intent === "advance" ? (opened.slot ? "Approve advancement and private slot" : "Approve advancement") : "Acknowledge review") : "Discard review", async () => {
+                  ensureCurrent(current);
                   const active = sessionGeneration;
-                  await api(`/api/graph-review-drafts/${draft.id}/resume`, jsonPost({reviewed}));
-                  ensureCurrent(active); draftPanel.replaceChildren(element("p", reviewed ? (opened.intent === "advance" ? "Application advanced by HR." : "Review acknowledged. No decision made.") : "Review discarded."));
+                  try { await api(`/api/graph-review-drafts/${draft.id}/resume`, jsonPost({reviewed})); }
+                  catch (error) {
+                    ensureCurrent(active);
+                    draftPanel.replaceChildren(element("p", "The review could not be completed. Reopen it before trying again."));
+                    throw error;
+                  }
+                  ensureCurrent(active);
+                  const confirmation = reviewed ? (opened.intent === "advance" ? (opened.slot ? "Application advanced and private slot reserved. The candidate must book it." : "Application advanced by HR.") : "Review acknowledged. No decision made.") : "Review discarded.";
+                  if (reviewed && opened.intent === "advance") {
+                    try { await refresh(); ensureCurrent(active); }
+                    catch (error) {
+                      ensureCurrent(active);
+                      message(`${confirmation} Refresh the page to update the displayed status.`);
+                      return;
+                    }
+                    message(confirmation);
+                  } else draftPanel.replaceChildren(element("p", confirmation));
                 }));
               }
             }
@@ -390,7 +441,7 @@ function renderApplications(applications, jobs) {
           })); list.append(row);
         }
         draftPanel.replaceChildren(list);
-      }), draftPanel);
+      }), slotDraftForm, draftPanel);
       const feedback = element("div");
       card.append(button("Manage candidate feedback", () => manageFeedback(application, feedback)), feedback);
       const label = element("label", "Select for HR comparison ");

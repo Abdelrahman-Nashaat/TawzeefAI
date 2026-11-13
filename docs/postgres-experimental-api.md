@@ -16,8 +16,8 @@ The advance draft API may additionally receive a `slot` object with `start_at`,
 when HR reopens it. Approving the unchanged draft rechecks candidate eligibility
 and time conflicts, then advances the application and creates a private slot
 in the same transaction. The candidate must still book that slot. Discarding a
-draft makes neither change. This optional proposal is currently API-only;
-no email or calendar action is performed. Slot proposal details persist in the
+draft makes neither change. HR can create and review this proposal in the
+experimental browser interface. No email or calendar action is performed. Slot proposal details persist in the
 demo database, so use synthetic information.
 
 The demo also supports saved, role-scoped extractive knowledge conversations.
