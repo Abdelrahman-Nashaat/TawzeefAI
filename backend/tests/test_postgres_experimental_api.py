@@ -390,6 +390,7 @@ def test_pdf_session_revoked_during_extraction(mode, monkeypatch, reason):
 def test_pdf_processing_saturation_and_slot_cleanup(mode, monkeypatch):
     import threading
     from concurrent.futures import ThreadPoolExecutor
+
     import app.postgres_knowledge as knowledge
 
     content = pdf_bytes()
@@ -445,7 +446,9 @@ def test_pdf_processing_saturation_and_slot_cleanup(mode, monkeypatch):
 def test_pdf_cancellation_holds_capacity_until_worker_finishes(mode, monkeypatch):
     import asyncio
     import threading
+
     from fastapi import HTTPException
+
     import app.postgres_knowledge as knowledge
 
     content = pdf_bytes()
@@ -502,7 +505,9 @@ def test_pdf_cancellation_holds_capacity_until_worker_finishes(mode, monkeypatch
 
 def test_pdf_slot_cleanup_during_buffer_cancellation_and_submit_failure(mode, monkeypatch):
     import asyncio
+
     from fastapi import HTTPException
+
     import app.postgres_knowledge as knowledge
     monkeypatch.setattr(knowledge, '_PDF_EXECUTOR_FAILED', False)
     content = pdf_bytes()
@@ -545,7 +550,9 @@ def test_pdf_thread_start_failure_never_runs_orphan(mode, monkeypatch):
     import asyncio
     import threading
     from concurrent.futures import ThreadPoolExecutor
+
     from fastapi import HTTPException
+
     import app.postgres_knowledge as knowledge
 
     content = pdf_bytes()
