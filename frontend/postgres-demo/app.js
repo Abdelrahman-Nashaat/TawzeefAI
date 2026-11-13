@@ -737,6 +737,9 @@ function showConversationTurns(items) {
     block.append(element('h4', `Question: ${item.question}`));
     if (item.mode === 'source_unavailable') block.append(element('p', 'A saved source is no longer available.'));
     else if (item.mode === 'abstain') block.append(element('p', 'No supporting excerpt found.'));
+    if (item.mode === 'groq' && item.answer) {
+      block.append(element('p', 'Generated answer: verify each claim against its source.'), element('p', item.answer));
+    }
     for (const source of item.sources || []) {
       block.append(element('h4', `${source.title}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
     }
@@ -793,9 +796,12 @@ $("conversation-form").addEventListener('submit', event => {
   action(event.submitter, async () => {
     const session = sessionGeneration, view = conversationGeneration, id = conversationId;
     if (id === null) throw new Error('Select a conversation first.');
-    await api(`/api/knowledge/conversations/${id}/turns`, jsonPost({question: $("conversation-question").value, job_id: $("conversation-job-filter").value.trim() || null, section: $("conversation-section-filter").value.trim() || null}));
+    const generate = event.submitter?.value === 'generate';
+    if (generate && !window.confirm('Send this question, the previous question in this conversation, and authorized excerpts to Groq? Use synthetic data only.')) return;
+    const saved = await api(`/api/knowledge/conversations/${id}/turns`, jsonPost({question: $("conversation-question").value, job_id: $("conversation-job-filter").value.trim() || null, section: $("conversation-section-filter").value.trim() || null, generate_answer: generate}));
     ensureCurrent(session); if (view !== conversationGeneration || id !== conversationId) return;
     $("conversation-form").reset(); await selectConversation(id);
+    ensureCurrent(session); if (conversationId === id) message(saved.notice);
   });
 });
 $("knowledge-add").addEventListener("submit", (event) => {

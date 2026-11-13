@@ -56,7 +56,7 @@ draft makes neither change. HR can create and review this proposal in the
 experimental browser interface. No email or calendar action is performed. Slot proposal details persist in the
 demo database, so use synthetic information.
 
-The demo also supports saved, role-scoped extractive knowledge conversations.
+The demo also supports saved, role-scoped knowledge conversations.
 Each account may create up to 100 conversations with up to 100 questions each.
 Questions and source identifiers with fingerprints are stored in PostgreSQL;
 source passages are reconstructed only while the documents remain active,
@@ -64,9 +64,21 @@ unchanged, and accessible to the account's current role. Changed or revoked
 sources make that saved turn unavailable. Conversations are not portable across
 role changes. Owners can delete conversations for their current role and their
 saved questions through the browser or API. Use only
-synthetic questions and documents. Saved conversations do not use hybrid search,
-model-generated answers, or an external service, and excerpt relevance is not
-verified.
+synthetic questions and documents. By default saved conversations use extractive
+search only. An optional per-turn button asks for consent to send the current
+question, previous question and currently authorized lexical excerpts to Groq.
+It requires the same PostgreSQL Groq configuration as one-off search. The
+generated answer is stored with the turn only when its citation format passes
+validation; source access and fingerprints are rechecked after the provider
+call and whenever the saved turn is reopened. If a source changes or becomes
+unavailable, the saved answer is hidden. The conversation and saved generated
+answers are deleted together. Provider errors or invalid citations fall back to
+excerpts; title-only matches are never sent. Valid citations do not prove factual
+support, and the previous question is untrusted context rather than evidence.
+The database transaction is released before the external request, so a source
+revoked after the initial check may already be sent; if it changes before the
+response is committed, the answer is rejected. This local demo is for synthetic
+data only. Saved conversations do not use hybrid search.
 
 This opt-in development slice is for synthetic data only. It is not the full
 application or a migration. It stores demo users, jobs, sessions, applications,

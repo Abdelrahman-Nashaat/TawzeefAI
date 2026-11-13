@@ -5,11 +5,15 @@ from currently authorized documents when a conversation is read.
 """
 import hashlib
 import json
+import os
+import re
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
 from pydantic import Field
 
+from app import postgres_knowledge as knowledge
+from app.ai_provider import ProviderUnavailable
 from app.auth import User
 from app.knowledge import ROLE_AUDIENCES, Source, _rank_lexical, _tokens
 from app.postgres_knowledge import Metadata, _unique_policy_title, source_dict
@@ -26,11 +30,13 @@ DDL = (
         question text NOT NULL, sources_json text NOT NULL,
         created_at timestamptz NOT NULL DEFAULT clock_timestamp())''',
     '''CREATE INDEX IF NOT EXISTS knowledge_turns_conversation ON knowledge_conversation_turns(conversation_id,id)''',
+    '''ALTER TABLE knowledge_conversation_turns ADD COLUMN IF NOT EXISTS generated_answer text''',
 )
 
 
 class Turn(Metadata):
     question: str = Field(min_length=1, max_length=2000)
+    generate_answer: bool = False
 
 
 def _digest(row):
@@ -94,34 +100,83 @@ def install_routes(app, connect, authenticate, authorize_locked):
         question = payload.question.strip()
         if not question:
             raise HTTPException(status_code=422, detail='Question is required')
+        if payload.generate_answer and (os.environ.get('TAWZEEF_POSTGRES_ENABLE_GROQ') != '1'
+                                        or not os.environ.get('GROQ_API_KEY', '').strip()):
+            raise HTTPException(status_code=503, detail='External answer generation is not configured')
+        acquired = False
+        try:
+            if payload.generate_answer:
+                acquired = knowledge._GENERATION_BUSY.acquire(blocking=False)
+                if not acquired:
+                    raise HTTPException(status_code=429, detail='External answer generation is busy')
+            return save_turn(conversation_id, payload, request, user, question)
+        finally:
+            if acquired:
+                knowledge._GENERATION_BUSY.release()
+
+    def save_turn(conversation_id, payload, request, user, question):
         with connect() as db:
             authorize_locked(db, request, user)
             _owner(db, conversation_id, user)
-            if db.execute('SELECT count(*) AS n FROM knowledge_conversation_turns WHERE conversation_id=%s',
-                          (conversation_id,)).fetchone()['n'] >= 100:
+            turns = db.execute('SELECT id,question FROM knowledge_conversation_turns WHERE conversation_id=%s ORDER BY id',
+                               (conversation_id,)).fetchall()
+            if len(turns) >= 100:
                 raise HTTPException(status_code=409, detail='Conversation turn limit reached')
+            previous_id = turns[-1]['id'] if turns else None
+            previous_question = turns[-1]['question'] if turns else ''
             rows = _documents(db, user.role, payload.job_id, payload.section)
             sources = [Source(id=f"pg-doc-{r['id']}", title=r['title'], text=r['body'], page=r['page']) for r in rows]
             by_id = {f"pg-doc-{row['id']}": row for row in rows}
             ranked = _rank_lexical(_tokens(question), sources)[:3]
+            lexical_match = bool(ranked)
             if not ranked:
                 ranked = _unique_policy_title(question, sources)
             refs = [{'id': by_id[source.id]['id'], 'digest': _digest(by_id[source.id])} for _, source in ranked]
-            row = db.execute('''INSERT INTO knowledge_conversation_turns(conversation_id,question,sources_json)
-                VALUES (%s,%s,%s) RETURNING id,created_at''',
-                (conversation_id, question, json.dumps(refs, separators=(',', ':')))).fetchone()
+            authorize_locked(db, request, user)
+
+        answer = None
+        notice = 'Unverified excerpts from synthetic documents; no external service was called.'
+        if payload.generate_answer and lexical_match:
+            try:
+                generated = knowledge.generate_with_groq(question, [
+                    {'id': source.id, 'title': source.title, 'text': source.text[:4000]} for _, source in ranked
+                ], previous_question=previous_question)
+                generated = re.sub(r'【([^【】\[\]\n]{1,128})】', r'[\1]', generated)
+                if '【' not in generated and '】' not in generated and knowledge._has_cited_sentences(generated, [s for _, s in ranked]):
+                    answer = generated
+                    notice = 'Generated using excerpts sent to Groq; verify all claims against the cited sources.'
+                else:
+                    notice = 'Generated citations could not be verified; showing unverified excerpts.'
+            except ProviderUnavailable:
+                notice = 'External generation was unavailable; the question and excerpts may have been sent. Showing unverified excerpts.'
+        elif payload.generate_answer and ranked:
+            notice = 'Only a title match was found; nothing was sent to Groq. Review the unverified source.'
+
+        with connect() as db:
+            authorize_locked(db, request, user)
+            _owner(db, conversation_id, user)
+            current_turns = db.execute('SELECT id FROM knowledge_conversation_turns WHERE conversation_id=%s ORDER BY id',
+                                       (conversation_id,)).fetchall()
+            if len(current_turns) != len(turns) or (current_turns[-1]['id'] if current_turns else None) != previous_id:
+                raise HTTPException(status_code=409, detail='Conversation changed; review it before retrying')
+            current_docs = {row['id']: row for row in _documents(db, user.role, payload.job_id, payload.section)}
+            if any(ref['id'] not in current_docs or _digest(current_docs[ref['id']]) != ref['digest'] for ref in refs):
+                raise HTTPException(status_code=409, detail='A source changed; review it before retrying')
+            row = db.execute('''INSERT INTO knowledge_conversation_turns(conversation_id,question,sources_json,generated_answer)
+                VALUES (%s,%s,%s,%s) RETURNING id,created_at''',
+                (conversation_id, question, json.dumps(refs, separators=(',', ':')), answer)).fetchone()
             authorize_locked(db, request, user)
             return {'id': row['id'], 'created_at': row['created_at'], 'question': question,
-                    'mode': 'extractive' if refs else 'abstain',
+                    'mode': 'groq' if answer else ('extractive' if refs else 'abstain'), 'answer': answer,
                     'sources': [source_dict(source, by_id) for _, source in ranked],
-                    'notice': 'Unverified excerpts from synthetic documents; no external service was called.'}
+                    'notice': notice}
 
     @app.get('/api/knowledge/conversations/{conversation_id}/turns')
     def read(conversation_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
         with connect() as db:
             authorize_locked(db, request, user)
             _owner(db, conversation_id, user)
-            turns = db.execute('''SELECT id,question,sources_json,created_at FROM knowledge_conversation_turns
+            turns = db.execute('''SELECT id,question,sources_json,generated_answer,created_at FROM knowledge_conversation_turns
                 WHERE conversation_id=%s ORDER BY id LIMIT 100 FOR SHARE''', (conversation_id,)).fetchall()
             docs = {r['id']: r for r in _documents(db, user.role)}
             output = []
@@ -137,8 +192,10 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 excerpts = [source_dict(Source(id=f"pg-doc-{ref['id']}", title=docs[ref['id']]['title'],
                              page=docs[ref['id']]['page'], text=docs[ref['id']]['body']),
                              {f"pg-doc-{ref['id']}": docs[ref['id']]}) for ref in refs] if available else []
+                answer = turn['generated_answer'] if available and excerpts else None
                 output.append({'id': turn['id'], 'question': turn['question'], 'created_at': turn['created_at'],
-                               'mode': ('extractive' if excerpts else 'abstain') if available else 'source_unavailable',
+                               'mode': ('groq' if answer else ('extractive' if excerpts else 'abstain')) if available else 'source_unavailable',
+                               'answer': answer,
                                'sources': excerpts})
             authorize_locked(db, request, user)
             return {'items': output, 'notice': 'Unverified excerpts from currently accessible synthetic documents.'}
