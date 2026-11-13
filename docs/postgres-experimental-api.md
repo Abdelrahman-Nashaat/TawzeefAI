@@ -112,6 +112,10 @@ injection; compare the answer with the source. Generated answers are not stored
 in saved conversations. Provider access is limited to one request per process;
 authorized source rows remain locked through the call, which can delay document
 changes for the provider timeout. Other server processes have separate limits.
+On 13 November 2026, one synthetic candidate query through the PostgreSQL API
+returned a generated answer with a permitted page-2 citation using the live
+provider. This single development check is not an answer-quality evaluation or
+evidence of reliability across policies, languages, or access scenarios.
 Document changes are audited without storing document text in the audit row.
 Documents are limited to 4,000 characters each and 500 active documents; the
 local interface accepts synthetic material only.
