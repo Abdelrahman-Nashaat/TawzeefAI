@@ -217,13 +217,16 @@ are unverified leads, not answers or proof of support. This path requires the
 pgvector extension, `TAWZEEF_POSTGRES_KNOWLEDGE_HYBRID=1`, and
 `TAWZEEF_EMBEDDING_MODEL_DIR`. See `local-semantic-experiment.md` for the model.
 The application never installs the database extension. It limits each query to
-200 authorized passages, re-embeds them on every request, uses an uncalibrated
+200 authorized passages, reuses vectors when their passage text and embedding
+version are unchanged, uses an uncalibrated
 0.80 similarity cutoff, and returns 503 if the
 optional path is unavailable; the standard lexical search remains available.
 Embeddings are retained in `knowledge_vectors` in the experimental schema,
 including vectors of later-deactivated documents, until the schema is removed.
 Search always restricts vector IDs to current authorized active documents. Use
 only synthetic data. No external model or network service is called.
+Changing the pinned model, tokenizer, pooling or passage prefix requires bumping
+the embedding version in the server code so cached passages are re-embedded.
 New experimental schemas include an `employee` demo account using the same
 demo-password convention as other accounts. Existing schemas are not reseeded;
 create a new disposable schema to use that account if it is absent.

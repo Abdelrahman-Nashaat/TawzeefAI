@@ -30,6 +30,9 @@ from app.knowledge_documents import annotate_pdf_selected_pages, pdf_preview_dig
 _HYBRID_BUSY = BoundedSemaphore(1)
 _GENERATION_BUSY = BoundedSemaphore(1)
 _HYBRID_MAX_PASSAGES = 200
+# Bump when the pinned embedding model, tokenizer, pooling, or passage prefix
+# changes. Older revision strings safely miss and are recomputed on demand.
+_PASSAGE_EMBEDDING_VERSION = 'multilingual-e5-small-onnx-v1'
 _PDF_EXTRACTION_SLOTS = BoundedSemaphore(2)
 _PDF_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix='knowledge-pdf')
 _PDF_SUBMIT_LOCK = Lock()
@@ -137,22 +140,28 @@ def _semantic_candidates(db, sources, question, model):
     if not extension:
         raise RuntimeError('pgvector is unavailable')
     namespace = sql.Identifier(extension['nspname'])
-    vectors = model.encode([source.text for source in sources], query=False)
-    query = model.encode([question], query=True)
-    if len(vectors) != len(sources) or len(query) != 1:
-        raise ValueError('Embedding count does not match')
     # Serialize lazy table creation and index refreshes within this schema.
     db.execute("SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext('knowledge-vector-v1'))")
     db.execute(sql.SQL('''CREATE TABLE IF NOT EXISTS knowledge_vectors (
         source_id text PRIMARY KEY, revision text NOT NULL, embedding {}.vector(384) NOT NULL)''').format(namespace))
-    allowed = []
-    for source, vector in zip(sources, vectors, strict=True):
-        revision = hashlib.sha256(source.text.encode('utf-8')).hexdigest()
-        allowed.append(source.id)
+    allowed = [source.id for source in sources]
+    if len(set(allowed)) != len(allowed):
+        raise ValueError('Duplicate source identifiers')
+    revisions = {source.id: hashlib.sha256(
+        (_PASSAGE_EMBEDDING_VERSION + '\0' + source.text).encode('utf-8')).hexdigest()
+        for source in sources}
+    cached = {row['source_id']: row['revision'] for row in db.execute(
+        'SELECT source_id, revision FROM knowledge_vectors WHERE source_id = ANY(%s)', (allowed,)).fetchall()}
+    missing = [source for source in sources if cached.get(source.id) != revisions[source.id]]
+    vectors = model.encode([source.text for source in missing], query=False) if missing else []
+    query = model.encode([question], query=True)
+    if len(vectors) != len(missing) or len(query) != 1:
+        raise ValueError('Embedding count does not match')
+    for source, vector in zip(missing, vectors, strict=True):
         db.execute(sql.SQL('''INSERT INTO knowledge_vectors(source_id,revision,embedding)
             VALUES (%s,%s,%s::{}.vector) ON CONFLICT(source_id) DO UPDATE
             SET revision=EXCLUDED.revision,embedding=EXCLUDED.embedding''').format(namespace),
-            (source.id, revision, _vector_literal(vector)))
+            (source.id, revisions[source.id], _vector_literal(vector)))
     rows = db.execute(sql.SQL('''SELECT source_id, embedding OPERATOR({}.<=>) %s::{}.vector AS distance
         FROM knowledge_vectors WHERE source_id = ANY(%s) ORDER BY distance,source_id LIMIT 3''').format(
             namespace, namespace), (_vector_literal(query[0]), allowed)).fetchall()
