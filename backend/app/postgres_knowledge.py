@@ -16,8 +16,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.auth import User
 from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_pdf_pages
-from app.knowledge_documents import annotate_pdf_selected_pages, pdf_preview_digest
 from app.knowledge import ROLE_AUDIENCES, Source, _document_passages, _rank_lexical, _tokens
+from app.knowledge_documents import annotate_pdf_selected_pages, pdf_preview_digest
 
 _HYBRID_BUSY = BoundedSemaphore(1)
 _HYBRID_MAX_PASSAGES = 200
@@ -246,7 +246,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
         try:
             selected = json.loads(marks)
             if not isinstance(selected, list):
-                raise ValueError('Invalid heading selection')
+                raise TypeError('Invalid heading selection')
             if selected:
                 annotated = annotate_pdf_selected_pages(pages, selected)
             else:
