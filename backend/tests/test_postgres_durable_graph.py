@@ -9,7 +9,10 @@ from fastapi.testclient import TestClient
 from test_postgres_experimental_api import db_for, login, mode, resume_bytes  # noqa: F401
 from test_postgres_scheduling import wait_for_lock
 
+pytest.importorskip('langgraph.checkpoint.postgres')
+
 from app.main import create_app
+from app.postgres_graph_review import _approval_config, _approval_graph
 
 
 def create_application(candidate):
@@ -114,6 +117,14 @@ def test_draft_persists_and_acknowledges_without_decision(mode):  # noqa: F811
         response = hr.post(f'/api/applications/{app_id}/graph-review-drafts', json={'policy_question': 'leave policy'})
         assert response.status_code == 201, response.text
         draft_id = response.json()['id']
+    # A fresh connection can inspect the actual LangGraph interrupt, not just
+    # the application-level draft. Source text and questions are not in state.
+    with db_for(mode) as db:
+        state = _approval_graph(db).get_state(_approval_config(draft_id))
+        assert state.next == ('human_review',)
+        assert len(state.interrupts) == 1
+        assert set(state.values) == {'draft_id', 'fingerprint', 'intent'}
+        assert state.values['draft_id'] == draft_id
     with TestClient(create_app(seed_demo=True)) as hr:
         login(hr, 'hr')
         assert hr.get(f'/api/applications/{app_id}/graph-review-drafts').json()[0]['id'] == draft_id
@@ -122,8 +133,77 @@ def test_draft_persists_and_acknowledges_without_decision(mode):  # noqa: F811
         assert hr.post(f'/api/graph-review-drafts/{draft_id}/resume', json={'reviewed': True}).json()['status'] == 'reviewed'
         assert hr.post(f'/api/graph-review-drafts/{draft_id}/resume', json={'reviewed': True}).status_code == 409
     with db_for(mode) as db:
+        state = _approval_graph(db).get_state(_approval_config(draft_id))
+        assert not state.next and state.values['reviewed'] is True
         assert db.execute('SELECT status FROM applications WHERE id=%s', (app_id,)).fetchone()['status'] == 'submitted'
         assert db.execute("SELECT count(*) AS n FROM audit_events WHERE application_id=%s AND action='graph_review_reviewed'", (app_id,)).fetchone()['n'] == 1
+
+
+def test_missing_checkpoint_fails_closed(mode):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
+        app_id = create_application(candidate)
+        login(hr, 'hr')
+        draft_id = hr.post(f'/api/applications/{app_id}/graph-review-drafts', json={}).json()['id']
+        with db_for(mode) as db:
+            db.execute('DELETE FROM checkpoints WHERE thread_id=%s', (f'graph-review-{draft_id}',))
+        response = hr.post(f'/api/graph-review-drafts/{draft_id}/resume', json={'reviewed': True})
+        assert response.status_code == 409, response.text
+        with db_for(mode) as db:
+            assert db.execute('SELECT status FROM graph_review_drafts WHERE id=%s', (draft_id,)).fetchone()['status'] == 'pending'
+            assert db.execute("SELECT count(*) AS n FROM audit_events WHERE action='graph_review_reviewed'").fetchone()['n'] == 0
+
+
+def test_failed_commit_rolls_back_checkpoint_resume(mode):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True), raise_server_exceptions=False) as hr:
+        app_id = create_application(candidate)
+        login(hr, 'hr')
+        draft_id = hr.post(f'/api/applications/{app_id}/graph-review-drafts', json={}).json()['id']
+        with db_for(mode) as db:
+            db.execute("ALTER TABLE audit_events ADD CONSTRAINT reject_review CHECK (action <> 'graph_review_reviewed')")
+        assert hr.post(f'/api/graph-review-drafts/{draft_id}/resume', json={'reviewed': True}).status_code == 500
+        with db_for(mode) as db:
+            state = _approval_graph(db).get_state(_approval_config(draft_id))
+            assert state.next == ('human_review',) and len(state.interrupts) == 1
+            assert db.execute('SELECT status FROM graph_review_drafts WHERE id=%s', (draft_id,)).fetchone()['status'] == 'pending'
+            db.execute('ALTER TABLE audit_events DROP CONSTRAINT reject_review')
+        assert hr.post(f'/api/graph-review-drafts/{draft_id}/resume', json={'reviewed': True}).status_code == 200
+
+
+def test_failed_final_audit_rolls_back_advance_slot_and_checkpoint(mode):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True), raise_server_exceptions=False) as hr:
+        app_id = create_application(candidate)
+        login(hr, 'hr')
+        assess(hr, app_id)
+        response = hr.post(f'/api/applications/{app_id}/graph-review-drafts',
+                           json={'intent': 'advance', 'slot': slot_proposal()})
+        assert response.status_code == 201, response.text
+        draft_id = response.json()['id']
+        with db_for(mode) as db:
+            db.execute("ALTER TABLE audit_events ADD CONSTRAINT reject_review CHECK (action <> 'graph_review_reviewed')")
+        assert hr.post(f'/api/graph-review-drafts/{draft_id}/resume', json={'reviewed': True}).status_code == 500
+        with db_for(mode) as db:
+            state = _approval_graph(db).get_state(_approval_config(draft_id))
+            assert state.next == ('human_review',) and len(state.interrupts) == 1
+            assert db.execute('SELECT status FROM applications WHERE id=%s', (app_id,)).fetchone()['status'] == 'submitted'
+            assert db.execute('SELECT status FROM graph_review_drafts WHERE id=%s', (draft_id,)).fetchone()['status'] == 'pending'
+            assert db.execute('SELECT count(*) AS n FROM interview_slots').fetchone()['n'] == 0
+            assert db.execute("SELECT count(*) AS n FROM audit_events WHERE action='decision'").fetchone()['n'] == 0
+            db.execute('ALTER TABLE audit_events DROP CONSTRAINT reject_review')
+        assert hr.post(f'/api/graph-review-drafts/{draft_id}/resume', json={'reviewed': True}).status_code == 200
+        with db_for(mode) as db:
+            assert db.execute('SELECT status FROM applications WHERE id=%s', (app_id,)).fetchone()['status'] == 'advanced'
+            assert db.execute('SELECT count(*) AS n FROM interview_slots').fetchone()['n'] == 1
+
+
+def test_legacy_draft_can_still_be_discarded(mode):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
+        app_id = create_application(candidate)
+        login(hr, 'hr')
+        draft_id = hr.post(f'/api/applications/{app_id}/graph-review-drafts', json={}).json()['id']
+        with db_for(mode) as db:
+            db.execute('UPDATE graph_review_drafts SET checkpoint_version=0 WHERE id=%s', (draft_id,))
+            db.execute('DELETE FROM checkpoints WHERE thread_id=%s', (f'graph-review-{draft_id}',))
+        assert hr.post(f'/api/graph-review-drafts/{draft_id}/resume', json={'reviewed': False}).json()['status'] == 'discarded'
 
 
 def test_changed_source_blocks_acknowledgment_but_allows_discard(mode):  # noqa: F811

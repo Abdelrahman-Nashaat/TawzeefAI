@@ -8,8 +8,14 @@ to remain unchanged. A stale review can be discarded. An advance proposal is
 available for a submitted application with a current HR rubric assessment; it
 advances only after explicit HR approval and records the decision atomically.
 An ordinary review acknowledgment makes no recruitment decision. This is an
-application-level durable review, not a persisted LangGraph checkpoint. Use
-synthetic information only; questions remain until the demo database is removed.
+LangGraph approval interrupt persisted with the PostgreSQL checkpointer. The
+checkpoint stores the draft ID, intent and fingerprint, but not graph output,
+source passages or the question. Approval resumes the checkpoint in the same
+database transaction as the HR action and audit, after rechecking current
+sources and authorization. Reviews made before checkpoint support retain their
+earlier application-level behavior. The five specialist outputs are recomputed;
+they are not themselves durable graph checkpoints. Use synthetic information
+only; questions and checkpoint records remain until the demo database is removed.
 
 The advance draft API may additionally receive a `slot` object with `start_at`,
 `end_at`, and `interviewer`. The proposal is saved with the draft and returned
@@ -44,8 +50,8 @@ in this mode.
 
 HR can run a read-only LangGraph review from an application. Five deterministic
 specialists summarize parsed sections, the current audited rubric range, status,
-available slots and optional lexical policy sources. No graph state is saved,
-no provider is called, and the graph cannot advance, reject, book or send mail.
+available slots and optional lexical policy sources. This immediate review does
+not save graph state or call a provider, and cannot advance, reject, book or send mail.
 Availability is a preview; refresh and recheck before a separate booking. This
 partial path does not implement the full multi-agent workflow in the slides.
 

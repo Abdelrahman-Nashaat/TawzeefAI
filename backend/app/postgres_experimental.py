@@ -22,6 +22,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg import sql
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
@@ -108,6 +109,14 @@ class Login(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+def _acquire_schema_lock(db, schema):
+    deadline = time.monotonic() + 30
+    while not db.execute('SELECT pg_try_advisory_lock(hashtext(%s)) AS locked', (schema,)).fetchone()['locked']:
+        if time.monotonic() >= deadline:
+            raise RuntimeError('Timed out waiting for experimental schema initialization')
+        time.sleep(0.05)
+
+
 def create_postgres_app(*, seed_demo: bool) -> FastAPI:
     if not seed_demo:
         raise RuntimeError('PostgreSQL experimental mode requires synthetic demo mode')
@@ -124,55 +133,64 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app):
-        # Never claim an existing schema not explicitly created by this mode.
-        with psycopg.connect(dsn, row_factory=dict_row) as db:
-            db.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', (schema,))
-            exists = db.execute('SELECT 1 FROM pg_namespace WHERE nspname=%s', (schema,)).fetchone()
-            if exists:
-                marker = db.execute('''SELECT 1 FROM information_schema.tables
-                    WHERE table_schema=%s AND table_name='metadata' ''', (schema,)).fetchone()
-                if not marker:
-                    raise RuntimeError('Experimental schema exists without a valid marker')
-                db.execute(sql.SQL('SET LOCAL search_path TO {}, pg_catalog').format(sql.Identifier(schema)))
-                versions = db.execute('SELECT version FROM metadata').fetchall()
-                if len(versions) != 1 or versions[0]['version'] != _SCHEMA_VERSION:
-                    raise RuntimeError('Unsupported experimental PostgreSQL schema version')
-            else:
-                db.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(schema)))
-                db.execute(sql.SQL('REVOKE ALL ON SCHEMA {} FROM PUBLIC').format(sql.Identifier(schema)))
-                db.execute(sql.SQL('SET LOCAL search_path TO {}, pg_catalog').format(sql.Identifier(schema)))
-                for statement in _DDL:
-                    db.execute(statement)
-                db.execute('INSERT INTO metadata VALUES (%s)', (_SCHEMA_VERSION,))
-                for username, role in (('candidate','candidate'), ('candidate2','candidate'), ('employee','employee'), ('hr','hr')):
-                    db.execute('INSERT INTO users(username,display_name,role,password_hash) VALUES (%s,%s,%s,%s)',
-                               (username, 'Demo ' + username, role, hash_password(username + '-demo-only')))
-                jobs = json.loads(FIXTURE_FILE.read_text(encoding='utf-8'))['jobs']
-                for job in jobs:
-                    db.execute('INSERT INTO jobs VALUES (%s,%s,%s,%s,%s,%s)',
-                               (job['id'], job['title'], job['location'],
-                                *(json.dumps(job[key], ensure_ascii=False) for key in
-                                  ('required_skills','preferred_skills','responsibilities'))))
-            for statement in SCHEDULING_DDL:
-                db.execute(statement)
-            db.execute(SUBMISSION_NOTICE_DDL)
-            db.execute(RUBRIC_DDL)
-            db.execute(HISTORY_DDL)
-            db.execute(HISTORY_INDEX)
-            db.execute(FEEDBACK_DDL)
-            db.execute(KNOWLEDGE_DDL)
-            db.execute('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS job_id text')
-            db.execute('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS section text')
-            db.execute('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS source_sha256 text')
-            db.execute(KNOWLEDGE_AUDIT_DDL)
-            for statement in CONVERSATION_DDL:
-                db.execute(statement)
-            db.execute(JOB_AUDIT_DDL)
-            db.execute(GRAPH_DRAFT_DDL)
-            db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS slot_proposal jsonb')
-            # Additive and idempotent for schemas created by earlier demo versions.
-            db.execute('''CREATE TABLE IF NOT EXISTS screening_history (
-                audit_event_id bigint PRIMARY KEY REFERENCES audit_events(id), score_json text NOT NULL)''')
+        # Use one session lock across schema and saver setup. Poll without a
+        # waiting PostgreSQL transaction: concurrent index creation must not
+        # wait on an advisory-lock waiter holding an old snapshot.
+        with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as db:
+            _acquire_schema_lock(db, schema)
+            try:
+                with db.transaction():
+                    exists = db.execute('SELECT 1 FROM pg_namespace WHERE nspname=%s', (schema,)).fetchone()
+                    if exists:
+                        marker = db.execute('''SELECT 1 FROM information_schema.tables
+                            WHERE table_schema=%s AND table_name='metadata' ''', (schema,)).fetchone()
+                        if not marker:
+                            raise RuntimeError('Experimental schema exists without a valid marker')
+                        db.execute(sql.SQL('SET LOCAL search_path TO {}, pg_catalog').format(sql.Identifier(schema)))
+                        versions = db.execute('SELECT version FROM metadata').fetchall()
+                        if len(versions) != 1 or versions[0]['version'] != _SCHEMA_VERSION:
+                            raise RuntimeError('Unsupported experimental PostgreSQL schema version')
+                    else:
+                        db.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(schema)))
+                        db.execute(sql.SQL('REVOKE ALL ON SCHEMA {} FROM PUBLIC').format(sql.Identifier(schema)))
+                        db.execute(sql.SQL('SET LOCAL search_path TO {}, pg_catalog').format(sql.Identifier(schema)))
+                        for statement in _DDL:
+                            db.execute(statement)
+                        db.execute('INSERT INTO metadata VALUES (%s)', (_SCHEMA_VERSION,))
+                        for username, role in (('candidate','candidate'), ('candidate2','candidate'), ('employee','employee'), ('hr','hr')):
+                            db.execute('INSERT INTO users(username,display_name,role,password_hash) VALUES (%s,%s,%s,%s)',
+                                       (username, 'Demo ' + username, role, hash_password(username + '-demo-only')))
+                        jobs = json.loads(FIXTURE_FILE.read_text(encoding='utf-8'))['jobs']
+                        for job in jobs:
+                            db.execute('INSERT INTO jobs VALUES (%s,%s,%s,%s,%s,%s)',
+                                       (job['id'], job['title'], job['location'],
+                                        *(json.dumps(job[key], ensure_ascii=False) for key in
+                                          ('required_skills','preferred_skills','responsibilities'))))
+                    for statement in SCHEDULING_DDL:
+                        db.execute(statement)
+                    db.execute(SUBMISSION_NOTICE_DDL)
+                    db.execute(RUBRIC_DDL)
+                    db.execute(HISTORY_DDL)
+                    db.execute(HISTORY_INDEX)
+                    db.execute(FEEDBACK_DDL)
+                    db.execute(KNOWLEDGE_DDL)
+                    db.execute('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS job_id text')
+                    db.execute('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS section text')
+                    db.execute('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS source_sha256 text')
+                    db.execute(KNOWLEDGE_AUDIT_DDL)
+                    for statement in CONVERSATION_DDL:
+                        db.execute(statement)
+                    db.execute(JOB_AUDIT_DDL)
+                    db.execute(GRAPH_DRAFT_DDL)
+                    db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS slot_proposal jsonb')
+                    db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS checkpoint_version integer NOT NULL DEFAULT 0')
+                    # Additive and idempotent for schemas created by earlier demo versions.
+                    db.execute('''CREATE TABLE IF NOT EXISTS screening_history (
+                        audit_event_id bigint PRIMARY KEY REFERENCES audit_events(id), score_json text NOT NULL)''')
+                db.execute(sql.SQL('SET search_path TO {}, pg_catalog').format(sql.Identifier(schema)))
+                PostgresSaver(db).setup()
+            finally:
+                db.execute('SELECT pg_advisory_unlock(hashtext(%s))', (schema,))
         yield
 
     app = FastAPI(title='TawzeefAI experimental PostgreSQL recruitment API', lifespan=lifespan)

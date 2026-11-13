@@ -21,6 +21,7 @@ semantic = [
     "tokenizers>=0.21,<1",
 ]
 postgres = [
+    "langgraph-checkpoint-postgres>=3,<4",
     "pgvector>=0.3,<1",
     "psycopg[binary]>=3.2,<4",
 ]

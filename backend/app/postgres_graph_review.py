@@ -1,15 +1,13 @@
-"""Read-only LangGraph review over the experimental PostgreSQL demo.
-
-The graph runs in a single request transaction. No graph state is persisted,
-and no node can change recruitment state or call an external service.
-"""
+"""Supervised LangGraph reviews for the experimental PostgreSQL demo."""
 import hashlib
 import json
 from datetime import UTC, datetime
 from typing import Annotated, Literal, TypedDict
 
 from fastapi import Depends, HTTPException, Request
+from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field, model_validator
 
 from app.auth import User
@@ -74,6 +72,59 @@ class ReviewState(TypedDict, total=False):
     status: dict
     scheduling: dict
     policy: dict
+
+
+class ApprovalState(TypedDict, total=False):
+    draft_id: int
+    fingerprint: str
+    intent: str
+    reviewed: bool
+
+
+def _approval_graph(db):
+    """Only identifiers and a digest enter checkpoint storage, never excerpts.
+
+    The caller holds the draft lock and uses this same connection for the
+    checkpoint and domain changes, so either both commit or neither does.
+    """
+    def human_review(state: ApprovalState):
+        reviewed = interrupt({'draft_id': state['draft_id'], 'intent': state['intent']})
+        if not isinstance(reviewed, bool):
+            raise TypeError('A boolean review decision is required')
+        return {'reviewed': reviewed}
+
+    graph = StateGraph(ApprovalState)
+    graph.add_node('human_review', human_review)
+    graph.add_edge(START, 'human_review')
+    graph.add_edge('human_review', END)
+    return graph.compile(checkpointer=PostgresSaver(db))
+
+
+def _approval_config(draft_id):
+    return {'configurable': {'thread_id': f'graph-review-{draft_id}'}}
+
+
+def _start_approval(db, draft_id, digest, intent):
+    result = _approval_graph(db).invoke(
+        {'draft_id': draft_id, 'fingerprint': digest, 'intent': intent},
+        _approval_config(draft_id), durability='sync')
+    if len(result.get('__interrupt__', ())) != 1:
+        raise RuntimeError('The review did not pause for HR approval')
+
+
+def _resume_approval(db, draft, reviewed):
+    graph = _approval_graph(db)
+    config = _approval_config(draft['id'])
+    state = graph.get_state(config)
+    if (state.next != ('human_review',) or
+            state.values.get('draft_id') != draft['id'] or
+            state.values.get('fingerprint') != draft['fingerprint'] or
+            state.values.get('intent') != draft['intent'] or
+            len(state.interrupts) != 1):
+        raise HTTPException(status_code=409, detail='Review checkpoint is unavailable or inconsistent')
+    result = graph.invoke(Command(resume=reviewed), config, durability='sync')
+    if result.get('reviewed') is not reviewed or result.get('__interrupt__'):
+        raise RuntimeError('The review did not finish correctly')
 
 
 def review_graph(db, application_id, question):
@@ -181,9 +232,10 @@ def install_routes(app, connect, authenticate, authorize_locked):
             if payload.slot:
                 validate_slot(db, application_id, payload.slot)
             digest = _bind_slot(digest, slot)
-            row = db.execute('''INSERT INTO graph_review_drafts(application_id,owner_id,question,fingerprint,intent,status,slot_proposal)
-                VALUES (%s,%s,%s,%s,%s,'pending',%s::jsonb) RETURNING id''',
+            row = db.execute('''INSERT INTO graph_review_drafts(application_id,owner_id,question,fingerprint,intent,status,slot_proposal,checkpoint_version)
+                VALUES (%s,%s,%s,%s,%s,'pending',%s::jsonb,1) RETURNING id''',
                 (application_id, user.id, payload.policy_question, digest, payload.intent, json.dumps(slot) if slot else None)).fetchone()
+            _start_approval(db, row['id'], digest, payload.intent)
             authorize_locked(db, request, user, 'hr')
             return {'id': row['id'], 'status': 'pending', 'intent': payload.intent, 'slot': slot, 'result': result}
 
@@ -248,6 +300,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
                             target_application_id,target_candidate_id) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
                             (slot.start_at, slot.end_at, slot.interviewer, key, user.id, draft['application_id'], candidate_id)).fetchone()
                         db.execute("INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (%s,%s,'created_private')", (created['id'], user.id))
+            if draft['checkpoint_version'] == 1:
+                _resume_approval(db, draft, payload.reviewed)
             status = 'reviewed' if payload.reviewed else 'discarded'
             db.execute('UPDATE graph_review_drafts SET status=%s WHERE id=%s', (status, draft_id))
             db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,%s,%s)",
