@@ -117,7 +117,7 @@ def _acquire_schema_lock(db, schema):
         time.sleep(0.05)
 
 
-def create_postgres_app(*, seed_demo: bool) -> FastAPI:
+def create_postgres_app(*, seed_demo: bool, require_new_schema: bool = False, on_schema_created=None) -> FastAPI:
     if not seed_demo:
         raise RuntimeError('PostgreSQL experimental mode requires synthetic demo mode')
     dsn = os.environ.get('TAWZEEF_POSTGRES_DSN')
@@ -141,6 +141,8 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
             try:
                 with db.transaction():
                     exists = db.execute('SELECT 1 FROM pg_namespace WHERE nspname=%s', (schema,)).fetchone()
+                    if exists and require_new_schema:
+                        raise RuntimeError('Experimental schema already exists')
                     if exists:
                         marker = db.execute('''SELECT 1 FROM information_schema.tables
                             WHERE table_schema=%s AND table_name='metadata' ''', (schema,)).fetchone()
@@ -187,6 +189,8 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
                     # Additive and idempotent for schemas created by earlier demo versions.
                     db.execute('''CREATE TABLE IF NOT EXISTS screening_history (
                         audit_event_id bigint PRIMARY KEY REFERENCES audit_events(id), score_json text NOT NULL)''')
+                if not exists and on_schema_created is not None:
+                    on_schema_created(db.execute('SELECT oid FROM pg_namespace WHERE nspname=%s', (schema,)).fetchone()['oid'])
                 db.execute(sql.SQL('SET search_path TO {}, pg_catalog').format(sql.Identifier(schema)))
                 PostgresSaver(db).setup()
             finally:

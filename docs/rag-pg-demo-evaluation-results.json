@@ -1,0 +1,669 @@
+{
+  "created_utc": "2026-11-13T05:01:45.425890+00:00",
+  "dataset": "fictional-rag-postgres-development-1",
+  "dataset_sha256": "e3c693244d0f9258b70f76bbbcb40d03a5d289d0f87fc0c03efbb346eec9d402",
+  "model_sha256_expected": "dd476dd0c2514e9b9be83aeb3853fac0763e0bdf4a71645407587d77c48a2d88",
+  "tokenizer_sha256_expected": "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39",
+  "runtime_sha256": {
+    "rag_pg_demo_evaluation.py": "badda4dcbd11b8d57a8995b7edf9be07cf4f6c940843e187c197e426605808ee",
+    "postgres_experimental.py": "da0711c62d31ac6dd6d2d32d7779b374f401970e02c8a82b57221664a1352ae9",
+    "postgres_knowledge.py": "9ff0cc72b689dde7e9f6228158e63dc05b2e0c7328e6c24a04c931ac94b1e26b",
+    "knowledge.py": "57327b9e66e6491b120143706456d1db655c0c171d4b8b120049c3c7dc1982a5",
+    "semantic_experiment.py": "13415c800f27d61034baa013b68d953b54c5c1e60d362bbe44ca8883cc54bde8"
+  },
+  "notice": "Synthetic development diagnostic; excerpts and suggestions do not prove answer correctness.",
+  "summary": {
+    "lexical": {
+      "answerable_cases": 7,
+      "expected_in_excerpts": 5,
+      "expected_at_first_excerpt": 5,
+      "expected_in_suggestions": 0,
+      "unsupported_cases": 6,
+      "unsupported_abstentions": 6,
+      "unsupported_with_suggestions": 0,
+      "authorization_violations": 0,
+      "citation_violations": 0,
+      "http_errors": 0
+    },
+    "hybrid": {
+      "answerable_cases": 7,
+      "expected_in_excerpts": 5,
+      "expected_at_first_excerpt": 5,
+      "expected_in_suggestions": 2,
+      "unsupported_cases": 6,
+      "unsupported_abstentions": 6,
+      "unsupported_with_suggestions": 1,
+      "authorization_violations": 0,
+      "citation_violations": 0,
+      "http_errors": 0
+    }
+  },
+  "cases": [
+    {
+      "id": "en-leave",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "en",
+      "expected": {
+        "title": "Annual leave EN",
+        "page": 2
+      },
+      "http_status": 200,
+      "elapsed_ms": 149.8,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-2",
+          "title": "Annual leave EN",
+          "page": 2,
+          "text": "Employees receive 21 working days of annual leave per calendar year."
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "en-leave",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "en",
+      "expected": {
+        "title": "Annual leave EN",
+        "page": 2
+      },
+      "http_status": 200,
+      "elapsed_ms": 556.4,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-2-p1",
+          "title": "Annual leave EN",
+          "page": 2,
+          "text": "Employees receive 21 working days of annual leave per calendar year."
+        }
+      ],
+      "suggestions": [
+        {
+          "id": "db-doc-4-p1",
+          "title": "الإجازة السنوية",
+          "page": 2,
+          "text": "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام."
+        },
+        {
+          "id": "db-doc-5-p1",
+          "title": "Remote policy",
+          "page": 1,
+          "text": "Employees may work remotely two days each week with manager approval."
+        }
+      ]
+    },
+    {
+      "id": "ar-leave",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "ar",
+      "expected": {
+        "title": "الإجازة السنوية",
+        "page": 2
+      },
+      "http_status": 200,
+      "elapsed_ms": 158.7,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-4",
+          "title": "الإجازة السنوية",
+          "page": 2,
+          "text": "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام."
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "ar-leave",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "ar",
+      "expected": {
+        "title": "الإجازة السنوية",
+        "page": 2
+      },
+      "http_status": 200,
+      "elapsed_ms": 562.5,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-4-p1",
+          "title": "الإجازة السنوية",
+          "page": 2,
+          "text": "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام."
+        }
+      ],
+      "suggestions": [
+        {
+          "id": "db-doc-2-p1",
+          "title": "Annual leave EN",
+          "page": 2,
+          "text": "Employees receive 21 working days of annual leave per calendar year."
+        }
+      ]
+    },
+    {
+      "id": "en-remote",
+      "mode": "lexical",
+      "role": "employee",
+      "language": "en",
+      "expected": {
+        "title": "Remote policy",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 146.6,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-5",
+          "title": "Remote policy",
+          "page": 1,
+          "text": "Employees may work remotely two days each week with manager approval."
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "en-remote",
+      "mode": "hybrid",
+      "role": "employee",
+      "language": "en",
+      "expected": {
+        "title": "Remote policy",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 598.6,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-5-p1",
+          "title": "Remote policy",
+          "page": 1,
+          "text": "Employees may work remotely two days each week with manager approval."
+        }
+      ],
+      "suggestions": [
+        {
+          "id": "db-doc-2-p1",
+          "title": "Annual leave EN",
+          "page": 2,
+          "text": "Employees receive 21 working days of annual leave per calendar year."
+        },
+        {
+          "id": "db-doc-4-p1",
+          "title": "الإجازة السنوية",
+          "page": 2,
+          "text": "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام."
+        }
+      ]
+    },
+    {
+      "id": "en-interview",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "en",
+      "expected": {
+        "title": "Interview schedule",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 170.0,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "en-interview",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "en",
+      "expected": {
+        "title": "Interview schedule",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 583.7,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": true,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": [
+        {
+          "id": "db-doc-7-p1",
+          "title": "Interview schedule",
+          "page": 1,
+          "text": "Interviews are held at the office on Mondays."
+        }
+      ]
+    },
+    {
+      "id": "ar-probation",
+      "mode": "lexical",
+      "role": "employee",
+      "language": "ar",
+      "expected": {
+        "title": "Probation",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 147.4,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "ar-probation",
+      "mode": "hybrid",
+      "role": "employee",
+      "language": "ar",
+      "expected": {
+        "title": "Probation",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 587.3,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": true,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": [
+        {
+          "id": "db-doc-4-p1",
+          "title": "الإجازة السنوية",
+          "page": 2,
+          "text": "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام."
+        },
+        {
+          "id": "db-doc-6-p1",
+          "title": "Probation",
+          "page": 1,
+          "text": "The probation period for a newly hired employee lasts three months."
+        }
+      ]
+    },
+    {
+      "id": "staff-expense",
+      "mode": "lexical",
+      "role": "employee",
+      "language": "en",
+      "expected": {
+        "title": "Staff expenses",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 164.3,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-8",
+          "title": "Staff expenses",
+          "page": 1,
+          "text": "STAFF_ONLY_317: Employees must submit receipts to claim travel expense reimbursement."
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "staff-expense",
+      "mode": "hybrid",
+      "role": "employee",
+      "language": "en",
+      "expected": {
+        "title": "Staff expenses",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 592.3,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-8-p1",
+          "title": "Staff expenses",
+          "page": 1,
+          "text": "STAFF_ONLY_317: Employees must submit receipts to claim travel expense reimbursement."
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "hr-allocation",
+      "mode": "lexical",
+      "role": "hr",
+      "language": "en",
+      "expected": {
+        "title": "HR allocation",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 150.1,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-9",
+          "title": "HR allocation",
+          "page": 1,
+          "text": "HR_ONLY_924: The confidential recruitment allocation is 44000 fictional credits."
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "hr-allocation",
+      "mode": "hybrid",
+      "role": "hr",
+      "language": "en",
+      "expected": {
+        "title": "HR allocation",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 615.2,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-9-p1",
+          "title": "HR allocation",
+          "page": 1,
+          "text": "HR_ONLY_924: The confidential recruitment allocation is 44000 fictional credits."
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "candidate-staff-restricted",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 145.3,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "candidate-staff-restricted",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 555.7,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "employee-hr-restricted",
+      "mode": "lexical",
+      "role": "employee",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 147.4,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "employee-hr-restricted",
+      "mode": "hybrid",
+      "role": "employee",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 610.1,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "candidate-hr-restricted",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "ar",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 170.4,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "candidate-hr-restricted",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "ar",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 549.9,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "en-no-parental-policy",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 153.3,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "en-no-parental-policy",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 527.5,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": [
+        {
+          "id": "db-doc-2-p1",
+          "title": "Annual leave EN",
+          "page": 2,
+          "text": "Employees receive 21 working days of annual leave per calendar year."
+        },
+        {
+          "id": "db-doc-6-p1",
+          "title": "Probation",
+          "page": 1,
+          "text": "The probation period for a newly hired employee lasts three months."
+        },
+        {
+          "id": "db-doc-4-p1",
+          "title": "الإجازة السنوية",
+          "page": 2,
+          "text": "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام."
+        }
+      ]
+    },
+    {
+      "id": "ar-no-annual-bonus",
+      "mode": "lexical",
+      "role": "employee",
+      "language": "ar",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 150.7,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "ar-no-annual-bonus",
+      "mode": "hybrid",
+      "role": "employee",
+      "language": "ar",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 652.5,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "en-no-health-premium",
+      "mode": "lexical",
+      "role": "hr",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 214.0,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "en-no-health-premium",
+      "mode": "hybrid",
+      "role": "hr",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 728.6,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    }
+  ]
+}
