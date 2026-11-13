@@ -11,6 +11,15 @@ An ordinary review acknowledgment makes no recruitment decision. This is an
 application-level durable review, not a persisted LangGraph checkpoint. Use
 synthetic information only; questions remain until the demo database is removed.
 
+The advance draft API may additionally receive a `slot` object with `start_at`,
+`end_at`, and `interviewer`. The proposal is saved with the draft and returned
+when HR reopens it. Approving the unchanged draft rechecks candidate eligibility
+and time conflicts, then advances the application and creates a private slot
+in the same transaction. The candidate must still book that slot. Discarding a
+draft makes neither change. This optional proposal is currently API-only;
+no email or calendar action is performed. Slot proposal details persist in the
+demo database, so use synthetic information.
+
 The demo also supports saved, role-scoped extractive knowledge conversations.
 Each account may create up to 100 conversations with up to 100 questions each.
 Questions and source identifiers with fingerprints are stored in PostgreSQL;

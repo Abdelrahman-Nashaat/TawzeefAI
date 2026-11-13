@@ -1,6 +1,7 @@
 """Durable supervised reviews over a real PostgreSQL application."""
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,92 @@ def create_application(candidate):
     response = candidate.post('/api/applications', params={'job_id': job, 'filename': 'resume.docx'}, content=resume_bytes())
     assert response.status_code == 201
     return response.json()['id']
+
+
+def assess(hr, app_id):
+    source = hr.get(f'/api/applications/{app_id}/rubric-source').json()
+    start = next(i for i, char in enumerate(source['resume_text']) if not char.isspace())
+    categories = ('mandatory_skills', 'preferred_skills', 'experience', 'projects', 'education')
+    items = [{'category': category, 'score': None} for category in categories]
+    items[0] = {'category': categories[0], 'score': 75, 'start': start, 'end': start + 1}
+    assert hr.post(f'/api/applications/{app_id}/rubric-assessment', json={'source_digest': source['source_digest'], 'items': items}).status_code == 200
+
+
+def slot_proposal():
+    start = datetime.now(UTC) + timedelta(days=2)
+    return {'start_at': start.isoformat(), 'end_at': (start + timedelta(hours=1)).isoformat(), 'interviewer': 'Example'}
+
+
+def test_approved_slot_is_private_and_requires_candidate_booking(mode):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as other, TestClient(create_app(seed_demo=True)) as hr:
+        app_id = create_application(candidate)
+        login(hr, 'hr')
+        login(other, 'candidate2')
+        assess(hr, app_id)
+        slot = slot_proposal()
+        url = f'/api/applications/{app_id}/graph-review-drafts'
+        assert hr.post(url, json={'slot': slot}).status_code == 422
+        response = hr.post(url, json={'intent': 'advance', 'slot': slot})
+        assert response.status_code == 201, response.text
+        draft = response.json()['id']
+        assert hr.get(f'/api/graph-review-drafts/{draft}').json()['slot']['interviewer'] == 'Example'
+        with db_for(mode) as db:
+            assert db.execute('SELECT count(*) AS n FROM interview_slots').fetchone()['n'] == 0
+        assert hr.post(f'/api/graph-review-drafts/{draft}/resume', json={'reviewed': True}).status_code == 200
+        slots = candidate.get('/api/slots', params={'application_id': app_id}).json()
+        assert len(slots) == 1
+        assert other.post(f"/api/slots/{slots[0]['id']}/book", json={'application_id': app_id}).status_code == 404
+        assert candidate.post(f"/api/slots/{slots[0]['id']}/book", json={'application_id': app_id}).status_code == 201
+        with db_for(mode) as db:
+            assert db.execute("SELECT count(*) AS n FROM slot_audit_events WHERE action='created_private'").fetchone()['n'] == 1
+            assert db.execute("SELECT count(*) AS n FROM audit_events WHERE action='decision'").fetchone()['n'] == 1
+
+
+def test_slot_conflict_and_audit_failure_leave_application_unchanged(mode):  # noqa: F811
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True), raise_server_exceptions=False) as hr:
+        app_id = create_application(candidate)
+        login(hr, 'hr')
+        assess(hr, app_id)
+        slot = slot_proposal()
+        draft = hr.post(f'/api/applications/{app_id}/graph-review-drafts', json={'intent': 'advance', 'slot': slot}).json()['id']
+        assert hr.post('/api/slots', json=slot).status_code == 201
+        assert hr.post(f'/api/graph-review-drafts/{draft}/resume', json={'reviewed': True}).status_code == 409
+        with db_for(mode) as db:
+            db.execute('DELETE FROM slot_audit_events')
+            db.execute('DELETE FROM interview_slots')
+            db.execute("ALTER TABLE slot_audit_events ADD CONSTRAINT reject_private CHECK (action <> 'created_private')")
+        assert hr.post(f'/api/graph-review-drafts/{draft}/resume', json={'reviewed': True}).status_code == 500
+        with db_for(mode) as db:
+            assert db.execute('SELECT status FROM applications WHERE id=%s', (app_id,)).fetchone()['status'] == 'submitted'
+            assert db.execute('SELECT status FROM graph_review_drafts WHERE id=%s', (draft,)).fetchone()['status'] == 'pending'
+            assert db.execute('SELECT count(*) AS n FROM interview_slots').fetchone()['n'] == 0
+            assert db.execute("SELECT count(*) AS n FROM audit_events WHERE action='decision'").fetchone()['n'] == 0
+
+
+def test_slot_approval_race_and_expired_session(mode, monkeypatch):  # noqa: F811
+    import app.postgres_experimental as pg_app
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
+        app_id = create_application(candidate)
+        login(hr, 'hr')
+        assess(hr, app_id)
+        payload = {'intent': 'advance', 'slot': slot_proposal()}
+        url = f'/api/applications/{app_id}/graph-review-drafts'
+        draft = hr.post(url, json=payload).json()['id']
+        with db_for(mode) as blocker, ThreadPoolExecutor(max_workers=1) as pool:
+            blocker.execute("SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext('tawzeef-scheduling-v1'))")
+            future = pool.submit(hr.post, f'/api/graph-review-drafts/{draft}/resume', json={'reviewed': True})
+            wait_for_lock(mode, 'advisory')
+            monkeypatch.setattr(pg_app, 'time', SimpleNamespace(time=lambda: time.time() + 365 * 24 * 3600))
+            blocker.commit()
+            assert future.result(timeout=20).status_code == 401
+        monkeypatch.setattr(pg_app, 'time', time)
+        other = hr.post(url, json=payload).json()['id']
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(hr.post, f'/api/graph-review-drafts/{item}/resume', json={'reviewed': True}) for item in (draft, other)]
+            assert sorted(f.result(timeout=20).status_code for f in futures) == [200, 409]
+        with db_for(mode) as db:
+            assert db.execute('SELECT count(*) AS n FROM interview_slots').fetchone()['n'] == 1
+            assert db.execute("SELECT count(*) AS n FROM audit_events WHERE action='decision'").fetchone()['n'] == 1
 
 
 def test_draft_persists_and_acknowledges_without_decision(mode):  # noqa: F811

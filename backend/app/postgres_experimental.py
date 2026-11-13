@@ -168,6 +168,7 @@ def create_postgres_app(*, seed_demo: bool) -> FastAPI:
                 db.execute(statement)
             db.execute(JOB_AUDIT_DDL)
             db.execute(GRAPH_DRAFT_DDL)
+            db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS slot_proposal jsonb')
             # Additive and idempotent for schemas created by earlier demo versions.
             db.execute('''CREATE TABLE IF NOT EXISTS screening_history (
                 audit_event_id bigint PRIMARY KEY REFERENCES audit_events(id), score_json text NOT NULL)''')

@@ -5,17 +5,19 @@ and no node can change recruitment state or call an external service.
 """
 import hashlib
 import json
+from datetime import UTC, datetime
 from typing import Annotated, Literal, TypedDict
 
 from fastapi import Depends, HTTPException, Request
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.auth import User
 from app.knowledge import Source, _rank_lexical, _tokens
 from app.postgres_feedback import current_review
 from app.postgres_rubric import _source
 from app.resume_structure import structure_resume
+from app.slots import SlotCreate
 
 
 class ReviewRequest(BaseModel):
@@ -24,6 +26,13 @@ class ReviewRequest(BaseModel):
 
 class DraftRequest(ReviewRequest):
     intent: Literal['review', 'advance'] = 'review'
+    slot: SlotCreate | None = None
+
+    @model_validator(mode='after')
+    def slot_requires_advance(self):
+        if self.slot is not None and self.intent != 'advance':
+            raise ValueError('A slot proposal requires an advance intent')
+        return self
 
 
 class ReviewReply(BaseModel):
@@ -44,6 +53,11 @@ def _fingerprint(source_digest, owner, result):
     encoded = json.dumps([source_digest, owner, result], sort_keys=True,
                          ensure_ascii=False, separators=(',', ':'), default=str)
     return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+
+
+def _bind_slot(digest, slot):
+    # Keep fingerprints for older drafts stable when no slot was proposed.
+    return _fingerprint(digest, None, slot) if slot else digest
 
 
 def _snapshot(db, application_id, question):
@@ -135,6 +149,24 @@ def install_routes(app, connect, authenticate, authorize_locked):
     def lock_scheduling(db):
         db.execute("SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext('tawzeef-scheduling-v1'))")
 
+    def validate_slot(db, application_id, slot):
+        """Call under the scheduling lock and the application's row lock."""
+        candidate = db.execute('''SELECT u.id FROM users u JOIN applications a ON a.candidate_id=u.id
+            WHERE a.id=%s AND u.active=1 AND u.role='candidate' FOR SHARE OF u''', (application_id,)).fetchone()
+        if not candidate:
+            raise HTTPException(status_code=409, detail='An active candidate is required')
+        if slot.start_at <= datetime.now(UTC):
+            raise HTTPException(status_code=422, detail='Slot must start in the future')
+        key = slot.interviewer.casefold()
+        args = (slot.end_at, slot.start_at, key, candidate['id'])
+        if db.execute('''SELECT 1 FROM interview_slots WHERE NOT withdrawn
+            AND start_at < %s AND end_at > %s AND (interviewer_key=%s OR target_candidate_id=%s) LIMIT 1''', args).fetchone():
+            raise HTTPException(status_code=409, detail='Interviewer or candidate slot conflict')
+        if db.execute('''SELECT 1 FROM interviews WHERE status='scheduled'
+            AND start_at < %s AND end_at > %s AND (interviewer_key=%s OR candidate_id=%s) LIMIT 1''', args).fetchone():
+            raise HTTPException(status_code=409, detail='Interview conflict')
+        return candidate['id'], key
+
     @app.post('/api/applications/{application_id}/graph-review-drafts', status_code=201)
     def start_draft(application_id: int, payload: DraftRequest, request: Request,
                     user: Annotated[User, Depends(authenticate)]):
@@ -145,11 +177,15 @@ def install_routes(app, connect, authenticate, authorize_locked):
             if payload.intent == 'advance' and (result['status']['application_status'] != 'submitted'
                                                 or result['matching']['status'] != 'current' or event_id is None):
                 raise HTTPException(status_code=409, detail='A submitted application and current HR rubric review are required')
-            row = db.execute('''INSERT INTO graph_review_drafts(application_id,owner_id,question,fingerprint,intent,status)
-                VALUES (%s,%s,%s,%s,%s,'pending') RETURNING id''',
-                (application_id, user.id, payload.policy_question, digest, payload.intent)).fetchone()
+            slot = payload.slot.model_dump(mode='json') if payload.slot else None
+            if payload.slot:
+                validate_slot(db, application_id, payload.slot)
+            digest = _bind_slot(digest, slot)
+            row = db.execute('''INSERT INTO graph_review_drafts(application_id,owner_id,question,fingerprint,intent,status,slot_proposal)
+                VALUES (%s,%s,%s,%s,%s,'pending',%s::jsonb) RETURNING id''',
+                (application_id, user.id, payload.policy_question, digest, payload.intent, json.dumps(slot) if slot else None)).fetchone()
             authorize_locked(db, request, user, 'hr')
-            return {'id': row['id'], 'status': 'pending', 'intent': payload.intent, 'result': result}
+            return {'id': row['id'], 'status': 'pending', 'intent': payload.intent, 'slot': slot, 'result': result}
 
     @app.get('/api/applications/{application_id}/graph-review-drafts')
     def list_drafts(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
@@ -171,10 +207,11 @@ def install_routes(app, connect, authenticate, authorize_locked):
             if draft is None:
                 raise HTTPException(status_code=404, detail='Review not found')
             result, digest, _ = _snapshot(db, draft['application_id'], draft['question'])
+            digest = _bind_slot(digest, draft['slot_proposal'])
             authorize_locked(db, request, user, 'hr')
             if digest != draft['fingerprint']:
                 return {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'stale': True}
-            return {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'stale': False, 'result': result}
+            return {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'slot': draft['slot_proposal'], 'stale': False, 'result': result}
 
     @app.post('/api/graph-review-drafts/{draft_id}/resume')
     def resume_draft(draft_id: int, payload: ReviewReply, request: Request,
@@ -190,6 +227,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=409, detail='Review is already closed')
             if payload.reviewed:
                 result, digest, event_id = _snapshot(db, draft['application_id'], draft['question'])
+                digest = _bind_slot(digest, draft['slot_proposal'])
                 if digest != draft['fingerprint']:
                     raise HTTPException(status_code=409, detail='Review changed; start a new review')
                 if draft['intent'] == 'advance':
@@ -199,15 +237,25 @@ def install_routes(app, connect, authenticate, authorize_locked):
                         WHERE a.id=%s AND u.active=1 AND u.role='candidate' FOR SHARE OF u''',
                                       (draft['application_id'],)).fetchone():
                         raise HTTPException(status_code=409, detail='An active candidate is required')
+                    slot = SlotCreate.model_validate(draft['slot_proposal']) if draft['slot_proposal'] else None
+                    if slot:
+                        candidate_id, key = validate_slot(db, draft['application_id'], slot)
                     db.execute("""UPDATE applications SET status='advanced', updated_at=to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') WHERE id=%s""", (draft['application_id'],))
                     db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'decision',%s)",
                                (draft['application_id'], user.id, json.dumps({'decision': 'advance', 'rubric_event_id': event_id, 'draft_id': draft_id})))
+                    if slot:
+                        created = db.execute('''INSERT INTO interview_slots(start_at,end_at,interviewer,interviewer_key,created_by,
+                            target_application_id,target_candidate_id) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
+                            (slot.start_at, slot.end_at, slot.interviewer, key, user.id, draft['application_id'], candidate_id)).fetchone()
+                        db.execute("INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (%s,%s,'created_private')", (created['id'], user.id))
             status = 'reviewed' if payload.reviewed else 'discarded'
             db.execute('UPDATE graph_review_drafts SET status=%s WHERE id=%s', (status, draft_id))
             db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,%s,%s)",
                        (draft['application_id'], user.id, 'graph_review_' + status, json.dumps({'draft_id': draft_id})))
             authorize_locked(db, request, user, 'hr')
             notice = 'Application advanced by HR.' if payload.reviewed and draft['intent'] == 'advance' else 'No recruitment decision was made.'
+            if payload.reviewed and draft['slot_proposal']:
+                notice = 'Application advanced and a private slot reserved by HR; the candidate must book it.'
             return {'id': draft_id, 'status': status, 'notice': notice}
 
     @app.post('/api/applications/{application_id}/graph-review')
