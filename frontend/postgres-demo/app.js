@@ -655,16 +655,19 @@ $("knowledge-form").addEventListener("submit", (event) => {
   event.preventDefault();
   action(event.submitter, async () => {
     const generation = sessionGeneration;
+    const generate = event.submitter?.value === 'generate';
+    if (generate && !window.confirm('Send this question and matching excerpts to Groq for an AI-generated answer? Use synthetic data only.')) return;
     const result = await api('/api/knowledge/answer', jsonPost({question: $("knowledge-question").value,
       job_id: $("knowledge-job-filter").value.trim() || null, section: $("knowledge-section-filter").value.trim() || null,
-      experimental_hybrid: event.submitter?.value === 'hybrid'}));
+      experimental_hybrid: event.submitter?.value === 'hybrid', generate_answer: generate}));
     ensureCurrent(generation);
     const nodes = [element('p', result.notice)];
+    if (result.answer) nodes.push(element('p', result.answer));
     if (!result.sources.length) nodes.push(element('p', result.suggestions?.length ?
       'No lexical match found. Contact HR for an answer.' : 'No relevant source found. Contact HR.'));
     for (const source of result.sources) {
       const item = element('article');
-      item.append(element('h3', `${source.title}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
+      item.append(element('h3', `${source.id ? `[${source.id}] ` : ''}${source.title}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
       nodes.push(item);
     }
     if (result.suggestions?.length) nodes.push(element('p', 'Unverified semantic leads: review the sources; they may not answer the question.'));

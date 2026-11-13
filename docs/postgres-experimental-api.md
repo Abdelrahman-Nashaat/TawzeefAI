@@ -75,6 +75,18 @@ optional page; past-hire patterns are restricted to HR. Search filters documents
 by role before lexical ranking, returning excerpts and citations or an abstention.
 The default is lexical and extractive; it is not a generative answer or the
 full vector RAG flow.
+An optional **Generate answer using Groq** button asks for confirmation before
+sending the question and role-authorized, lexical-matched source excerpts to
+Groq. It requires `TAWZEEF_POSTGRES_ENABLE_GROQ=1` and a `GROQ_API_KEY` in the
+server environment; it is disabled by default. Do not use real candidate or
+organizational data in this synthetic demo. The answer is displayed only when
+its citation IDs refer to retrieved excerpts; invalid citations or provider
+failure fall back to excerpts. No provider call is made when retrieval abstains.
+A valid citation does not prove factual correctness or protect against prompt
+injection; compare the answer with the source. Generated answers are not stored
+in saved conversations. Provider access is limited to one request per process;
+authorized source rows remain locked through the call, which can delay document
+changes for the provider timeout. Other server processes have separate limits.
 Document changes are audited without storing document text in the audit row.
 Documents are limited to 4,000 characters each and 500 active documents; the
 local interface accepts synthetic material only.

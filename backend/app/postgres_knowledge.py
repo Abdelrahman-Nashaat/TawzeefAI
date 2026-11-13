@@ -14,12 +14,21 @@ from fastapi import Depends, HTTPException, Request
 from psycopg import sql
 from pydantic import BaseModel, Field, field_validator
 
+from app.ai_provider import ProviderUnavailable, generate_with_groq
 from app.auth import User
 from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_pdf_pages
-from app.knowledge import ROLE_AUDIENCES, Source, _document_passages, _rank_lexical, _tokens
+from app.knowledge import (
+    ROLE_AUDIENCES,
+    Source,
+    _document_passages,
+    _has_valid_citations,
+    _rank_lexical,
+    _tokens,
+)
 from app.knowledge_documents import annotate_pdf_selected_pages, pdf_preview_digest
 
 _HYBRID_BUSY = BoundedSemaphore(1)
+_GENERATION_BUSY = BoundedSemaphore(1)
 _HYBRID_MAX_PASSAGES = 200
 _PDF_EXTRACTION_SLOTS = BoundedSemaphore(2)
 _PDF_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix='knowledge-pdf')
@@ -163,6 +172,7 @@ class Question(Metadata):
     question: str = Field(min_length=1, max_length=2000)
     collection: Literal['handbook', 'job_description', 'past_hire_patterns'] | None = None
     experimental_hybrid: bool = False
+    generate_answer: bool = False
 
 
 
@@ -324,15 +334,25 @@ def install_routes(app, connect, authenticate, authorize_locked):
     def answer(payload: Question, request: Request, user: Annotated[User, Depends(authenticate)]):
         if not payload.question.strip():
             raise HTTPException(status_code=422, detail='Question is required')
+        if payload.generate_answer and (os.environ.get('TAWZEEF_POSTGRES_ENABLE_GROQ') != '1'
+                                        or not os.environ.get('GROQ_API_KEY', '').strip()):
+            raise HTTPException(status_code=503, detail='External answer generation is not configured')
         if payload.experimental_hybrid:
             directory = os.environ.get('TAWZEEF_EMBEDDING_MODEL_DIR', '')
             if os.environ.get('TAWZEEF_POSTGRES_KNOWLEDGE_HYBRID') != '1' or not directory:
                 raise HTTPException(status_code=503, detail='Experimental hybrid search is not configured')
             if not _HYBRID_BUSY.acquire(blocking=False):
                 raise HTTPException(status_code=429, detail='Experimental hybrid search is busy')
+        generation_acquired = False
         try:
+            if payload.generate_answer:
+                generation_acquired = _GENERATION_BUSY.acquire(blocking=False)
+                if not generation_acquired:
+                    raise HTTPException(status_code=429, detail='External answer generation is busy')
             return search(payload, request, user)
         finally:
+            if generation_acquired:
+                _GENERATION_BUSY.release()
             if payload.experimental_hybrid:
                 _HYBRID_BUSY.release()
 
@@ -374,9 +394,30 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 lexical_ids = {source.id for _, source in ranked}
                 suggestions = [source for _, source in semantic if source.id not in lexical_ids]
             authorize_locked(db, request, user)
-            return {'mode': 'extractive' if ranked else 'abstain',
+            selected = [source for _, source in ranked]
+            answer_text = None
+            mode = 'extractive' if ranked else 'abstain'
+            notice = ('Experimental semantic ranking and leads are unverified; review each source. No external service was called.'
+                      if payload.experimental_hybrid else
+                      'Synthetic local excerpts only; verify the cited source. No model or external service was called.')
+            if payload.generate_answer and selected:
+                try:
+                    answer_text = generate_with_groq(payload.question, [
+                        {'id': source.id, 'title': source.title, 'text': source.text[:4000]} for source in selected
+                    ])
+                    if _has_valid_citations(answer_text, selected):
+                        mode = 'groq'
+                        notice = ('AI-generated using excerpts sent to Groq; valid citation IDs do not establish factual '
+                                  'accuracy. Verify every claim against the sources.')
+                    else:
+                        answer_text = None
+                        notice = 'AI citations could not be verified after sending excerpts to Groq; showing unverified source excerpts.'
+                except ProviderUnavailable:
+                    answer_text = None
+                    notice = 'External generation was unavailable; the question and excerpts may have been sent to Groq. Showing unverified source excerpts.'
+                # Recheck the session after provider latency before disclosing results.
+                authorize_locked(db, request, user)
+            return {'mode': mode, 'answer': answer_text,
                     'sources': [source_dict(source, metadata) for _, source in ranked],
                     'suggestions': [source_dict(source, metadata) for source in suggestions],
-                    'notice': ('Experimental semantic ranking and leads are unverified; review each source. No external service was called.'
-                               if payload.experimental_hybrid else
-                               'Synthetic local excerpts only; verify the cited source. No model or external service was called.')}
+                    'notice': notice}
