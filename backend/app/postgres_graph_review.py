@@ -27,13 +27,15 @@ class ReviewRequest(BaseModel):
 
 
 class DraftRequest(ReviewRequest):
-    intent: Literal['review', 'advance'] = 'review'
+    intent: Literal['review', 'advance', 'reserve_slot'] = 'review'
     slot: SlotCreate | None = None
 
     @model_validator(mode='after')
     def slot_requires_advance(self):
-        if self.slot is not None and self.intent != 'advance':
-            raise ValueError('A slot proposal requires an advance intent')
+        if self.slot is not None and self.intent not in ('advance', 'reserve_slot'):
+            raise ValueError('A slot proposal requires an advance or reserve-slot intent')
+        if self.intent == 'reserve_slot' and self.slot is None:
+            raise ValueError('A reserve-slot proposal requires a slot')
         return self
 
 
@@ -46,7 +48,7 @@ DDL = '''CREATE TABLE IF NOT EXISTS graph_review_drafts (
     application_id bigint NOT NULL REFERENCES applications(id),
     owner_id bigint NOT NULL REFERENCES users(id),
     question text NOT NULL, fingerprint text NOT NULL,
-    intent text NOT NULL CHECK(intent IN ('review','advance')),
+    intent text NOT NULL CHECK(intent IN ('review','advance','reserve_slot')),
     status text NOT NULL CHECK(status IN ('pending','reviewed','discarded')),
     created_at timestamptz NOT NULL DEFAULT clock_timestamp())'''
 
@@ -403,6 +405,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
             if payload.intent == 'advance' and (result['status']['application_status'] != 'submitted'
                                                 or result['matching']['status'] != 'current' or event_id is None):
                 raise HTTPException(status_code=409, detail='A submitted application and current HR rubric review are required')
+            if payload.intent == 'reserve_slot' and result['status']['application_status'] != 'advanced':
+                raise HTTPException(status_code=409, detail='An advanced application is required')
             slot = payload.slot.model_dump(mode='json') if payload.slot else None
             if payload.slot:
                 validate_slot(db, application_id, payload.slot)
@@ -424,6 +428,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
             if payload.intent == 'advance' and (result['status']['application_status'] != 'submitted'
                                                 or result['matching']['status'] != 'current' or event_id is None):
                 raise HTTPException(status_code=409, detail='A submitted application and current HR rubric review are required')
+            if payload.intent == 'reserve_slot' and result['status']['application_status'] != 'advanced':
+                raise HTTPException(status_code=409, detail='An advanced application is required')
             slot = payload.slot.model_dump(mode='json') if payload.slot else None
             if payload.slot:
                 validate_slot(db, application_id, payload.slot)
@@ -599,6 +605,15 @@ def install_routes(app, connect, authenticate, authorize_locked):
                             target_application_id,target_candidate_id) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
                             (slot.start_at, slot.end_at, slot.interviewer, key, user.id, draft['application_id'], candidate_id)).fetchone()
                         db.execute("INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (%s,%s,'created_private')", (created['id'], user.id))
+                elif draft['intent'] == 'reserve_slot':
+                    if result['status']['application_status'] != 'advanced' or not draft['slot_proposal']:
+                        raise HTTPException(status_code=409, detail='An advanced application and slot are required')
+                    slot = SlotCreate.model_validate(draft['slot_proposal'])
+                    candidate_id, key = validate_slot(db, draft['application_id'], slot)
+                    created = db.execute('''INSERT INTO interview_slots(start_at,end_at,interviewer,interviewer_key,created_by,
+                        target_application_id,target_candidate_id) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
+                        (slot.start_at, slot.end_at, slot.interviewer, key, user.id, draft['application_id'], candidate_id)).fetchone()
+                    db.execute("INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (%s,%s,'created_private')", (created['id'], user.id))
             if draft['checkpoint_version'] not in (0, 1, 2, 3, 4, 5):
                 raise HTTPException(status_code=409, detail='Unsupported review checkpoint version')
             if draft['checkpoint_version'] in (1, 2) or (draft['checkpoint_version'] in (3, 4, 5) and payload.reviewed):
@@ -609,8 +624,10 @@ def install_routes(app, connect, authenticate, authorize_locked):
                        (draft['application_id'], user.id, 'graph_review_' + status, json.dumps({'draft_id': draft_id})))
             authorize_locked(db, request, user, 'hr')
             notice = 'Application advanced by HR.' if payload.reviewed and draft['intent'] == 'advance' else 'No recruitment decision was made.'
-            if payload.reviewed and draft['slot_proposal']:
+            if payload.reviewed and draft['intent'] == 'advance' and draft['slot_proposal']:
                 notice = 'Application advanced and a private slot reserved by HR; the candidate must book it.'
+            elif payload.reviewed and draft['intent'] == 'reserve_slot':
+                notice = 'Private slot reserved by HR; the candidate must book it.'
             return {'id': draft_id, 'status': status, 'notice': notice}
 
     @app.post('/api/applications/{application_id}/graph-review')

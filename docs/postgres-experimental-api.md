@@ -8,6 +8,10 @@ review. The API supports a private-slot proposal at
 `POST /api/applications/{id}/graph-review-preparations`; subsequent calls to
 `POST /api/graph-review-drafts/{id}/prepare` run one stage each. The browser
 also supports advancement with a candidate-specific private slot in this flow.
+For an already advanced application, HR can instead start a resumable private
+slot proposal. Approval creates the candidate-specific slot without advancing
+the application again; the candidate must choose and book it. Existing review
+and advancement drafts remain compatible.
 HR may select **Complete remaining preparation** or call
 `POST /api/graph-review-drafts/{id}/prepare-all` to run remaining stages in
 order. Each stage commits separately and rechecks the session, authorization,

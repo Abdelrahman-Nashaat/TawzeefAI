@@ -194,6 +194,17 @@ def create_postgres_app(*, seed_demo: bool, require_new_schema: bool = False, on
                         db.execute(statement)
                     db.execute(JOB_AUDIT_DDL)
                     db.execute(GRAPH_DRAFT_DDL)
+                    # Existing demo schemas used the automatically named check.
+                    # Widen it once under the schema startup lock; retain all
+                    # previous values and reject unknown workflow intents.
+                    intent_check = db.execute('''SELECT pg_get_constraintdef(oid) AS definition
+                        FROM pg_constraint WHERE conrelid='graph_review_drafts'::regclass
+                        AND conname='graph_review_drafts_intent_check' ''').fetchone()
+                    if not intent_check:
+                        raise RuntimeError('Missing review intent constraint')
+                    if 'reserve_slot' not in intent_check['definition']:
+                        db.execute('ALTER TABLE graph_review_drafts DROP CONSTRAINT graph_review_drafts_intent_check')
+                        db.execute("ALTER TABLE graph_review_drafts ADD CONSTRAINT graph_review_drafts_intent_check CHECK (intent IN ('review','advance','reserve_slot'))")
                     db.execute('CREATE INDEX IF NOT EXISTS audit_events_application_cursor ON audit_events(application_id,id DESC)')
                     db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS slot_proposal jsonb')
                     db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS checkpoint_version integer NOT NULL DEFAULT 0')

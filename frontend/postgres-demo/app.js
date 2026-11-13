@@ -404,30 +404,33 @@ function renderApplications(applications, jobs) {
       draftStartLabel.append(draftStart); draftEndLabel.append(draftEnd); draftInterviewerLabel.append(draftInterviewer);
       const proposeSlot = element("button", "Propose advancement and private slot"); proposeSlot.type = "submit";
       const resumableSlot = element("button", "Start resumable advancement and private slot"); resumableSlot.type = "submit";
+      const reserveSlot = element("button", "Start resumable private slot proposal"); reserveSlot.type = "submit";
       slotDraftForm.append(draftStartLabel, draftEndLabel, draftInterviewerLabel,
-        element("p", "The candidate must book the slot after HR approves the proposal."), proposeSlot, resumableSlot);
+        element("p", "The candidate must book the slot after HR approves the proposal."));
+      if (application.status === "submitted") slotDraftForm.append(proposeSlot, resumableSlot);
+      if (application.status === "advanced") slotDraftForm.append(reserveSlot);
       slotDraftForm.addEventListener("submit", (event) => {
         event.preventDefault();
-        if (proposeSlot.disabled || resumableSlot.disabled) return;
-        const submitter = event.submitter || proposeSlot;
-        proposeSlot.disabled = resumableSlot.disabled = true;
+        if (proposeSlot.disabled || resumableSlot.disabled || reserveSlot.disabled) return;
+        const submitter = event.submitter || (application.status === "advanced" ? reserveSlot : proposeSlot);
+        proposeSlot.disabled = resumableSlot.disabled = reserveSlot.disabled = true;
         const generation = sessionGeneration;
         action(submitter, async () => {
           ensureCurrent(draftGeneration);
           const view = ++draftViewGeneration;
           const from = new Date(draftStart.value), to = new Date(draftEnd.value);
           if (!draftStart.value || !draftEnd.value || Number.isNaN(from.valueOf()) || Number.isNaN(to.valueOf())) throw new Error("Enter valid slot times.");
-          const resumable = submitter === resumableSlot;
+          const resumable = submitter === resumableSlot || submitter === reserveSlot;
           const endpoint = resumable ? "graph-review-preparations" : "graph-review-drafts";
           const result = await api(`/api/applications/${application.id}/${endpoint}`, jsonPost({
-            policy_question: graphQuestion.value, intent: "advance",
+            policy_question: graphQuestion.value, intent: submitter === reserveSlot ? "reserve_slot" : "advance",
             slot: {start_at: from.toISOString(), end_at: to.toISOString(), interviewer: draftInterviewer.value}
           }));
           ensureDraftView(generation, view); slotDraftForm.reset(); graphQuestion.value = "";
           draftPanel.replaceChildren(element("p", resumable
             ? `Proposal ${result.id} started. Open saved reviews to continue preparation.`
             : `Saved proposal ${result.id}. Reopen to review and approve or discard.`));
-        }).finally(() => { proposeSlot.disabled = resumableSlot.disabled = false; });
+        }).finally(() => { proposeSlot.disabled = resumableSlot.disabled = reserveSlot.disabled = false; });
       });
       card.append(button("Start resumable review", async () => {
         ensureCurrent(draftGeneration);
@@ -478,7 +481,7 @@ function renderApplications(applications, jobs) {
             view.append(element("pre", opened.stale ? "Sources or availability changed; start a new review." : JSON.stringify(opened.result, null, 2)));
             if (!opened.stale && opened.slot) {
               view.append(element("p", `Proposed private slot (UTC): ${opened.slot.start_at} to ${opened.slot.end_at}; interviewer: ${opened.slot.interviewer}`),
-                element("p", "Approval advances the application and reserves this slot; the candidate must still book it."));
+                element("p", opened.intent === "reserve_slot" ? "Approval reserves this slot; the candidate must still book it." : "Approval advances the application and reserves this slot; the candidate must still book it."));
             }
             if (opened.status === "pending") {
               if (!opened.stale && opened.preparation && !opened.preparation.ready) {
@@ -523,7 +526,7 @@ function renderApplications(applications, jobs) {
                 }));
               }
               for (const reviewed of (opened.stale || (opened.preparation && !opened.preparation.ready) ? [false] : [true, false])) {
-                view.append(button(reviewed ? (opened.intent === "advance" ? (opened.slot ? "Approve advancement and private slot" : "Approve advancement") : "Acknowledge review") : "Discard review", async () => {
+                view.append(button(reviewed ? (opened.intent === "reserve_slot" ? "Approve private slot" : opened.intent === "advance" ? (opened.slot ? "Approve advancement and private slot" : "Approve advancement") : "Acknowledge review") : "Discard review", async () => {
                   ensureDraftView(current, viewGeneration);
                   const active = sessionGeneration;
                   try { await api(`/api/graph-review-drafts/${draft.id}/resume`, jsonPost({reviewed})); }
@@ -533,8 +536,8 @@ function renderApplications(applications, jobs) {
                     throw error;
                   }
                   ensureDraftView(active, viewGeneration);
-                  const confirmation = reviewed ? (opened.intent === "advance" ? (opened.slot ? "Application advanced and private slot reserved. The candidate must book it." : "Application advanced by HR.") : "Review acknowledged. No decision made.") : "Review discarded.";
-                  if (reviewed && opened.intent === "advance") {
+                  const confirmation = reviewed ? (opened.intent === "reserve_slot" ? "Private slot reserved. The candidate must book it." : opened.intent === "advance" ? (opened.slot ? "Application advanced and private slot reserved. The candidate must book it." : "Application advanced by HR.") : "Review acknowledged. No decision made.") : "Review discarded.";
+                  if (reviewed && ["advance", "reserve_slot"].includes(opened.intent)) {
                     try { await refresh(); ensureDraftView(active, viewGeneration); }
                     catch (error) {
                       ensureDraftView(active, viewGeneration);
