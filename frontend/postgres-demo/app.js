@@ -502,6 +502,13 @@ function renderApplications(applications, jobs) {
                   review_application_status: "Review the application status"
                 };
                 view.append(element("p", `Suggested next step: ${labels[opened.preparation.suggested_step] || "Review the application"}. HR must decide.`));
+                view.append(button("Ask AI for a review suggestion", async () => {
+                  ensureDraftView(current, viewGeneration);
+                  if (!window.confirm("Send only the application stage, assessment status, interview status, and slot availability to Groq? Use synthetic data only.")) return;
+                  const result = await api(`/api/graph-review-drafts/${draft.id}/ai-suggestion`, {method: "POST"});
+                  ensureDraftView(current, viewGeneration);
+                  view.append(element("p", `AI suggestion: ${labels[result.suggested_step] || "Review the application"}. ${result.notice}`));
+                }));
               }
               for (const reviewed of (opened.stale || (opened.preparation && !opened.preparation.ready) ? [false] : [true, false])) {
                 view.append(button(reviewed ? (opened.intent === "advance" ? (opened.slot ? "Approve advancement and private slot" : "Approve advancement") : "Acknowledge review") : "Discard review", async () => {

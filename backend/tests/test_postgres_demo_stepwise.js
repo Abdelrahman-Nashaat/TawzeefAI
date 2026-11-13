@@ -12,7 +12,7 @@ class Node {
 const ids=new Map();
 const document={getElementById(id){if(!ids.has(id))ids.set(id,new Node());return ids.get(id);},createElement(tag){return new Node(tag);}};
 const response=(data,status=200)=>({status,ok:status>=200&&status<300,json:async()=>data});
-const requests=[]; let ready=false, proposedSlot;
+const requests=[]; let ready=false, proposedSlot, consent=false;
 const fetch=async(path,opts={})=>{
   requests.push({path,opts});
   if(path==='/api/auth/me') return response({},401);
@@ -22,12 +22,13 @@ const fetch=async(path,opts={})=>{
     preparation:{completed:ready?['parser','matching','status','scheduling','policy']:['parser'],next:ready?'human_review':'matching',ready,suggested_step:ready?'review_advance':null}});
   if(path==='/api/graph-review-drafts/9/prepare') { ready=true; return response({}); }
   if(path==='/api/graph-review-drafts/9/prepare-all') { ready=true; return response({}); }
+  if(path==='/api/graph-review-drafts/9/ai-suggestion') return response({suggested_step:'review_rubric',notice:'No action taken.'});
   if(path==='/api/graph-review-drafts/9/resume') return response({});
   if(path==='/api/applications') return response([{id:7,status:'advanced',job_id:'j',candidate_id:4}]);
   if(path==='/api/hr/interview-cancellations') return response({items:[],next_before:null});
   return response([]);
 };
-const context=vm.createContext({document,fetch,URLSearchParams,console,Date,Error,Promise,setTimeout});
+const context=vm.createContext({document,fetch,URLSearchParams,console,Date,Error,Promise,setTimeout,window:{confirm:()=>consent}});
 vm.runInContext(fs.readFileSync(process.argv[2],'utf8'),context);
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const descendants=n=>[n,...n.children.flatMap(descendants)];
@@ -42,6 +43,11 @@ async function run(){
   await click('Complete remaining preparation');
   assert.equal(requests.filter(r=>r.path.endsWith('/prepare-all')).length,1);
   assert(find('Approve advancement'));
+  await click('Ask AI for a review suggestion');
+  assert.equal(requests.filter(r=>r.path.endsWith('/ai-suggestion')).length,0);
+  consent=true; await click('Ask AI for a review suggestion');
+  assert.equal(requests.filter(r=>r.path.endsWith('/ai-suggestion')).length,1);
+  assert(find("AI suggestion: Review the applicant's assessment. No action taken."));
   assert.equal(requests.filter(r=>r.path.endsWith('/resume')).length,0);
   await click('Approve advancement');
   assert.equal(JSON.parse(requests.find(r=>r.path.endsWith('/resume')).opts.body).reviewed,true);

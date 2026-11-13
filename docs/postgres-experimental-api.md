@@ -45,6 +45,16 @@ HR approval revalidates current state and atomically records an advance
 and optional slot. A discarded in-progress review leaves its paused checkpoint
 in the synthetic demo database, but the closed draft cannot be continued.
 
+HR can optionally ask Groq for a next review action after preparation completes.
+The request sends only four bounded status fields and a server-defined list of
+review actions, not names, CVs, job descriptions, notes or policy excerpts.
+It requires explicit confirmation, `TAWZEEF_POSTGRES_ENABLE_GROQ=1`, and the
+provider key. The server accepts only an allowed action and rechecks the review
+after the provider responds. It is a suggestion, not a decision or tool call;
+no booking, message, approval or recruitment change is made. A network or model
+failure returns an error. This experimental synthetic-data feature does not
+establish that the model's suggestion is correct or useful.
+
 The original supervised-review path can also save a review and reopen it after restart. The
 database retains the policy question, reviewer, status and a fingerprint;
 it does not retain the graph output or source excerpts. Reopening recomputes

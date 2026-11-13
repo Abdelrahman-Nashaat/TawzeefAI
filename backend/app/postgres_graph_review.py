@@ -1,7 +1,9 @@
 """Supervised LangGraph reviews for the experimental PostgreSQL demo."""
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
+from threading import BoundedSemaphore
 from typing import Annotated, Literal, TypedDict
 
 from fastapi import Depends, HTTPException, Request
@@ -10,8 +12,10 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field, model_validator
 
+from app.ai_provider import ProviderUnavailable
 from app.auth import User
 from app.knowledge import Source, _rank_lexical, _tokens
+from app.postgres_ai_planner import allowed_actions, request_plan
 from app.postgres_feedback import current_review
 from app.postgres_rubric import _source
 from app.resume_structure import structure_resume
@@ -92,6 +96,7 @@ class ApprovalState(TypedDict, total=False):
 
 
 _STAGES = ('parser', 'matching', 'status', 'scheduling', 'policy')
+_AI_PLAN_BUSY = BoundedSemaphore(1)
 
 
 def _suggested_step(state):
@@ -466,6 +471,57 @@ def install_routes(app, connect, authenticate, authorize_locked):
             if result['preparation']['ready']:
                 return result
         raise HTTPException(status_code=409, detail='Review preparation did not finish')
+
+    def ai_context(draft_id, request, user):
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+            lock_scheduling(db)
+            draft = db.execute('SELECT * FROM graph_review_drafts WHERE id=%s AND owner_id=%s FOR UPDATE',
+                               (draft_id, user.id)).fetchone()
+            if not draft:
+                raise HTTPException(status_code=404, detail='Review not found')
+            if draft['status'] != 'pending' or draft['checkpoint_version'] not in (3, 4, 5):
+                raise HTTPException(status_code=409, detail='A pending resumable review is required')
+            result, digest, _ = _snapshot(db, draft['application_id'], draft['question'],
+                                          all_collections=draft['checkpoint_version'] >= 5)
+            if _bind_slot(digest, draft['slot_proposal']) != draft['fingerprint']:
+                raise HTTPException(status_code=409, detail='Review changed; start again')
+            state = _preparation_state(db, draft)
+            if not _preparation_progress(state)['ready']:
+                raise HTTPException(status_code=409, detail='Finish preparation before requesting a suggestion')
+            status = result['status']['application_status']
+            matching = result['matching']['status']
+            interview = result['status']['latest_interview']
+            available = bool(result['scheduling']['slots'])
+            if (status not in ('submitted', 'advanced', 'offered', 'hired', 'rejected') or
+                    matching not in ('current', 'unavailable') or interview not in (None, 'scheduled', 'completed')):
+                raise HTTPException(status_code=409, detail='Review status is unavailable')
+            facts = {'application_status': status, 'assessment_status': matching,
+                     'interview_status': interview, 'has_available_slot': available}
+            authorize_locked(db, request, user, 'hr')
+            return facts, allowed_actions(status, matching, interview, available), draft['fingerprint']
+
+    @app.post('/api/graph-review-drafts/{draft_id}/ai-suggestion')
+    def ai_suggestion(draft_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
+        if os.environ.get('TAWZEEF_POSTGRES_ENABLE_GROQ') != '1' or not os.environ.get('GROQ_API_KEY', '').strip():
+            raise HTTPException(status_code=503, detail='External AI suggestions are not configured')
+        if not _AI_PLAN_BUSY.acquire(blocking=False):
+            raise HTTPException(status_code=429, detail='External AI suggestions are busy')
+        try:
+            facts, actions, fingerprint = ai_context(draft_id, request, user)
+            try:
+                action = request_plan(facts, actions)
+            except ProviderUnavailable as exc:
+                raise HTTPException(status_code=503, detail='External AI suggestion unavailable') from exc
+            if action not in actions:
+                raise HTTPException(status_code=503, detail='External AI suggestion unavailable')
+            current_facts, current_actions, current_fingerprint = ai_context(draft_id, request, user)
+            if (current_fingerprint != fingerprint or current_facts != facts or
+                    current_actions != actions or action not in current_actions):
+                raise HTTPException(status_code=409, detail='Review changed; reopen it before continuing')
+            return {'suggested_step': action, 'notice': 'AI suggestion based only on status flags. HR must review the evidence and decide; no action was taken.'}
+        finally:
+            _AI_PLAN_BUSY.release()
 
     @app.get('/api/applications/{application_id}/graph-review-drafts')
     def list_drafts(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
