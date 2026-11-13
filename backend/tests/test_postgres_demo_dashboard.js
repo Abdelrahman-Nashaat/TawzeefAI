@@ -7,6 +7,7 @@ class Node {
   addEventListener(name, fn) { this.listeners[name]=fn; }
   replaceChildren(...nodes) { this.children=nodes; }
   append(...nodes) { this.children.push(...nodes); }
+  setAttribute(name, value) { this[name]=value; }
   reset() {}
 }
 const nodes = new Map();
@@ -29,10 +30,14 @@ async function run() {
   assert.equal(nodes.get('hr-dashboard').hidden,false);
   nodes.get('load-dashboard').listeners.click();
   await tick();
-  pending(response({definition:'Recorded counts',jobs:[{title:'Example',applications_total:2,screening_events:1,pipeline:[{status:'submitted',count:2}],time_to_hire:{average_days:null,count:0}}]}));
+  pending(response({definition:'Recorded counts',jobs:[{title:'Example',applications_total:2,screening_events:1,pipeline:[{status:'submitted',count:2}],milestones:{screened:1},time_to_hire:{average_days:null,count:0}}]}));
   await tick();
   assert.equal(nodes.get('dashboard-results').children[1].children[1].textContent,'Applications: 2 | Screening events: 1');
   assert.match(nodes.get('dashboard-results').children[1].children[3].textContent,/unavailable/);
+  const chart = nodes.get('dashboard-results').children[1].children[4];
+  assert.equal(chart.children[1].children[1]['aria-label'], 'submitted: 2 of 2');
+  assert.equal(chart.children[1].children[1].value, 2);
+  assert.match(nodes.get('dashboard-results').children[1].children[5].textContent, /screened 1/);
   nodes.get('load-dashboard').listeners.click();
   await tick();
   vm.runInContext('signedOut()',context);

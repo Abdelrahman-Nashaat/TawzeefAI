@@ -109,6 +109,12 @@ events, and time to hire by job. The average is the number of days from
 submission to the latest recorded hire decision for currently hired applications;
 missing, invalid or negative durations are excluded. It is not a comparison
 with manual screening or evidence of time saved. No applicants yields no average.
+The browser visualizes current status counts relative to each job's retained
+applications. It also reports distinct applications with recorded screening,
+advance, completed-interview, presented-offer, hiring and rejection events.
+Milestones can overlap and are not conversion rates; repeated events are counted
+once per application. A rubric review alone does not count as keyword screening.
+Applications removed from the database are excluded from the snapshot.
 
 HR may reject a submitted, advanced, or offered application with a nonempty
 reason through the browser or API. The decision atomically withdraws a presented offer and cancels future

@@ -13,6 +13,9 @@ button { cursor: pointer; color: white; background: #176e66; border-color: #176e
 button:disabled { opacity: .55; cursor: wait; }
 article { border-top: 1px solid #d9e5e4; padding: .8rem 0; }
 article > * { margin: .35rem .4rem .35rem 0; }
+.pipeline-chart { max-width: 36rem; }
+.pipeline-row { display: grid; grid-template-columns: minmax(10rem, 1fr) minmax(7rem, 2fr); gap: .5rem; align-items: center; margin: .3rem 0; }
+.pipeline-row progress { width: 100%; accent-color: #176e66; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f7f7; padding: .7rem; }
 #message { min-height: 1.4rem; }
 [hidden] { display: none !important; }

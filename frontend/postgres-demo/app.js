@@ -827,6 +827,20 @@ $("load-dashboard").addEventListener("click", () => action($("load-dashboard"), 
     row.append(element('p', job.pipeline.length ? job.pipeline.map((item) => `${item.status}: ${item.count}`).join(' | ') : 'No applications.'));
     const metric = job.time_to_hire;
     row.append(element('p', metric.average_days === null ? 'Time to hire: unavailable (no valid recorded hires).' : `Average time to hire: ${metric.average_days} days (${metric.count} recorded hires).`));
+    if (job.pipeline.length) {
+      const chart = element('div'); chart.className = 'pipeline-chart';
+      chart.append(element('h4', 'Current application status'));
+      for (const item of job.pipeline) {
+        const line = element('div'); line.className = 'pipeline-row';
+        const label = `${item.status}: ${item.count} of ${job.applications_total}`;
+        const bar = element('progress'); bar.max = job.applications_total; bar.value = item.count;
+        bar.setAttribute('aria-label', label);
+        line.append(element('span', label), bar); chart.append(line);
+      }
+      row.append(chart);
+    }
+    const milestones = job.milestones || {};
+    row.append(element('p', `Recorded milestones (distinct applications): screened ${milestones.screened ?? 0}; advanced ${milestones.advanced ?? 0}; interview completed ${milestones.interview_completed ?? 0}; offer presented ${milestones.offer_presented ?? 0}; hired ${milestones.hired ?? 0}; rejected ${milestones.rejected ?? 0}.`));
     nodes.push(row);
   }
   $('dashboard-results').replaceChildren(...nodes);
