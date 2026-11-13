@@ -335,6 +335,15 @@ local time zone. Unsupported endpoints return 404. Run the real PostgreSQL tests
 randomly named test schemas. No success claim extends beyond the implemented
 routes and tested scenarios.
 
+On Windows, after setting the DSN and schema as above, the equivalent
+`& .\start-postgres-demo.ps1` command starts the demo on port 18080. Add
+`-Groq` to load the current Windows user's protected `.tooling/groq-key.dpapi`
+for explicitly requested external answers and suggestions, or `-Hybrid` to use
+the pinned local embedding model and an operator-provisioned pgvector extension.
+The switches may be combined; neither sends data or enables hybrid search until
+the user requests it in the interface. `-Port` selects another loopback port.
+The script restores the process environment when the server exits.
+
 ## Experimental HR rubric API
 
 HR can explicitly share the current reviewed score range and an HR-written
