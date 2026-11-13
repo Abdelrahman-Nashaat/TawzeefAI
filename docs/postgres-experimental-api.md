@@ -225,8 +225,9 @@ Embeddings are retained in `knowledge_vectors` in the experimental schema,
 including vectors of later-deactivated documents, until the schema is removed.
 Search always restricts vector IDs to current authorized active documents. Use
 only synthetic data. No external model or network service is called.
-Changing the pinned model, tokenizer, pooling or passage prefix requires bumping
-the embedding version in the server code so cached passages are re-embedded.
+Cache revisions include the pinned model and tokenizer hashes. Changes to
+pooling, normalization, truncation or the passage prefix require bumping the
+passage pipeline version in the server code to re-embed cached passages.
 New experimental schemas include an `employee` demo account using the same
 demo-password convention as other accounts. Existing schemas are not reseeded;
 create a new disposable schema to use that account if it is absent.

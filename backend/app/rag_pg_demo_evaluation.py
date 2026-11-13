@@ -28,7 +28,7 @@ DATASET = ROOT / 'data' / 'fixtures' / 'rag-postgres-cases.json'
 AUDIENCES = {'candidate': {'public'}, 'employee': {'public', 'staff'},
              'hr': {'public', 'staff', 'hr'}}
 RUNTIME_FILES = ('rag_pg_demo_evaluation.py', 'postgres_experimental.py', 'postgres_knowledge.py',
-                 'knowledge.py', 'semantic_experiment.py')
+                 'knowledge.py', 'semantic_experiment.py', 'embedding_identity.py')
 
 
 def runtime_hashes():

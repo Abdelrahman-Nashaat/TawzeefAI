@@ -14,6 +14,7 @@ from fastapi import Depends, HTTPException, Request
 from psycopg import sql
 from pydantic import BaseModel, Field, field_validator
 
+from app import embedding_identity
 from app.ai_provider import ProviderUnavailable, generate_with_groq
 from app.auth import User
 from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_pdf_pages
@@ -30,9 +31,6 @@ from app.knowledge_documents import annotate_pdf_selected_pages, pdf_preview_dig
 _HYBRID_BUSY = BoundedSemaphore(1)
 _GENERATION_BUSY = BoundedSemaphore(1)
 _HYBRID_MAX_PASSAGES = 200
-# Bump when the pinned embedding model, tokenizer, pooling, or passage prefix
-# changes. Older revision strings safely miss and are recomputed on demand.
-_PASSAGE_EMBEDDING_VERSION = 'multilingual-e5-small-onnx-v1'
 _PDF_EXTRACTION_SLOTS = BoundedSemaphore(2)
 _PDF_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix='knowledge-pdf')
 _PDF_SUBMIT_LOCK = Lock()
@@ -148,7 +146,8 @@ def _semantic_candidates(db, sources, question, model):
     if len(set(allowed)) != len(allowed):
         raise ValueError('Duplicate source identifiers')
     revisions = {source.id: hashlib.sha256(
-        (_PASSAGE_EMBEDDING_VERSION + '\0' + source.text).encode('utf-8')).hexdigest()
+        f'{embedding_identity.MODEL_SHA256}\0{embedding_identity.TOKENIZER_SHA256}\0'
+        f'{embedding_identity.PASSAGE_PIPELINE_VERSION}\0{source.text}'.encode()).hexdigest()
         for source in sources}
     cached = {row['source_id']: row['revision'] for row in db.execute(
         'SELECT source_id, revision FROM knowledge_vectors WHERE source_id = ANY(%s)', (allowed,)).fetchall()}

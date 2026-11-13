@@ -16,11 +16,10 @@ import onnxruntime as ort
 import sqlite_vec
 from tokenizers import Tokenizer
 
+from app.embedding_identity import MODEL_SHA256, TOKENIZER_SHA256
 from app.knowledge import _document_passages, _rank_lexical, _tokens
 from app.knowledge_documents import fetch_authorized_documents
 
-MODEL_SHA256 = 'dd476dd0c2514e9b9be83aeb3853fac0763e0bdf4a71645407587d77c48a2d88'
-TOKENIZER_SHA256 = '0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39'
 MAX_PASSAGES = 100
 
 

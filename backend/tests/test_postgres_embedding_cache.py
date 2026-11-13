@@ -38,10 +38,14 @@ def test_cache_reuses_only_current_authorized_passages(mode, monkeypatch):  # no
         changed = Source('public', 'Policy', 'Annual leave requires manager approval.')
         _semantic_candidates(db, [changed], 'annual leave', model)
         assert model.passage_batches[-1] == [changed.text]
-        monkeypatch.setattr(knowledge, '_PASSAGE_EMBEDDING_VERSION', 'future-test-version')
+        monkeypatch.setattr(knowledge.embedding_identity, 'PASSAGE_PIPELINE_VERSION', 'future-test-version')
         _semantic_candidates(db, [changed], 'annual leave', model)
         assert model.passage_batches[-1] == [changed.text]
-        assert len(model.passage_batches) == 3 and model.query_count == 4
+        monkeypatch.setattr(knowledge.embedding_identity, 'MODEL_SHA256', 'future-model')
+        _semantic_candidates(db, [changed], 'annual leave', model)
+        monkeypatch.setattr(knowledge.embedding_identity, 'TOKENIZER_SHA256', 'future-tokenizer')
+        _semantic_candidates(db, [changed], 'annual leave', model)
+        assert len(model.passage_batches) == 5 and model.query_count == 6
 
 
 def test_failed_refresh_rolls_back_cache(mode):  # noqa: F811
