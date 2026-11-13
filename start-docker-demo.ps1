@@ -1,6 +1,7 @@
 # Local demonstration only. Docker Desktop must already be running.
-param([switch]$Hybrid)
+param([switch]$Hybrid, [switch]$Postgres)
 $ErrorActionPreference = 'Stop'
+if ($Hybrid -and $Postgres) { throw 'Choose either -Hybrid or -Postgres; the PostgreSQL demo uses lexical search.' }
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dockerCommand = Get-Command docker.exe -ErrorAction SilentlyContinue
 if ($dockerCommand) {
@@ -24,7 +25,11 @@ if (-not (Test-Path -LiteralPath $secretsFile)) {
 }
 Push-Location $projectRoot
 try {
-    $composeArgs = @('compose', '--env-file', $secretsFile, '--project-name', 'tawzeefai-local', '-f', 'compose.yaml')
+    if ($Postgres) {
+        $composeArgs = @('compose', '--env-file', $secretsFile, '--project-name', 'tawzeefai-postgres-local', '-f', 'docker/compose.postgres-demo.yaml')
+    } else {
+        $composeArgs = @('compose', '--env-file', $secretsFile, '--project-name', 'tawzeefai-local', '-f', 'compose.yaml')
+    }
     if ($Hybrid) {
         $modelDir = Join-Path $projectRoot '.tooling\multilingual-e5-small'
         if (-not (Test-Path -LiteralPath (Join-Path $modelDir 'model.onnx')) -or
@@ -35,7 +40,9 @@ try {
     }
     & $dockerExe @composeArgs up -d --build
     if ($LASTEXITCODE -ne 0) { throw 'Docker Compose failed; check the output above.' }
-    if ($Hybrid) {
+    if ($Postgres) {
+        Write-Host 'Local PostgreSQL demo: http://127.0.0.1:18001/ (synthetic data only).'
+    } elseif ($Hybrid) {
         Write-Host 'Local demo: http://127.0.0.1:18000/  (experimental PostgreSQL hybrid search enabled.)'
     } else {
         Write-Host 'Local demo: http://127.0.0.1:18000/  (PostgreSQL is not yet connected to the app.)'

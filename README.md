@@ -18,6 +18,12 @@ An optional [Streamlit interface](docs/streamlit-demo.md) uses the same local AP
 
 An [experimental PostgreSQL demo](docs/postgres-experimental-api.md) provides a separate browser interface and API for a small synthetic-data journey from application and HR screening to local interview booking; it does not replace the SQLite application or migrate its data.
 
+With Docker Desktop running, start this separate PostgreSQL demo using
+`& .\start-docker-demo.ps1 -Postgres`, then open <http://127.0.0.1:18001/>.
+It uses its own Docker project and persistent database volume, with no database
+port exposed to the host. This localhost-only synthetic demo uses public demo
+credentials and lexical knowledge search. See [SETUP](SETUP.md) for details.
+
 To try local résumé passage suggestions for job criteria on Windows, prepare the local embedding model as described in [experiment details](docs/local-semantic-experiment.md), then run `& .\start-demo.ps1 -SemanticScreening`. This can be combined with `-Google`. Suggestions are experimental, do not verify experience, and do not replace human review; use synthetic data only.
 
 For scanned PDF pages, install Tesseract and its language data, then run `& .\start-demo.ps1 -Ocr`. Choose English or English and Arabic for each upload; the switch can be combined with the other Windows options. OCR runs locally and is approximate: review its text against the original document. See [bilingual OCR setup](docs/bilingual-ocr.md) and [SETUP](SETUP.md) for limitations.

@@ -37,6 +37,21 @@ docker compose --env-file .tooling/docker-postgres.env --project-name tawzeefai-
 
 Deleting volumes deletes their data. Windows Credential Manager credentials are not available in the Linux container.
 
+To run the separate experimental PostgreSQL application instead, use
+`& .\start-docker-demo.ps1 -Postgres` and open <http://127.0.0.1:18001/>.
+It uses a separate `tawzeefai-postgres-local` Compose project and persistent
+PostgreSQL volume; it does not migrate either SQLite database. Its database is
+accessible only to the Compose network, and the app port binds to localhost.
+The demo trusts its configured Docker bridge gateway as a local peer. Do not
+attach untrusted containers to its network or publish the app on another interface.
+It uses the same local password file and synthetic demo credentials. The
+`-Hybrid` and `-Postgres` switches cannot be combined; the PostgreSQL demo's
+container uses lexical search. To stop it while keeping its data:
+
+```powershell
+docker compose --env-file .tooling/docker-postgres.env --project-name tawzeefai-postgres-local -f docker/compose.postgres-demo.yaml down
+```
+
 ## Checks
 
 From `backend`, run the relevant checks after changes:

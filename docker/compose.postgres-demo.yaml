@@ -1,0 +1,50 @@
+services:
+  app:
+    build:
+      context: ..
+      args:
+        INSTALL_POSTGRES: "1"
+    environment:
+      TAWZEEF_DEMO: "1"
+      TAWZEEF_ENABLE_GROQ: "0"
+      TAWZEEF_DATABASE_ENGINE: postgres-experimental
+      TAWZEEF_POSTGRES_SCHEMA: tawzeef_exp_dockerlocal
+      TAWZEEF_POSTGRES_DSN: "host=postgres port=5432 dbname=tawzeefai user=tawzeefai"
+      TAWZEEF_DEMO_GATEWAY_IP: "172.29.174.1"
+      PGPASSWORD: ${TAWZEEF_POSTGRES_PASSWORD:?Set TAWZEEF_POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:18001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg17-bookworm@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d
+    environment:
+      POSTGRES_DB: tawzeefai
+      POSTGRES_USER: tawzeefai
+      POSTGRES_PASSWORD: ${TAWZEEF_POSTGRES_PASSWORD:?Set TAWZEEF_POSTGRES_PASSWORD}
+    volumes:
+      - postgres-demo-data:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/01-pgvector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  postgres-demo-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.29.174.0/24

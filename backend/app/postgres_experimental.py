@@ -124,6 +124,15 @@ def create_postgres_app(*, seed_demo: bool, require_new_schema: bool = False, on
     schema = os.environ.get('TAWZEEF_POSTGRES_SCHEMA', '')
     if not dsn or not _SCHEMA.fullmatch(schema):
         raise RuntimeError('Set a PostgreSQL DSN and an experimental schema name')
+    gateway = os.environ.get('TAWZEEF_DEMO_GATEWAY_IP', '')
+    if gateway:
+        try:
+            gateway_address = ipaddress.ip_address(gateway)
+        except ValueError as exc:
+            raise RuntimeError('Invalid demo gateway address') from exc
+        if not gateway_address.is_private or gateway_address.is_loopback:
+            raise RuntimeError('Demo gateway must be a private non-loopback address')
+        gateway = str(gateway_address)
 
     @contextmanager
     def connect():
@@ -223,7 +232,7 @@ def create_postgres_app(*, seed_demo: bool, require_new_schema: bool = False, on
             loopback = ipaddress.ip_address(peer).is_loopback
         except ValueError:
             loopback = peer == 'testclient'
-        if not loopback:
+        if not loopback and (not gateway or peer != gateway):
             return JSONResponse({'detail': 'Local access only'}, status_code=403)
         if request.method not in {'GET','HEAD','OPTIONS'}:
             origin = request.headers.get('origin')

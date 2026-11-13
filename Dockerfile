@@ -5,8 +5,11 @@ WORKDIR /app/backend
 RUN pip install --no-cache-dir uv==0.11.23
 COPY backend/pyproject.toml backend/uv.lock ./
 ARG INSTALL_HYBRID=0
+ARG INSTALL_POSTGRES=0
 RUN if [ "$INSTALL_HYBRID" = "1" ]; then \
       uv sync --locked --no-dev --no-install-project --extra postgres --extra semantic; \
+    elif [ "$INSTALL_POSTGRES" = "1" ]; then \
+      uv sync --locked --no-dev --no-install-project --extra postgres; \
     else \
       uv sync --locked --no-dev --no-install-project; \
     fi
