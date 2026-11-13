@@ -469,7 +469,20 @@ function renderApplications(applications, jobs) {
                   await renderReview();
                 }));
               }
-              if (!opened.stale && opened.preparation?.ready) view.append(element("p", `Suggested next step: ${opened.preparation.suggested_step}. HR must decide.`));
+              if (!opened.stale && opened.preparation?.ready) {
+                const labels = {
+                  review_advance: "Review whether to advance the application",
+                  review_rubric: "Review the applicant's assessment",
+                  candidate_can_book: "Candidate can choose an available interview slot",
+                  review_interview_schedule: "Review interview scheduling",
+                  review_scheduled_interview: "Review the scheduled interview",
+                  review_offer_or_next_interview: "Review an offer or another interview",
+                  review_offer_status: "Review the offer and candidate response",
+                  review_closed_application: "Review the closed application",
+                  review_application_status: "Review the application status"
+                };
+                view.append(element("p", `Suggested next step: ${labels[opened.preparation.suggested_step] || "Review the application"}. HR must decide.`));
+              }
               for (const reviewed of (opened.stale || (opened.preparation && !opened.preparation.ready) ? [false] : [true, false])) {
                 view.append(button(reviewed ? (opened.intent === "advance" ? (opened.slot ? "Approve advancement and private slot" : "Approve advancement") : "Acknowledge review") : "Discard review", async () => {
                   ensureDraftView(current, viewGeneration);

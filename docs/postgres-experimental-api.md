@@ -24,7 +24,11 @@ Only digests and bounded status flags enter checkpoint state, not résumé text
 or policy excerpts. Digests of low-entropy inputs may still be guessable. The
 final specialist combines prior matching, application-status and slot flags
 into a deterministic suggested next step; it is not a decision or a model-led
-agent. HR approval revalidates current state and atomically records an advance
+agent. New reviews also account for recorded booked or completed interviews and
+offer and terminal application status. The recommendation prompts HR to review
+the next action; it does not establish interview attendance, accept an offer,
+or create a decision. Existing version-3 reviews preserve their earlier planner.
+HR approval revalidates current state and atomically records an advance
 and optional slot. A discarded in-progress review leaves its paused checkpoint
 in the synthetic demo database, but the closed draft cannot be continued.
 
