@@ -12,7 +12,7 @@ class Node {
 const nodes = new Map();
 const document = {getElementById(id) { if (!nodes.has(id)) nodes.set(id,new Node()); return nodes.get(id); },createElement() { return new Node(); }};
 const response = (data,status=200) => ({status,ok:status>=200&&status<300,json:async()=>data});
-let delayed, savedQuestion, deleted, generated = false, confirms = 0, consent = false;
+let delayed, savedQuestion, deleted, generated = false, hybrid = false, confirms = 0, consent = false;
 const fetch = async (path, options={}) => {
   if (path === '/api/auth/me') return response({},401);
   if (path === '/api/jobs' || path === '/api/applications' || path === '/api/interviews') return response([]);
@@ -21,7 +21,7 @@ const fetch = async (path, options={}) => {
   if (path === '/api/knowledge/conversations/2' && options.method === 'DELETE') { deleted = path; return response(null, 204); }
   if (path === '/api/knowledge/conversations') return response({items:[{id:1},{id:2}]});
   if (path === '/api/knowledge/conversations/2/turns' && options.method === 'POST') {
-    const payload=JSON.parse(options.body); savedQuestion=payload.question; generated=payload.generate_answer;
+    const payload=JSON.parse(options.body); savedQuestion=payload.question; generated=payload.generate_answer; hybrid=payload.experimental_hybrid;
     return response({id: 1, notice:'Test notice'});
   }
   if (path === '/api/knowledge/conversations/2/turns') return response({items:[{question:'leave',mode:'extractive',sources:[{title:'Policy',page:1,text:'<img src=x>'}]}]});
@@ -40,14 +40,17 @@ async function run() {
   nodes.get('conversation-form').listeners.submit({preventDefault(){},submitter:new Node()}); await tick(); await tick();
   assert.equal(savedQuestion,'leave');
   assert.equal(generated,false);
+  assert.equal(hybrid,false);
   assert.equal(nodes.get('conversation-turns').children[0].children[2].textContent,'<img src=x>');
   const generateButton=new Node(); generateButton.value='generate';
   document.getElementById('conversation-question').value='second';
   nodes.get('conversation-form').listeners.submit({preventDefault(){},submitter:generateButton}); await tick();
   assert.equal(confirms,1); assert.equal(savedQuestion,'leave');
   consent=true;
+  document.getElementById('conversation-hybrid').checked=true;
   nodes.get('conversation-form').listeners.submit({preventDefault(){},submitter:generateButton}); await tick(); await tick();
   assert.equal(confirms,2); assert.equal(savedQuestion,'second'); assert.equal(generated,true);
+  assert.equal(hybrid,true);
   nodes.get('conversation-list').listeners.click(); await tick();
   nodes.get('conversation-list-results').children[0].listeners.click(); await tick();
   nodes.get('conversation-list-results').children[1].listeners.click(); await tick();

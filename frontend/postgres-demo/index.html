@@ -73,7 +73,7 @@
           <div id="conversation-list-results"></div>
           <p id="conversation-current">No conversation selected.</p>
           <button id="conversation-delete" type="button" hidden>Delete selected conversation</button>
-          <form id="conversation-form" hidden><label>Question <input id="conversation-question" maxlength="2000" required></label><label>Job ID filter <input id="conversation-job-filter" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*"></label><label>Section filter <input id="conversation-section-filter" maxlength="200"></label><button>Ask and save</button><button value="generate">Generate and save using Groq</button></form>
+          <form id="conversation-form" hidden><label>Question <input id="conversation-question" maxlength="2000" required></label><label>Job ID filter <input id="conversation-job-filter" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*"></label><label>Section filter <input id="conversation-section-filter" maxlength="200"></label><label><input id="conversation-hybrid" type="checkbox"> Use experimental hybrid retrieval</label><button>Ask and save</button><button value="generate">Generate and save using Groq</button></form>
           <div id="conversation-turns"></div>
         </section>
         <form id="knowledge-add" hidden><h3>Add synthetic document</h3>

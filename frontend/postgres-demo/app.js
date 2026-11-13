@@ -806,6 +806,11 @@ function showConversationTurns(items) {
     for (const source of item.sources || []) {
       block.append(element('h4', `${source.title}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
     }
+    if (item.suggestions_unavailable) block.append(element('p', 'A saved semantic suggestion is no longer available.'));
+    if (item.suggestions?.length) block.append(element('p', 'Unverified semantic suggestions; these are not supporting evidence.'));
+    for (const source of item.suggestions || []) {
+      block.append(element('h4', `${source.title}${source.page ? ` - page ${source.page}` : ''}${source.job_id ? ` - job ${source.job_id}` : ''}${source.section ? ` - ${source.section}` : ''}`), element('pre', source.text));
+    }
     turns.push(block);
   }
   $("conversation-turns").replaceChildren(...turns);
@@ -861,7 +866,7 @@ $("conversation-form").addEventListener('submit', event => {
     if (id === null) throw new Error('Select a conversation first.');
     const generate = event.submitter?.value === 'generate';
     if (generate && !window.confirm('Send this question, the previous question in this conversation, and authorized excerpts to Groq? Use synthetic data only.')) return;
-    const saved = await api(`/api/knowledge/conversations/${id}/turns`, jsonPost({question: $("conversation-question").value, job_id: $("conversation-job-filter").value.trim() || null, section: $("conversation-section-filter").value.trim() || null, generate_answer: generate}));
+    const saved = await api(`/api/knowledge/conversations/${id}/turns`, jsonPost({question: $("conversation-question").value, job_id: $("conversation-job-filter").value.trim() || null, section: $("conversation-section-filter").value.trim() || null, generate_answer: generate, experimental_hybrid: $("conversation-hybrid").checked === true}));
     ensureCurrent(session); if (view !== conversationGeneration || id !== conversationId) return;
     $("conversation-form").reset(); await selectConversation(id);
     ensureCurrent(session); if (conversationId === id) message(saved.notice);

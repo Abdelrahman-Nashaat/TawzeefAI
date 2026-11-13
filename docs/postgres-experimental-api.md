@@ -88,7 +88,15 @@ support, and the previous question is untrusted context rather than evidence.
 The database transaction is released before the external request, so a source
 revoked after the initial check may already be sent; if it changes before the
 response is committed, the answer is rejected. This local demo is for synthetic
-data only. Saved conversations do not use hybrid search.
+data only. Saved conversations may optionally use the same local E5 and pgvector
+hybrid retrieval as one-off searches. Lexically eligible excerpts are reranked;
+semantic-only matches remain clearly marked unverified suggestions and are not
+used for generated answers. Suggested source references and fingerprints are
+saved with the turn and rechecked when it is reopened. If any suggested source
+changes or is no longer accessible, saved suggestions are hidden. Hybrid mode
+uses the same configuration, passage limit and process-local concurrency limit
+as one-off search; it fails closed when unavailable. It has not been evaluated
+for answer quality and is suitable only for synthetic content.
 On 13 November 2026, a single fictional candidate question was sent through
 the PostgreSQL conversation API to the live provider; the cited answer was
 saved and reopened with its page reference. This confirms one integration path,

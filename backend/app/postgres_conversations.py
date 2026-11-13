@@ -15,7 +15,7 @@ from pydantic import Field
 from app import postgres_knowledge as knowledge
 from app.ai_provider import ProviderUnavailable
 from app.auth import User
-from app.knowledge import ROLE_AUDIENCES, Source, _rank_lexical, _tokens
+from app.knowledge import ROLE_AUDIENCES, Source, _document_passages, _rank_lexical, _tokens
 from app.postgres_knowledge import Metadata, _unique_policy_title, source_dict
 
 DDL = (
@@ -31,12 +31,14 @@ DDL = (
         created_at timestamptz NOT NULL DEFAULT clock_timestamp())''',
     '''CREATE INDEX IF NOT EXISTS knowledge_turns_conversation ON knowledge_conversation_turns(conversation_id,id)''',
     '''ALTER TABLE knowledge_conversation_turns ADD COLUMN IF NOT EXISTS generated_answer text''',
+    '''ALTER TABLE knowledge_conversation_turns ADD COLUMN IF NOT EXISTS suggestions_json text NOT NULL DEFAULT '[]' ''',
 )
 
 
 class Turn(Metadata):
     question: str = Field(min_length=1, max_length=2000)
     generate_answer: bool = False
+    experimental_hybrid: bool = False
 
 
 def _digest(row):
@@ -51,6 +53,23 @@ def _documents(db, role, job_id=None, section=None):
         WHERE active AND audience=ANY(%s) AND (collection <> 'past_hire_patterns' OR %s='hr')
         AND (%s::text IS NULL OR job_id=%s) AND (%s::text IS NULL OR section=%s)
         ORDER BY id LIMIT 500 FOR SHARE''', (list(ROLE_AUDIENCES[role]), role, job_id, job_id, section, section)).fetchall()
+
+
+def _reconstruct(ref, docs):
+    if not isinstance(ref, dict) or set(ref) not in ({'id', 'digest'}, {'id', 'digest', 'passage_id'}):
+        return None
+    row = docs.get(ref['id'])
+    if row is None or _digest(row) != ref['digest']:
+        return None
+    if 'passage_id' in ref:
+        passages = _document_passages({'id': row['id'], 'title': row['title'], 'text': row['body']})
+        passage = next((p for p in passages if p.id == ref['passage_id']), None)
+        if passage is None:
+            return None
+        source = Source(id=passage.id, title=passage.title, text=passage.text, page=row['page'])
+    else:
+        source = Source(id=f"pg-doc-{row['id']}", title=row['title'], text=row['body'], page=row['page'])
+    return source_dict(source, {source.id: row})
 
 
 def _owner(db, conversation_id, user):
@@ -103,8 +122,16 @@ def install_routes(app, connect, authenticate, authorize_locked):
         if payload.generate_answer and (os.environ.get('TAWZEEF_POSTGRES_ENABLE_GROQ') != '1'
                                         or not os.environ.get('GROQ_API_KEY', '').strip()):
             raise HTTPException(status_code=503, detail='External answer generation is not configured')
+        hybrid_acquired = False
         acquired = False
         try:
+            if payload.experimental_hybrid:
+                directory = os.environ.get('TAWZEEF_EMBEDDING_MODEL_DIR', '')
+                if os.environ.get('TAWZEEF_POSTGRES_KNOWLEDGE_HYBRID') != '1' or not directory:
+                    raise HTTPException(status_code=503, detail='Experimental hybrid search is not configured')
+                hybrid_acquired = knowledge._HYBRID_BUSY.acquire(blocking=False)
+                if not hybrid_acquired:
+                    raise HTTPException(status_code=429, detail='Experimental hybrid search is busy')
             if payload.generate_answer:
                 acquired = knowledge._GENERATION_BUSY.acquire(blocking=False)
                 if not acquired:
@@ -113,6 +140,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
         finally:
             if acquired:
                 knowledge._GENERATION_BUSY.release()
+            if hybrid_acquired:
+                knowledge._HYBRID_BUSY.release()
 
     def save_turn(conversation_id, payload, request, user, question):
         with connect() as db:
@@ -125,13 +154,37 @@ def install_routes(app, connect, authenticate, authorize_locked):
             previous_id = turns[-1]['id'] if turns else None
             previous_question = turns[-1]['question'] if turns else ''
             rows = _documents(db, user.role, payload.job_id, payload.section)
-            sources = [Source(id=f"pg-doc-{r['id']}", title=r['title'], text=r['body'], page=r['page']) for r in rows]
-            by_id = {f"pg-doc-{row['id']}": row for row in rows}
-            ranked = _rank_lexical(_tokens(question), sources)[:3]
+            sources, by_id = [], {}
+            for row in rows:
+                if payload.experimental_hybrid:
+                    passages = _document_passages({'id': row['id'], 'title': row['title'], 'text': row['body']})
+                    selected_sources = [Source(id=p.id, title=p.title, text=p.text, page=row['page']) for p in passages]
+                else:
+                    selected_sources = [Source(id=f"pg-doc-{row['id']}", title=row['title'], text=row['body'], page=row['page'])]
+                sources.extend(selected_sources)
+                by_id.update({source.id: row for source in selected_sources})
+            ranked = _rank_lexical(_tokens(question), sources)
             lexical_match = bool(ranked)
-            if not ranked:
+            if not ranked and not payload.experimental_hybrid:
                 ranked = _unique_policy_title(question, sources)
-            refs = [{'id': by_id[source.id]['id'], 'digest': _digest(by_id[source.id])} for _, source in ranked]
+            semantic = []
+            if payload.experimental_hybrid:
+                try:
+                    model = knowledge._load_embedder(os.environ['TAWZEEF_EMBEDDING_MODEL_DIR'])
+                    semantic = knowledge._semantic_candidates(db, sources, question, model)
+                except Exception as exc:
+                    raise HTTPException(status_code=503, detail='Experimental hybrid search is unavailable') from exc
+                ranked = knowledge._rerank_lexical_with_semantic(ranked, semantic)
+            ranked = ranked[:3]
+            ranked_ids = {source.id for _, source in ranked}
+            suggestions = [source for _, source in semantic if source.id not in ranked_ids]
+            def reference(source):
+                ref = {'id': by_id[source.id]['id'], 'digest': _digest(by_id[source.id])}
+                if payload.experimental_hybrid:
+                    ref['passage_id'] = source.id
+                return ref
+            refs = [reference(source) for _, source in ranked]
+            leads = [reference(source) for source in suggestions]
             authorize_locked(db, request, user)
 
         answer = None
@@ -160,15 +213,17 @@ def install_routes(app, connect, authenticate, authorize_locked):
             if len(current_turns) != len(turns) or (current_turns[-1]['id'] if current_turns else None) != previous_id:
                 raise HTTPException(status_code=409, detail='Conversation changed; review it before retrying')
             current_docs = {row['id']: row for row in _documents(db, user.role, payload.job_id, payload.section)}
-            if any(ref['id'] not in current_docs or _digest(current_docs[ref['id']]) != ref['digest'] for ref in refs):
+            if any(ref['id'] not in current_docs or _digest(current_docs[ref['id']]) != ref['digest'] for ref in refs + leads):
                 raise HTTPException(status_code=409, detail='A source changed; review it before retrying')
-            row = db.execute('''INSERT INTO knowledge_conversation_turns(conversation_id,question,sources_json,generated_answer)
-                VALUES (%s,%s,%s,%s) RETURNING id,created_at''',
-                (conversation_id, question, json.dumps(refs, separators=(',', ':')), answer)).fetchone()
+            row = db.execute('''INSERT INTO knowledge_conversation_turns(conversation_id,question,sources_json,generated_answer,suggestions_json)
+                VALUES (%s,%s,%s,%s,%s) RETURNING id,created_at''',
+                (conversation_id, question, json.dumps(refs, separators=(',', ':')), answer,
+                 json.dumps(leads, separators=(',', ':')))).fetchone()
             authorize_locked(db, request, user)
             return {'id': row['id'], 'created_at': row['created_at'], 'question': question,
                     'mode': 'groq' if answer else ('extractive' if refs else 'abstain'), 'answer': answer,
                     'sources': [source_dict(source, by_id) for _, source in ranked],
+                    'suggestions': [source_dict(source, by_id) for source in suggestions],
                     'notice': notice}
 
     @app.get('/api/knowledge/conversations/{conversation_id}/turns')
@@ -176,7 +231,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
         with connect() as db:
             authorize_locked(db, request, user)
             _owner(db, conversation_id, user)
-            turns = db.execute('''SELECT id,question,sources_json,generated_answer,created_at FROM knowledge_conversation_turns
+            turns = db.execute('''SELECT id,question,sources_json,generated_answer,suggestions_json,created_at FROM knowledge_conversation_turns
                 WHERE conversation_id=%s ORDER BY id LIMIT 100 FOR SHARE''', (conversation_id,)).fetchall()
             docs = {r['id']: r for r in _documents(db, user.role)}
             output = []
@@ -185,17 +240,24 @@ def install_routes(app, connect, authenticate, authorize_locked):
                     refs = json.loads(turn['sources_json'])
                     if not isinstance(refs, list) or len(refs) > 3:
                         raise ValueError('Invalid references')
-                    available = all(isinstance(ref, dict) and set(ref) == {'id', 'digest'} and
-                                    ref['id'] in docs and _digest(docs[ref['id']]) == ref['digest'] for ref in refs)
+                    excerpts = [_reconstruct(ref, docs) for ref in refs]
+                    available = all(excerpt is not None for excerpt in excerpts)
                 except (TypeError, ValueError, KeyError):
-                    available, refs = False, []
-                excerpts = [source_dict(Source(id=f"pg-doc-{ref['id']}", title=docs[ref['id']]['title'],
-                             page=docs[ref['id']]['page'], text=docs[ref['id']]['body']),
-                             {f"pg-doc-{ref['id']}": docs[ref['id']]}) for ref in refs] if available else []
+                    available, excerpts = False, []
+                excerpts = excerpts if available else []
                 answer = turn['generated_answer'] if available and excerpts else None
+                try:
+                    leads = json.loads(turn['suggestions_json'])
+                    if not isinstance(leads, list) or len(leads) > 3:
+                        raise ValueError('Invalid suggestions')
+                    suggestions = [_reconstruct(ref, docs) for ref in leads]
+                    leads_available = all(suggestion is not None for suggestion in suggestions)
+                except (TypeError, ValueError, KeyError):
+                    leads_available, suggestions = False, []
+                suggestions = suggestions if leads_available else []
                 output.append({'id': turn['id'], 'question': turn['question'], 'created_at': turn['created_at'],
                                'mode': ('groq' if answer else ('extractive' if excerpts else 'abstain')) if available else 'source_unavailable',
                                'answer': answer,
-                               'sources': excerpts})
+                               'sources': excerpts, 'suggestions': suggestions, 'suggestions_unavailable': not leads_available})
             authorize_locked(db, request, user)
             return {'items': output, 'notice': 'Unverified excerpts from currently accessible synthetic documents.'}
