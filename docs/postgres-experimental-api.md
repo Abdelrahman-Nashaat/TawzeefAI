@@ -85,6 +85,10 @@ The database transaction is released before the external request, so a source
 revoked after the initial check may already be sent; if it changes before the
 response is committed, the answer is rejected. This local demo is for synthetic
 data only. Saved conversations do not use hybrid search.
+On 13 November 2026, a single fictional candidate question was sent through
+the PostgreSQL conversation API to the live provider; the cited answer was
+saved and reopened with its page reference. This confirms one integration path,
+not answer accuracy or reliability across questions.
 
 This opt-in development slice is for synthetic data only. It is not the full
 application or a migration. It stores demo users, jobs, sessions, applications,
@@ -94,7 +98,7 @@ jobs, application submission and listing, HR keyword screening and advancement,
 local candidate interview booking, cancellation, explicit HR completion, local
 cancellation notices, and offers with candidate response and explicit HR hire
 are implemented. A dedicated browser interface supports these actions and saved
-extractive knowledge conversations. Calendar and email delivery remain unavailable
+knowledge conversations. Calendar and email delivery remain unavailable
 in this mode.
 
 HR can run a read-only LangGraph review from an application. Five deterministic
