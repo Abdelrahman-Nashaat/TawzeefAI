@@ -21,4 +21,3 @@ def test_demo_gateway_rejects_public_address(mode, monkeypatch):  # noqa: F811
     monkeypatch.setenv('TAWZEEF_DEMO_GATEWAY_IP', '8.8.8.8')
     with pytest.raises(RuntimeError, match='private non-loopback'):
         create_app(seed_demo=True)
-
