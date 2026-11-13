@@ -1,15 +1,16 @@
 """Role-filtered knowledge search for the PostgreSQL demo."""
+import asyncio
 import hashlib
 import json
 import math
 import os
 import re
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 from threading import BoundedSemaphore
 from typing import Annotated, Literal
 
 from fastapi import Depends, HTTPException, Request
-from fastapi.concurrency import run_in_threadpool
 from psycopg import sql
 from pydantic import BaseModel, Field, field_validator
 
@@ -21,6 +22,12 @@ from app.knowledge import ROLE_AUDIENCES, Source, _document_passages, _rank_lexi
 _HYBRID_BUSY = BoundedSemaphore(1)
 _HYBRID_MAX_PASSAGES = 200
 _PDF_EXTRACTION_SLOTS = BoundedSemaphore(2)
+_PDF_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix='knowledge-pdf')
+
+
+def _extract_pdf_with_digest(filename, content):
+    pages = extract_pdf_pages(filename, content)
+    return pages, pdf_preview_digest(pages, None, content, None), hashlib.sha256(content).hexdigest()
 
 
 def _unique_policy_title(question, sources):
@@ -137,29 +144,38 @@ class Question(Metadata):
     experimental_hybrid: bool = False
 
 
-def install_routes(app, connect, authenticate, authorize_locked):
-    async def read_pdf(request, filename):
-        if not _PDF_EXTRACTION_SLOTS.acquire(blocking=False):
-            raise HTTPException(status_code=503, detail='PDF processing is busy; try again')
+
+async def _read_pdf(request, filename):
+    if not _PDF_EXTRACTION_SLOTS.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail='PDF processing is busy; try again')
+    slot_owned = True
+    try:
+        content = bytearray()
+        async for chunk in request.stream():
+            if len(content) + len(chunk) > MAX_FILE_BYTES:
+                raise HTTPException(status_code=413, detail='File exceeds 5 MiB limit')
+            content.extend(chunk)
+        # A cancelled request must not release capacity while its worker is
+        # still extracting. The concurrent future completes only when the
+        # underlying thread finishes (or a queued job is cancelled).
+        future = _PDF_EXECUTOR.submit(_extract_pdf_with_digest, filename, bytes(content))
+        future.add_done_callback(lambda _: _PDF_EXTRACTION_SLOTS.release())
+        slot_owned = False
         try:
-            content = bytearray()
-            async for chunk in request.stream():
-                if len(content) + len(chunk) > MAX_FILE_BYTES:
-                    raise HTTPException(status_code=413, detail='File exceeds 5 MiB limit')
-                content.extend(chunk)
-            try:
-                pages = await run_in_threadpool(extract_pdf_pages, filename, bytes(content))
-            except DocumentTextError as exc:
-                raise HTTPException(status_code=422, detail={'code': exc.code, 'message': str(exc)}) from exc
-            return pages, pdf_preview_digest(pages, None, bytes(content), None), hashlib.sha256(content).hexdigest()
-        finally:
+            return await asyncio.wrap_future(future)
+        except DocumentTextError as exc:
+            raise HTTPException(status_code=422, detail={'code': exc.code, 'message': str(exc)}) from exc
+    finally:
+        if slot_owned:
             _PDF_EXTRACTION_SLOTS.release()
 
+
+def install_routes(app, connect, authenticate, authorize_locked):
     @app.post('/api/knowledge/documents/pdf-preview')
     async def preview_pdf(request: Request, user: Annotated[User, Depends(authenticate)], filename: str = 'document.pdf'):
         with connect() as db:
             authorize_locked(db, request, user, 'hr')
-        pages, digest, _ = await read_pdf(request, filename)
+        pages, digest, _ = await _read_pdf(request, filename)
         if sum(len(page['text'].splitlines()) for page in pages) > 5000:
             raise HTTPException(status_code=422, detail='PDF has too many lines to review')
         with connect() as db:
@@ -179,7 +195,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
             raise HTTPException(status_code=422, detail='Past hire patterns must be HR-only')
         if job_id is not None and (len(job_id) > 64 or not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', job_id)):
             raise HTTPException(status_code=422, detail='Invalid job ID')
-        pages, actual_digest, source_hash = await read_pdf(request, filename)
+        pages, actual_digest, source_hash = await _read_pdf(request, filename)
         if not re.fullmatch(r'[0-9a-f]{64}', digest) or not secrets.compare_digest(actual_digest, digest):
             raise HTTPException(status_code=409, detail='PDF differs from the reviewed preview')
         try:

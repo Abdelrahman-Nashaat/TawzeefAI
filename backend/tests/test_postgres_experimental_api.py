@@ -439,3 +439,98 @@ def test_pdf_processing_saturation_and_slot_cleanup(mode, monkeypatch):
             assert second.result(timeout=15).status_code == 201
         monkeypatch.setattr(knowledge, 'extract_pdf_pages', original)
         assert hr.post(path, params=params, content=content).status_code == 200
+
+
+
+def test_pdf_cancellation_holds_capacity_until_worker_finishes(mode, monkeypatch):
+    import asyncio
+    import threading
+    from fastapi import HTTPException
+    import app.postgres_knowledge as knowledge
+
+    content = pdf_bytes()
+    original = knowledge.extract_pdf_pages
+    first_entered, both_entered, both_exited, release = (threading.Event() for _ in range(4))
+    lock = threading.Lock()
+    entered = exited = 0
+
+    class Request:
+        async def stream(self):
+            yield content
+
+    def slow_extract(filename, data):
+        nonlocal entered, exited
+        with lock:
+            entered += 1
+            first_entered.set()
+            if entered == 2:
+                both_entered.set()
+        try:
+            if not release.wait(15):
+                raise RuntimeError('Timed out waiting for test release')
+            return original(filename, data)
+        finally:
+            with lock:
+                exited += 1
+                if exited == 2:
+                    both_exited.set()
+
+    monkeypatch.setattr(knowledge, 'extract_pdf_pages', slow_extract)
+
+    async def exercise():
+        first = asyncio.create_task(knowledge._read_pdf(Request(), 'policy.pdf'))
+        second = None
+        try:
+            assert await asyncio.to_thread(first_entered.wait, 10)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            second = asyncio.create_task(knowledge._read_pdf(Request(), 'policy.pdf'))
+            assert await asyncio.to_thread(both_entered.wait, 10)
+            with pytest.raises(HTTPException) as error:
+                await knowledge._read_pdf(Request(), 'policy.pdf')
+            assert error.value.status_code == 503
+        finally:
+            release.set()
+            if second is not None:
+                await asyncio.wait_for(second, timeout=15)
+            if both_entered.is_set():
+                assert await asyncio.to_thread(both_exited.wait, 10)
+        assert (await knowledge._read_pdf(Request(), 'policy.pdf'))[0]
+    asyncio.run(exercise())
+
+
+def test_pdf_slot_cleanup_during_buffer_cancellation_and_submit_failure(mode, monkeypatch):
+    import asyncio
+    import app.postgres_knowledge as knowledge
+    content = pdf_bytes()
+
+    class Request:
+        async def stream(self):
+            yield content
+
+    class SlowRequest:
+        async def stream(self):
+            entered.set()
+            await asyncio.Event().wait()
+            yield content
+
+    def fail_submit(*args, **kwargs):
+        raise RuntimeError('Simulated executor failure')
+
+    async def exercise():
+        nonlocal entered
+        entered = asyncio.Event()
+        task = asyncio.create_task(knowledge._read_pdf(SlowRequest(), 'policy.pdf'))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        original = knowledge._PDF_EXECUTOR.submit
+        monkeypatch.setattr(knowledge._PDF_EXECUTOR, 'submit', fail_submit)
+        with pytest.raises(RuntimeError, match='Simulated executor failure'):
+            await knowledge._read_pdf(Request(), 'policy.pdf')
+        monkeypatch.setattr(knowledge._PDF_EXECUTOR, 'submit', original)
+        assert (await knowledge._read_pdf(Request(), 'policy.pdf'))[0]
+    entered = None
+    asyncio.run(exercise())
