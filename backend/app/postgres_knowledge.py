@@ -379,6 +379,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 sources = [Source(id=f"pg-doc-{r['id']}", title=r['title'], text=r['body'], page=r['page']) for r in rows]
                 metadata = {source.id: row for source, row in zip(sources, rows, strict=True)}
             ranked = _rank_lexical(_tokens(payload.question), sources)
+            lexical_match = bool(ranked)
             if not ranked and not payload.experimental_hybrid:
                 ranked = _unique_policy_title(payload.question, sources)
             suggestions = []
@@ -400,7 +401,9 @@ def install_routes(app, connect, authenticate, authorize_locked):
             notice = ('Experimental semantic ranking and leads are unverified; review each source. No external service was called.'
                       if payload.experimental_hybrid else
                       'Synthetic local excerpts only; verify the cited source. No model or external service was called.')
-            if payload.generate_answer and selected:
+            if payload.generate_answer and selected and not lexical_match:
+                notice = 'Only a title match was found; no question or excerpts were sent to Groq. Review the unverified source.'
+            if payload.generate_answer and selected and lexical_match:
                 try:
                     answer_text = generate_with_groq(payload.question, [
                         {'id': source.id, 'title': source.title, 'text': source.text[:4000]} for source in selected

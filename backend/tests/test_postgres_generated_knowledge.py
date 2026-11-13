@@ -94,3 +94,22 @@ def test_generation_disabled_fails_closed(mode, monkeypatch):  # noqa: F811
         assert response.status_code == 503
         with db_for(mode) as db:
             assert db.execute('SELECT count(*) AS n FROM knowledge_documents').fetchone()['n'] == 0
+
+
+def test_title_only_fallback_does_not_send_to_provider(mode, monkeypatch):  # noqa: F811
+    import app.postgres_knowledge as knowledge
+
+    monkeypatch.setenv('TAWZEEF_POSTGRES_ENABLE_GROQ', '1')
+    monkeypatch.setenv('GROQ_API_KEY', 'synthetic-test-only')
+    monkeypatch.setattr(knowledge, 'generate_with_groq', lambda *_: pytest.fail('Title-only source sent to provider'))
+    with TestClient(create_app(seed_demo=True)) as hr, TestClient(create_app(seed_demo=True)) as candidate:
+        login(hr, 'hr')
+        login(candidate, 'candidate')
+        assert hr.post('/api/knowledge/documents/text', json={'title': 'Synthetic leave policy',
+                       'text': 'Leave requires approval.', 'audience': 'public', 'collection': 'handbook'}).status_code == 201
+        response = candidate.post('/api/knowledge/answer', json={'question': 'What is the leave policy?', 'generate_answer': True})
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result['mode'] == 'extractive' and result['answer'] is None
+        assert [source['title'] for source in result['sources']] == ['Synthetic leave policy']
+        assert 'no question or excerpts were sent to Groq' in result['notice']
