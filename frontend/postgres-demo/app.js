@@ -575,6 +575,25 @@ function renderApplications(applications, jobs) {
       details.append(element("h4", "Extracted CV"), element("pre", application.resume_text));
       details.append(element("h4", "Provisional screening"), element("pre", application.score ? JSON.stringify(application.score, null, 2) : "Not screened"));
       card.append(details);
+      const guide = element("div");
+      card.append(button("Show suggested interview questions", async () => {
+        const generation = sessionGeneration;
+        guide.replaceChildren();
+        const result = await api(`/api/applications/${application.id}/interview-guide`);
+        ensureCurrent(generation);
+        const content = [element("p", result.notice)];
+        for (const item of result.questions) {
+          const block = element("section");
+          block.append(element("h4", `${item.category}: ${item.criterion}`), element("p", item.question));
+          block.append(element("p", item.reviewed
+            ? `Reviewed category evidence offsets: ${item.evidence_offsets.start}–${item.evidence_offsets.end} in the masked CV.`
+            : "No reviewed evidence for this category."));
+          content.push(block);
+        }
+        if (result.omitted_count) content.push(element("p", `${result.omitted_count} criteria were omitted by the safety or size filter.`));
+        if (!result.questions.length) content.push(element("p", "No suggested questions are available."));
+        guide.replaceChildren(...content);
+      }), guide);
       if (application.status === "submitted") {
         const rubric = element("div");
         card.append(button("Review weighted rubric", () => showRubric(application, rubric)), rubric);

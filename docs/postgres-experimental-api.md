@@ -179,6 +179,13 @@ Milestones can overlap and are not conversion rates; repeated events are counted
 once per application. A rubric review alone does not count as keyword screening.
 Applications removed from the database are excluded from the snapshot.
 
+HR can request suggested interview questions in the application view after a
+current, intact rubric review. Questions use job-skill labels and generic
+category prompts, with references to reviewed offsets in the masked résumé;
+they do not copy résumé excerpts or make hiring decisions. The direct-attribute
+filter is incomplete and HR must check every question for relevance and fairness.
+Changes to the CV or job invalidate the review and require a new assessment.
+
 HR may reject a submitted, advanced, or offered application with a nonempty
 reason through the browser or API. The decision atomically withdraws a presented offer and cancels future
 interviews, creating candidate notices and audit entries. An accepted offer

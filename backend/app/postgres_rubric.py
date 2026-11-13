@@ -74,6 +74,52 @@ def _source(db, application_id):
 
 
 def install_routes(app, connect, authenticate, authorize_locked):
+    @app.get('/api/applications/{application_id}/interview-guide')
+    def interview_guide(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
+        """Suggest job-related questions from the latest current human rubric."""
+        from app.interview_guide import _PROMPTS, _safe_criterion
+        from app.postgres_feedback import current_review
+
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+            job, masked, digest = _source(db, application_id)
+            latest = db.execute('''SELECT audit_event_id,review_json FROM hr_rubric_history
+                WHERE application_id=%s ORDER BY audit_event_id DESC LIMIT 1 FOR SHARE''',
+                (application_id,)).fetchone()
+            if not latest or current_review(db, application_id, latest['audit_event_id'], digest) is None:
+                raise HTTPException(status_code=409, detail='A current, intact HR rubric review is required')
+            try:
+                review = json.loads(latest['review_json'])
+                items = {item['category']: AssessmentItem.model_validate(item) for item in review['items']}
+                required = json.loads(job['required_skills'])
+                preferred = json.loads(job['preferred_skills'])
+                if not isinstance(required, list) or not isinstance(preferred, list):
+                    raise TypeError('Invalid job requirements')
+            except (TypeError, ValueError, KeyError):
+                raise HTTPException(status_code=409, detail='Review or job requirements are invalid') from None
+
+            questions, omitted = [], 0
+            for category, prompt_key, labels in (
+                ('mandatory_skills', 'mandatory', required), ('preferred_skills', 'preferred', preferred),
+                ('experience', 'experience', ['the responsibilities of this role']),
+                ('projects', 'projects', ['the responsibilities of this role']),
+                ('education', 'education', ['the responsibilities of this role']),
+            ):
+                item = items[category]
+                if item.score is not None and (item.end > len(masked) or not masked[item.start:item.end].strip()):
+                    raise HTTPException(status_code=409, detail='Reviewed evidence is unavailable')
+                for label in labels:
+                    if len(questions) >= 20 or not _safe_criterion(label):
+                        omitted += 1
+                        continue
+                    questions.append({'category': category, 'criterion': label,
+                        'question': _PROMPTS[prompt_key].format(criterion=label.strip()),
+                        'reviewed': item.score is not None,
+                        'evidence_offsets': {'start': item.start, 'end': item.end} if item.score is not None else None})
+            authorize_locked(db, request, user, 'hr')
+            return {'assessment_event_id': latest['audit_event_id'], 'questions': questions, 'omitted_count': omitted,
+                    'notice': 'Suggestions require HR review for job relevance and fairness. Evidence offsets refer to the overall category in the masked résumé, not each skill; they do not verify qualifications. The direct-attribute filter is incomplete.'}
+
     @app.post('/api/hr/rubric-comparison')
     def compare(payload: Comparison, request: Request, user: Annotated[User, Depends(authenticate)]):
         """Compare current human reviews; overlapping score ranges are indeterminate."""
