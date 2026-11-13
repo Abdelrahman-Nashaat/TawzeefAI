@@ -1,5 +1,26 @@
 # Experimental PostgreSQL API
 
+HR can also start a **resumable review** or advancement proposal from the
+browser. This variant commits each of five specialist stages separately. The
+review can be reopened after interruption and continued from the next stage;
+approval is available only after all stages complete and HR inspects the
+review. The API supports a private-slot proposal at
+`POST /api/applications/{id}/graph-review-preparations`; subsequent calls to
+`POST /api/graph-review-drafts/{id}/prepare` run one stage each. The browser
+currently exposes review and advancement without a slot. A changed source or
+availability invalidates the draft, which can still be discarded. Concurrent
+requests serialize on the draft and scheduling locks.
+
+Each step recomputes the full source snapshot for safety and compares it with
+the saved fingerprint; the specialist graph resumes from its persisted stage.
+Only digests and bounded status flags enter checkpoint state, not résumé text
+or policy excerpts. Digests of low-entropy inputs may still be guessable. The
+final specialist combines prior matching, application-status and slot flags
+into a deterministic suggested next step; it is not a decision or a model-led
+agent. HR approval revalidates current state and atomically records an advance
+and optional slot. A discarded in-progress review leaves its paused checkpoint
+in the synthetic demo database, but the closed draft cannot be continued.
+
 The HR demo can save a supervised review and reopen it after restart. The
 database retains the policy question, reviewer, status and a fingerprint;
 it does not retain the graph output or source excerpts. Reopening recomputes

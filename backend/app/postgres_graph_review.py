@@ -84,6 +84,21 @@ class ApprovalState(TypedDict, total=False):
     status_digest: str
     scheduling_digest: str
     policy_digest: str
+    matching_status: str
+    application_status: str
+    available_slots: bool
+    suggested_step: str
+
+
+_STAGES = ('parser', 'matching', 'status', 'scheduling', 'policy')
+
+
+def _suggested_step(state):
+    if state['application_status'] == 'submitted':
+        return 'review_advance' if state['matching_status'] == 'current' else 'review_rubric'
+    if state['application_status'] == 'advanced':
+        return 'candidate_can_book' if state['available_slots'] else 'review_interview_schedule'
+    return 'review_application_status'
 
 
 def _approval_graph(db, draft=None, expected=None):
@@ -100,20 +115,35 @@ def _approval_graph(db, draft=None, expected=None):
 
     graph = StateGraph(ApprovalState)
     if draft is not None and draft['checkpoint_version'] >= 2:
-        names = ('parser', 'matching', 'status', 'scheduling', 'policy')
+        names = _STAGES
         # Resume only the paused approval node. Do not re-read an unavailable
         # source when the reviewer merely discards an obsolete draft.
         nodes = (_specialist_nodes(db, draft['application_id'], draft['question'])
                  if expected is not None else [(name, None) for name in names])
         for name, specialist in nodes:
-            def record(_state, specialist=specialist, name=name):
+            def record(state, specialist=specialist, name=name):
                 if specialist is None:
                     raise RuntimeError('Cannot replay specialist nodes while resuming a review')
                 result = specialist({})
                 if expected is not None and result != {name if name != 'parser' else 'parsed': expected[name if name != 'parser' else 'parsed']}:
                     raise HTTPException(status_code=409, detail='Review changed while preparing; try again')
                 encoded = json.dumps(result, sort_keys=True, ensure_ascii=False, separators=(',', ':'), default=str)
-                return {name + '_digest': hashlib.sha256(encoded.encode('utf-8')).hexdigest()}
+                update = {name + '_digest': hashlib.sha256(encoded.encode('utf-8')).hexdigest()}
+                if draft['checkpoint_version'] == 3:
+                    # Subsequent stages consume the preceding stage's output,
+                    # rather than being independent hashes of five calls.
+                    prior = _STAGES.index(name)
+                    if any(previous + '_digest' not in state for previous in _STAGES[:prior]):
+                        raise RuntimeError('A previous specialist stage is missing')
+                    if name == 'matching':
+                        update['matching_status'] = result['matching']['status']
+                    elif name == 'status':
+                        update['application_status'] = result['status']['application_status']
+                    elif name == 'scheduling':
+                        update['available_slots'] = bool(result['scheduling']['slots'])
+                    elif name == 'policy':
+                        update['suggested_step'] = _suggested_step(state)
+                return update
             graph.add_node(name, record)
         graph.add_edge(START, 'parser')
         for left, right in zip(('parser', 'matching', 'status', 'scheduling'), ('matching', 'status', 'scheduling', 'policy'), strict=True):
@@ -139,6 +169,44 @@ def _start_approval(db, draft, expected):
         raise RuntimeError('The review did not pause for HR approval')
 
 
+def _preparation_state(db, draft):
+    state = _approval_graph(db, draft).get_state(_approval_config(draft['id']))
+    if (state.values.get('draft_id') != draft['id'] or
+            state.values.get('fingerprint') != draft['fingerprint'] or
+            state.values.get('intent') != draft['intent'] or
+            len(state.next) != 1 or state.next[0] not in (*_STAGES, 'human_review')):
+        raise HTTPException(status_code=409, detail='Review preparation checkpoint is unavailable or inconsistent')
+    completed = [name for name in _STAGES if name + '_digest' in state.values]
+    expected_completed = list(_STAGES[:_STAGES.index(state.next[0])]) if state.next[0] in _STAGES else list(_STAGES)
+    if completed != expected_completed:
+        raise HTTPException(status_code=409, detail='Review preparation stages are inconsistent')
+    return state
+
+
+def _preparation_progress(state):
+    return {'completed': [name for name in _STAGES if name + '_digest' in state.values],
+            'next': state.next[0], 'ready': state.next == ('human_review',) and len(state.interrupts) == 1,
+            'suggested_step': state.values.get('suggested_step')}
+
+
+def _advance_preparation(db, draft, expected, *, initial=False):
+    graph = _approval_graph(db, draft, expected)
+    config = _approval_config(draft['id'])
+    if initial:
+        input_value = {'draft_id': draft['id'], 'fingerprint': draft['fingerprint'], 'intent': draft['intent']}
+    else:
+        before = _preparation_state(db, draft)
+        if before.next == ('human_review',):
+            raise HTTPException(status_code=409, detail='Review preparation is already complete')
+        input_value = None
+    graph.invoke(input_value, config, interrupt_after=list(_STAGES), durability='sync')
+    state = _preparation_state(db, draft)
+    if state.next == ('human_review',) and not state.interrupts:
+        graph.invoke(None, config, durability='sync')
+        state = _preparation_state(db, draft)
+    return _preparation_progress(state)
+
+
 def _resume_approval(db, draft, reviewed, current_result=None):
     graph = _approval_graph(db, draft)
     config = _approval_config(draft['id'])
@@ -149,19 +217,25 @@ def _resume_approval(db, draft, reviewed, current_result=None):
             state.values.get('intent') != draft['intent'] or
             len(state.interrupts) != 1):
         raise HTTPException(status_code=409, detail='Review checkpoint is unavailable or inconsistent')
-    if draft['checkpoint_version'] == 2 and any(
+    if draft['checkpoint_version'] in (2, 3) and any(
         not isinstance(state.values.get(name + '_digest'), str)
         or len(state.values[name + '_digest']) != 64
         for name in ('parser', 'matching', 'status', 'scheduling', 'policy')
     ):
         raise HTTPException(status_code=409, detail='Specialist checkpoints are unavailable or inconsistent')
-    if draft['checkpoint_version'] == 2 and reviewed:
+    if draft['checkpoint_version'] in (2, 3) and reviewed:
         for name in ('parser', 'matching', 'status', 'scheduling', 'policy'):
             key = 'parsed' if name == 'parser' else name
             encoded = json.dumps({key: current_result[key]}, sort_keys=True, ensure_ascii=False,
                                  separators=(',', ':'), default=str)
             if state.values[name + '_digest'] != hashlib.sha256(encoded.encode('utf-8')).hexdigest():
                 raise HTTPException(status_code=409, detail='Specialist checkpoint differs from the reviewed result')
+        if draft['checkpoint_version'] == 3:
+            expected_step = _suggested_step({'matching_status': current_result['matching']['status'],
+                'application_status': current_result['status']['application_status'],
+                'available_slots': bool(current_result['scheduling']['slots'])})
+            if state.values.get('suggested_step') != expected_step:
+                raise HTTPException(status_code=409, detail='Specialist plan differs from the reviewed result')
     result = graph.invoke(Command(resume=reviewed), config, durability='sync')
     if result.get('reviewed') is not reviewed or result.get('__interrupt__'):
         raise RuntimeError('The review did not finish correctly')
@@ -283,6 +357,45 @@ def install_routes(app, connect, authenticate, authorize_locked):
             authorize_locked(db, request, user, 'hr')
             return {'id': row['id'], 'status': 'pending', 'intent': payload.intent, 'slot': slot, 'result': result}
 
+    @app.post('/api/applications/{application_id}/graph-review-preparations', status_code=201)
+    def begin_preparation(application_id: int, payload: DraftRequest, request: Request,
+                          user: Annotated[User, Depends(authenticate)]):
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+            lock_scheduling(db)
+            result, digest, event_id = _snapshot(db, application_id, payload.policy_question)
+            if payload.intent == 'advance' and (result['status']['application_status'] != 'submitted'
+                                                or result['matching']['status'] != 'current' or event_id is None):
+                raise HTTPException(status_code=409, detail='A submitted application and current HR rubric review are required')
+            slot = payload.slot.model_dump(mode='json') if payload.slot else None
+            if payload.slot:
+                validate_slot(db, application_id, payload.slot)
+            digest = _bind_slot(digest, slot)
+            draft = db.execute('''INSERT INTO graph_review_drafts(application_id,owner_id,question,fingerprint,intent,status,slot_proposal,checkpoint_version)
+                VALUES (%s,%s,%s,%s,%s,'pending',%s::jsonb,3) RETURNING *''',
+                (application_id, user.id, payload.policy_question, digest, payload.intent, json.dumps(slot) if slot else None)).fetchone()
+            progress = _advance_preparation(db, draft, result, initial=True)
+            authorize_locked(db, request, user, 'hr')
+            return {'id': draft['id'], 'status': 'pending', 'preparation': progress}
+
+    @app.post('/api/graph-review-drafts/{draft_id}/prepare')
+    def continue_preparation(draft_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+            lock_scheduling(db)
+            draft = db.execute('SELECT * FROM graph_review_drafts WHERE id=%s AND owner_id=%s FOR UPDATE',
+                               (draft_id, user.id)).fetchone()
+            if not draft:
+                raise HTTPException(status_code=404, detail='Review not found')
+            if draft['status'] != 'pending' or draft['checkpoint_version'] != 3:
+                raise HTTPException(status_code=409, detail='Review cannot be prepared')
+            result, digest, _ = _snapshot(db, draft['application_id'], draft['question'])
+            if _bind_slot(digest, draft['slot_proposal']) != draft['fingerprint']:
+                raise HTTPException(status_code=409, detail='Review changed; discard it and start again')
+            progress = _advance_preparation(db, draft, result)
+            authorize_locked(db, request, user, 'hr')
+            return {'id': draft_id, 'status': 'pending', 'preparation': progress}
+
     @app.get('/api/applications/{application_id}/graph-review-drafts')
     def list_drafts(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
         with connect() as db:
@@ -313,7 +426,11 @@ def install_routes(app, connect, authenticate, authorize_locked):
             authorize_locked(db, request, user, 'hr')
             if digest != draft['fingerprint']:
                 return {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'stale': True}
-            return {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'slot': draft['slot_proposal'], 'stale': False, 'result': result}
+            response = {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'slot': draft['slot_proposal'], 'stale': False, 'result': result}
+            if draft['checkpoint_version'] == 3 and draft['status'] == 'pending':
+                response['preparation'] = _preparation_progress(_preparation_state(db, draft))
+                authorize_locked(db, request, user, 'hr')
+            return response
 
     @app.post('/api/graph-review-drafts/{draft_id}/resume')
     def resume_draft(draft_id: int, payload: ReviewReply, request: Request,
@@ -327,6 +444,9 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=404, detail='Review not found')
             if draft['status'] != 'pending':
                 raise HTTPException(status_code=409, detail='Review is already closed')
+            if (draft['checkpoint_version'] == 3 and payload.reviewed and
+                    not _preparation_progress(_preparation_state(db, draft))['ready']):
+                raise HTTPException(status_code=409, detail='Finish review preparation before approval')
             if payload.reviewed:
                 result, digest, event_id = _snapshot(db, draft['application_id'], draft['question'])
                 digest = _bind_slot(digest, draft['slot_proposal'])
@@ -350,9 +470,9 @@ def install_routes(app, connect, authenticate, authorize_locked):
                             target_application_id,target_candidate_id) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
                             (slot.start_at, slot.end_at, slot.interviewer, key, user.id, draft['application_id'], candidate_id)).fetchone()
                         db.execute("INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (%s,%s,'created_private')", (created['id'], user.id))
-            if draft['checkpoint_version'] not in (0, 1, 2):
+            if draft['checkpoint_version'] not in (0, 1, 2, 3):
                 raise HTTPException(status_code=409, detail='Unsupported review checkpoint version')
-            if draft['checkpoint_version'] in (1, 2):
+            if draft['checkpoint_version'] in (1, 2) or (draft['checkpoint_version'] == 3 and payload.reviewed):
                 _resume_approval(db, draft, payload.reviewed, result if payload.reviewed else None)
             status = 'reviewed' if payload.reviewed else 'discarded'
             db.execute('UPDATE graph_review_drafts SET status=%s WHERE id=%s', (status, draft_id))

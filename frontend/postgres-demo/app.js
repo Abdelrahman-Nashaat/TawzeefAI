@@ -357,6 +357,11 @@ function renderApplications(applications, jobs) {
       card.append(graphForm);
       const draftPanel = element("div");
       const draftGeneration = sessionGeneration;
+      let draftViewGeneration = 0;
+      function ensureDraftView(session, view) {
+        ensureCurrent(session);
+        if (view !== draftViewGeneration) throw new StaleSession();
+      }
       const slotDraftForm = element("form");
       const draftStartLabel = element("label", "Proposed interview start (local time) "), draftStart = element("input");
       const draftEndLabel = element("label", "Proposed interview end (local time) "), draftEnd = element("input");
@@ -373,42 +378,62 @@ function renderApplications(applications, jobs) {
         const generation = sessionGeneration;
         action(event.submitter, async () => {
           ensureCurrent(draftGeneration);
+          const view = ++draftViewGeneration;
           const from = new Date(draftStart.value), to = new Date(draftEnd.value);
           if (!draftStart.value || !draftEnd.value || Number.isNaN(from.valueOf()) || Number.isNaN(to.valueOf())) throw new Error("Enter valid slot times.");
           const result = await api(`/api/applications/${application.id}/graph-review-drafts`, jsonPost({
             policy_question: graphQuestion.value, intent: "advance",
             slot: {start_at: from.toISOString(), end_at: to.toISOString(), interviewer: draftInterviewer.value}
           }));
-          ensureCurrent(generation); slotDraftForm.reset(); graphQuestion.value = "";
+          ensureDraftView(generation, view); slotDraftForm.reset(); graphQuestion.value = "";
           draftPanel.replaceChildren(element("p", `Saved proposal ${result.id}. Reopen to review and approve or discard.`));
         });
       });
-      card.append(button("Save supervised review", async () => {
+      card.append(button("Start resumable review", async () => {
         ensureCurrent(draftGeneration);
+        const view = ++draftViewGeneration;
+        const generation = sessionGeneration;
+        const result = await api(`/api/applications/${application.id}/graph-review-preparations`, jsonPost({policy_question: graphQuestion.value}));
+        ensureDraftView(generation, view); graphQuestion.value = "";
+        draftPanel.replaceChildren(element("p", `Review ${result.id} started. Open saved reviews to continue preparation.`));
+      }), button("Start resumable advancement proposal", async () => {
+        ensureCurrent(draftGeneration);
+        const view = ++draftViewGeneration;
+        const generation = sessionGeneration;
+        const result = await api(`/api/applications/${application.id}/graph-review-preparations`, jsonPost({policy_question: graphQuestion.value, intent: "advance"}));
+        ensureDraftView(generation, view); graphQuestion.value = "";
+        draftPanel.replaceChildren(element("p", `Proposal ${result.id} started. Open saved reviews to continue preparation.`));
+      }), button("Save supervised review", async () => {
+        ensureCurrent(draftGeneration);
+        const view = ++draftViewGeneration;
         const generation = sessionGeneration;
         const result = await api(`/api/applications/${application.id}/graph-review-drafts`, jsonPost({policy_question: graphQuestion.value}));
-        ensureCurrent(generation); graphQuestion.value = "";
+        ensureDraftView(generation, view); graphQuestion.value = "";
         draftPanel.replaceChildren(element("p", `Saved review ${result.id}. Reopen it to acknowledge or discard.`));
       }), button("Propose advancement for HR approval", async () => {
         ensureCurrent(draftGeneration);
+        const view = ++draftViewGeneration;
         const generation = sessionGeneration;
         const result = await api(`/api/applications/${application.id}/graph-review-drafts`, jsonPost({policy_question: graphQuestion.value, intent: "advance"}));
-        ensureCurrent(generation); graphQuestion.value = "";
+        ensureDraftView(generation, view); graphQuestion.value = "";
         draftPanel.replaceChildren(element("p", `Saved proposal ${result.id}. Reopen to review and approve or discard.`));
       }), button("Open saved reviews", async () => {
         ensureCurrent(draftGeneration);
+        const listView = ++draftViewGeneration;
         const generation = sessionGeneration;
         const drafts = await api(`/api/applications/${application.id}/graph-review-drafts`);
-        ensureCurrent(generation);
+        ensureDraftView(generation, listView);
         const list = element("div");
         if (!drafts.length) list.append(element("p", "No saved reviews."));
         for (const draft of drafts) {
           const row = element("div"); row.append(element("p", `Review ${draft.id}: ${draft.status}`));
           row.append(button("Open review", async () => {
             ensureCurrent(generation);
+            const viewGeneration = ++draftViewGeneration;
             const current = sessionGeneration;
+            async function renderReview() {
             const opened = await api(`/api/graph-review-drafts/${draft.id}`);
-            ensureCurrent(current);
+            ensureDraftView(current, viewGeneration);
             const view = element("div");
             view.append(element("pre", opened.stale ? "Sources or availability changed; start a new review." : JSON.stringify(opened.result, null, 2)));
             if (!opened.stale && opened.slot) {
@@ -416,22 +441,32 @@ function renderApplications(applications, jobs) {
                 element("p", "Approval advances the application and reserves this slot; the candidate must still book it."));
             }
             if (opened.status === "pending") {
-              for (const reviewed of (opened.stale ? [false] : [true, false])) {
+              if (!opened.stale && opened.preparation && !opened.preparation.ready) {
+                view.append(element("p", `Preparation complete: ${opened.preparation.completed.join(", ")}. Next: ${opened.preparation.next}.`));
+                view.append(button("Continue preparation", async () => {
+                  ensureDraftView(current, viewGeneration);
+                  await api(`/api/graph-review-drafts/${draft.id}/prepare`, {method: "POST"});
+                  ensureDraftView(current, viewGeneration);
+                  await renderReview();
+                }));
+              }
+              if (!opened.stale && opened.preparation?.ready) view.append(element("p", `Suggested next step: ${opened.preparation.suggested_step}. HR must decide.`));
+              for (const reviewed of (opened.stale || (opened.preparation && !opened.preparation.ready) ? [false] : [true, false])) {
                 view.append(button(reviewed ? (opened.intent === "advance" ? (opened.slot ? "Approve advancement and private slot" : "Approve advancement") : "Acknowledge review") : "Discard review", async () => {
-                  ensureCurrent(current);
+                  ensureDraftView(current, viewGeneration);
                   const active = sessionGeneration;
                   try { await api(`/api/graph-review-drafts/${draft.id}/resume`, jsonPost({reviewed})); }
                   catch (error) {
-                    ensureCurrent(active);
+                    ensureDraftView(active, viewGeneration);
                     draftPanel.replaceChildren(element("p", "The review could not be completed. Reopen it before trying again."));
                     throw error;
                   }
-                  ensureCurrent(active);
+                  ensureDraftView(active, viewGeneration);
                   const confirmation = reviewed ? (opened.intent === "advance" ? (opened.slot ? "Application advanced and private slot reserved. The candidate must book it." : "Application advanced by HR.") : "Review acknowledged. No decision made.") : "Review discarded.";
                   if (reviewed && opened.intent === "advance") {
-                    try { await refresh(); ensureCurrent(active); }
+                    try { await refresh(); ensureDraftView(active, viewGeneration); }
                     catch (error) {
-                      ensureCurrent(active);
+                      ensureDraftView(active, viewGeneration);
                       message(`${confirmation} Refresh the page to update the displayed status.`);
                       return;
                     }
@@ -441,6 +476,8 @@ function renderApplications(applications, jobs) {
               }
             }
             draftPanel.replaceChildren(view);
+            }
+            await renderReview();
           })); list.append(row);
         }
         draftPanel.replaceChildren(list);
