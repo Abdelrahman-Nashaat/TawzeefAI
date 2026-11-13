@@ -5,6 +5,24 @@ from test_postgres_experimental_api import db_for, login, mode, resume_bytes  # 
 from app.main import create_app
 
 
+def test_milestones_follow_real_recruitment_journey(mode):  # noqa: F811
+    from test_postgres_offers import complete
+
+    with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
+        application = complete(mode, candidate, hr)
+        job = candidate.get('/api/applications').json()[0]['job_id']
+        offer = hr.post(f'/api/applications/{application}/offers', json={'details': 'Synthetic terms'})
+        assert offer.status_code == 201, offer.text
+        assert candidate.post(f"/api/offers/{offer.json()['id']}/respond", json={'decision': 'accepted'}).status_code == 200
+        assert hr.post(f'/api/applications/{application}/decision', json={'decision': 'hire'}).status_code == 200
+        response = hr.get('/api/dashboard/jobs')
+        assert response.status_code == 200, response.text
+        item = next(row for row in response.json()['jobs'] if row['job_id'] == job)
+        assert item['milestones'] == {'screened': 1, 'advanced': 1, 'interview_completed': 1,
+                                      'offer_presented': 1, 'hired': 1, 'rejected': 0}
+        assert item['pipeline'] == [{'status': 'hired', 'count': 1}]
+
+
 def test_dashboard_uses_recorded_pipeline_and_hire_times(mode):  # noqa: F811
     with TestClient(create_app(seed_demo=True)) as candidate, TestClient(create_app(seed_demo=True)) as hr:
         assert candidate.get('/api/dashboard/jobs').status_code == 401
