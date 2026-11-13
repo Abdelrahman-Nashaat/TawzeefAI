@@ -337,6 +337,26 @@ function renderApplications(applications, jobs) {
     }
     if (user.role === "hr") {
       card.append(element("p", `Candidate ${application.candidate_id}`));
+      const auditPanel = element("div");
+      const auditRows = element("div");
+      let auditCursor = null;
+      let auditGeneration = 0;
+      async function loadAudit(append) {
+        const generation = sessionGeneration;
+        const view = append ? auditGeneration : ++auditGeneration;
+        const query = append && auditCursor !== null ? `?before=${encodeURIComponent(auditCursor)}` : "";
+        const result = await api(`/api/applications/${application.id}/audit${query}`);
+        ensureCurrent(generation);
+        if (view !== auditGeneration) return;
+        const rows = result.items.map(item => element("p", `${item.created_at} · ${item.action}${item.decision ? `: ${item.decision}` : ""} · actor ${item.actor_id}`));
+        if (append) auditRows.append(...rows); else auditRows.replaceChildren(...rows);
+        if (!append && !rows.length) auditRows.append(element("p", "No audit events."));
+        auditCursor = result.next_before; moreAudit.hidden = auditCursor === null;
+      }
+      const moreAudit = button("Load older audit events", () => loadAudit(true));
+      moreAudit.hidden = true;
+      auditPanel.append(element("p", "Event metadata only; assessment details are not shown."), auditRows, moreAudit);
+      card.append(button("View audit timeline", () => loadAudit(false)), auditPanel);
       const graphForm = element("form");
       const graphLabel = element("label", "Optional policy question ");
       const graphQuestion = element("input");

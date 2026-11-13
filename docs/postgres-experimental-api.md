@@ -190,6 +190,12 @@ they do not copy résumé excerpts or make hiring decisions. The direct-attribut
 filter is incomplete and HR must check every question for relevance and fairness.
 Changes to the CV or job invalidate the review and require a new assessment.
 
+HR can inspect a paginated audit timeline on an application. It shows event
+timestamps, actor IDs, action names and recognized decision types; it omits
+raw event details, notes and assessments. The timeline is HR-only and includes
+only audit events retained for that application. It does not reconstruct events
+that were never recorded.
+
 HR may reject a submitted, advanced, or offered application with a nonempty
 reason through the browser or API. The decision atomically withdraws a presented offer and cancels future
 interviews, creating candidate notices and audit entries. An accepted offer

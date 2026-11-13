@@ -39,6 +39,7 @@ from app.auth import (
 from app.auth_store import InvalidAccount, issue_session, session_user
 from app.blind import redact_resume
 from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_document_text
+from app.postgres_audit import install_routes as install_audit_routes
 from app.postgres_conversations import DDL as CONVERSATION_DDL
 from app.postgres_conversations import install_routes as install_conversation_routes
 from app.postgres_feedback import DDL as FEEDBACK_DDL
@@ -193,6 +194,7 @@ def create_postgres_app(*, seed_demo: bool, require_new_schema: bool = False, on
                         db.execute(statement)
                     db.execute(JOB_AUDIT_DDL)
                     db.execute(GRAPH_DRAFT_DDL)
+                    db.execute('CREATE INDEX IF NOT EXISTS audit_events_application_cursor ON audit_events(application_id,id DESC)')
                     db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS slot_proposal jsonb')
                     db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS checkpoint_version integer NOT NULL DEFAULT 0')
                     # Additive and idempotent for schemas created by earlier demo versions.
@@ -492,6 +494,7 @@ def create_postgres_app(*, seed_demo: bool, require_new_schema: bool = False, on
             _SCREEN_WORKERS.release()
 
     install_rubric_routes(app, connect, authenticate, authorize_locked)
+    install_audit_routes(app, connect, authenticate, authorize_locked)
     install_job_routes(app, connect, authenticate, authorize_locked)
     install_feedback_routes(app, connect, authenticate, authorize_locked)
     install_graph_review_routes(app, connect, authenticate, authorize_locked)
