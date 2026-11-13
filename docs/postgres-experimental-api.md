@@ -14,6 +14,15 @@ order. Each stage commits separately and rechecks the session, authorization,
 and source snapshot. If a stage fails, reopen the review to inspect its saved
 progress. Preparation does not make a recruitment decision or send a message;
 HR must still inspect and explicitly approve the completed review.
+A resumable review with a knowledge question searches the handbook plus job
+descriptions and past-hire patterns labeled for that exact job. Handbook items
+may be global or specific to the job; past-hire patterns must also be HR-only.
+The three collections are ranked together by lexical matching, so a review may
+return fewer than three collections. Source labels, physical pages and sections
+are shown for HR review. Job IDs are manually supplied metadata, not verified
+links, and past-hire patterns are leads rather than qualification criteria.
+Changed returned sources invalidate a pending review. Reviews created before
+this behavior retain their previous handbook-only retrieval.
 A changed source or
 availability invalidates the draft, which can still be discarded. Concurrent
 requests serialize on the draft and scheduling locks.
