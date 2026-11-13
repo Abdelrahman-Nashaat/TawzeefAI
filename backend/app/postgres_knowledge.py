@@ -1,16 +1,21 @@
 """Role-filtered knowledge search for the PostgreSQL demo."""
 import hashlib
+import json
 import math
 import os
 import re
+import secrets
 from threading import BoundedSemaphore
 from typing import Annotated, Literal
 
 from fastapi import Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from psycopg import sql
 from pydantic import BaseModel, Field, field_validator
 
 from app.auth import User
+from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_pdf_pages
+from app.knowledge_documents import annotate_pdf_selected_pages, pdf_preview_digest
 from app.knowledge import ROLE_AUDIENCES, Source, _document_passages, _rank_lexical, _tokens
 
 _HYBRID_BUSY = BoundedSemaphore(1)
@@ -132,6 +137,82 @@ class Question(Metadata):
 
 
 def install_routes(app, connect, authenticate, authorize_locked):
+    async def read_pdf(request, filename):
+        content = bytearray()
+        async for chunk in request.stream():
+            if len(content) + len(chunk) > MAX_FILE_BYTES:
+                raise HTTPException(status_code=413, detail='File exceeds 5 MiB limit')
+            content.extend(chunk)
+        try:
+            pages = await run_in_threadpool(extract_pdf_pages, filename, bytes(content))
+        except DocumentTextError as exc:
+            raise HTTPException(status_code=422, detail={'code': exc.code, 'message': str(exc)}) from exc
+        return pages, pdf_preview_digest(pages, None, bytes(content), None), hashlib.sha256(content).hexdigest()
+
+    @app.post('/api/knowledge/documents/pdf-preview')
+    async def preview_pdf(request: Request, user: Annotated[User, Depends(authenticate)], filename: str = 'document.pdf'):
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+        pages, digest, _ = await read_pdf(request, filename)
+        if sum(len(page['text'].splitlines()) for page in pages) > 5000:
+            raise HTTPException(status_code=422, detail='PDF has too many lines to review')
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+        return {'pages': [dict(page, lines=page['text'].splitlines()) for page in pages], 'digest': digest}
+
+    @app.post('/api/knowledge/documents/pdf', status_code=201)
+    async def create_pdf(request: Request, user: Annotated[User, Depends(authenticate)],
+                         filename: str, title: str, audience: Literal['public', 'staff', 'hr'],
+                         collection: Literal['handbook', 'job_description', 'past_hire_patterns'],
+                         digest: str, marks: str = '[]', job_id: str | None = None):
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+        if not title.strip() or len(title) > 200 or len(marks) > 10000:
+            raise HTTPException(status_code=422, detail='Invalid title or heading selection')
+        if collection == 'past_hire_patterns' and audience != 'hr':
+            raise HTTPException(status_code=422, detail='Past hire patterns must be HR-only')
+        if job_id is not None and (len(job_id) > 64 or not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', job_id)):
+            raise HTTPException(status_code=422, detail='Invalid job ID')
+        pages, actual_digest, source_hash = await read_pdf(request, filename)
+        if not re.fullmatch(r'[0-9a-f]{64}', digest) or not secrets.compare_digest(actual_digest, digest):
+            raise HTTPException(status_code=409, detail='PDF differs from the reviewed preview')
+        try:
+            selected = json.loads(marks)
+            if not isinstance(selected, list):
+                raise ValueError('Invalid heading selection')
+            if selected:
+                annotated = annotate_pdf_selected_pages(pages, selected)
+            else:
+                annotated = [dict(page, selected_sections_v1=[{'start': 0, 'end': len(page['text']), 'section': None}]) for page in pages]
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        segments = []
+        for page in annotated:
+            for span in page['selected_sections_v1']:
+                text = page['text'][span['start']:span['end']]
+                if not text.strip():
+                    continue
+                for offset in range(0, len(text), 4000):
+                    part = text[offset:offset + 4000]
+                    segments.append((page['page'], span['section'], part))
+        if not segments or len(segments) > 100:
+            raise HTTPException(status_code=422, detail='PDF must contain 1 to 100 text segments')
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+            db.execute("SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext('knowledge-documents-v1'))")
+            count = db.execute('SELECT count(*) AS n FROM knowledge_documents WHERE active').fetchone()['n']
+            if count + len(segments) > 500:
+                raise HTTPException(status_code=409, detail='Experimental knowledge capacity reached')
+            ids = []
+            for page, section, body in segments:
+                row = db.execute('''INSERT INTO knowledge_documents(title,body,audience,collection,page,job_id,section,created_by,source_sha256)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
+                    (title.strip(), body, audience, collection, page, job_id, section, user.id, source_hash)).fetchone()
+                ids.append(row['id'])
+                db.execute("INSERT INTO knowledge_audit(document_id,actor_id,action) VALUES (%s,%s,'created')", (row['id'], user.id))
+            authorize_locked(db, request, user, 'hr')
+        return {'ids': ids, 'segments': len(ids)}
+
     @app.get('/api/knowledge/documents')
     def list_documents(request: Request, user: Annotated[User, Depends(authenticate)]):
         """List active document metadata for HR without returning document bodies."""

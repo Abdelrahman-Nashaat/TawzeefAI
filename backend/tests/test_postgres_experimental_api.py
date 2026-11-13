@@ -286,3 +286,98 @@ def test_concurrent_user_revocation_waits_for_screen_transaction(mode, monkeypat
         with db_for(mode) as db:
             db.execute("UPDATE users SET active=0 WHERE username='hr'")
         assert hr.post(f'/api/applications/{application_id}/screen').status_code == 401
+
+
+def pdf_bytes():
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+    writer = PdfWriter()
+    for lines in [('Leave policy', 'Synthetic staff receive vacation days.'),
+                  ('Synthetic vacation requests use the portal.',)]:
+        page = writer.add_blank_page(width=612, height=792)
+        font = DictionaryObject({NameObject('/Type'): NameObject('/Font'), NameObject('/Subtype'): NameObject('/Type1'),
+                                 NameObject('/BaseFont'): NameObject('/Helvetica')})
+        page[NameObject('/Resources')] = DictionaryObject({NameObject('/Font'): DictionaryObject({
+            NameObject('/F1'): writer._add_object(font)})})
+        stream = DecodedStreamObject()
+        stream.set_data(('BT /F1 12 Tf 50 700 Td ' + ' 0 -18 Td '.join(f'({line}) Tj' for line in lines) + ' ET').encode('ascii'))
+        page[NameObject('/Contents')] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def test_reviewed_pdf_ingestion_provenance_and_access(mode):
+    import hashlib
+    import json
+    content = pdf_bytes()
+    with TestClient(create_app(seed_demo=True)) as hr, TestClient(create_app(seed_demo=True)) as candidate:
+        login(hr, 'hr')
+        login(candidate, 'candidate')
+        assert candidate.post('/api/knowledge/documents/pdf-preview', params={'filename':'policy.pdf'}, content=content).status_code == 403
+        from test_partial_pdf_ingestion import make_pdf
+        partial = hr.post('/api/knowledge/documents/pdf-preview', params={'filename':'policy.pdf'}, content=make_pdf(['text', 'image']))
+        assert partial.status_code == 422 and partial.json()['detail']['code'] == 'partial_text'
+        assert hr.post('/api/knowledge/documents/pdf-preview', params={'filename':'policy.pdf'}, content=b'x' * (5 * 1024 * 1024 + 1)).status_code == 413
+        preview = hr.post('/api/knowledge/documents/pdf-preview', params={'filename':'policy.pdf'}, content=content)
+        assert preview.status_code == 200, preview.text
+        assert [p['page'] for p in preview.json()['pages']] == [1, 2]
+        params = {'filename':'policy.pdf', 'title':'Synthetic leave', 'audience':'hr', 'collection':'handbook',
+                  'digest': preview.json()['digest'], 'marks':json.dumps([{'page':1, 'line':0}])}
+        assert candidate.post('/api/knowledge/documents/pdf', params=params, content=content).status_code == 403
+        assert hr.post('/api/knowledge/documents/pdf', params={**params, 'digest':'0'*64}, content=content).status_code == 409
+        assert hr.post('/api/knowledge/documents/pdf', params=params, content=content + b'\n').status_code == 409
+        assert hr.post('/api/knowledge/documents/pdf', params={**params, 'marks':'[{"page":1,"line":999}]'}, content=content).status_code == 422
+        response = hr.post('/api/knowledge/documents/pdf', params=params, content=content)
+        assert response.status_code == 201, response.text
+        assert response.json()['segments'] == 2
+        with db_for(mode) as db:
+            rows = db.execute('SELECT page,section,body,source_sha256 FROM knowledge_documents ORDER BY id').fetchall()
+            assert [r['page'] for r in rows] == [1, 2]
+            assert all(r['section'] == 'Leave policy' for r in rows)
+            assert [r['body'] for r in rows] == [p['text'] for p in preview.json()['pages']]
+            assert all(r['source_sha256'] == hashlib.sha256(content).hexdigest() for r in rows)
+            assert db.execute('SELECT count(*) AS n FROM knowledge_audit').fetchone()['n'] == 2
+        hr_results = hr.post('/api/knowledge/answer', json={'question':'vacation portal'}).json()['sources']
+        assert any(s['page'] == 2 and s['section'] == 'Leave policy' for s in hr_results)
+        assert candidate.post('/api/knowledge/answer', json={'question':'vacation portal'}).json()['sources'] == []
+
+
+def test_reviewed_pdf_atomic_rollback(mode):
+    content = pdf_bytes()
+    with TestClient(create_app(seed_demo=True), raise_server_exceptions=False) as hr:
+        login(hr, 'hr')
+        digest = hr.post('/api/knowledge/documents/pdf-preview', params={'filename':'policy.pdf'}, content=content).json()['digest']
+        with db_for(mode) as db:
+            db.execute('ALTER TABLE knowledge_documents ADD CONSTRAINT reject_second_page CHECK (page <> 2)')
+        response = hr.post('/api/knowledge/documents/pdf', params={'filename':'policy.pdf', 'title':'Synthetic',
+            'audience':'hr', 'collection':'handbook', 'digest':digest}, content=content)
+        assert response.status_code == 500
+        with db_for(mode) as db:
+            assert db.execute('SELECT count(*) AS n FROM knowledge_documents').fetchone()['n'] == 0
+            assert db.execute('SELECT count(*) AS n FROM knowledge_audit').fetchone()['n'] == 0
+
+
+@pytest.mark.parametrize('reason', ['revoked', 'expired'])
+def test_pdf_session_revoked_during_extraction(mode, monkeypatch, reason):
+    import app.postgres_knowledge as knowledge
+    content = pdf_bytes()
+    with TestClient(create_app(seed_demo=True)) as hr:
+        login(hr, 'hr')
+        digest = hr.post('/api/knowledge/documents/pdf-preview', params={'filename':'policy.pdf'}, content=content).json()['digest']
+        original = knowledge.extract_pdf_pages
+        def revoke(filename, data):
+            pages = original(filename, data)
+            with db_for(mode) as db:
+                if reason == 'revoked':
+                    db.execute("UPDATE users SET active=0 WHERE username='hr'")
+                else:
+                    db.execute("UPDATE sessions SET expires_at=0 WHERE user_id=(SELECT id FROM users WHERE username='hr')")
+            return pages
+        monkeypatch.setattr(knowledge, 'extract_pdf_pages', revoke)
+        response = hr.post('/api/knowledge/documents/pdf', params={'filename':'policy.pdf', 'title':'Synthetic',
+            'audience':'hr', 'collection':'handbook', 'digest':digest}, content=content)
+        assert response.status_code == 401
+        with db_for(mode) as db:
+            assert db.execute('SELECT count(*) AS n FROM knowledge_documents').fetchone()['n'] == 0
+            assert db.execute('SELECT count(*) AS n FROM knowledge_audit').fetchone()['n'] == 0

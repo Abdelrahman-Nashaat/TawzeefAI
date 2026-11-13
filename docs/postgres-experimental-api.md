@@ -253,6 +253,19 @@ experiment: saving an assessment itself does not advance, reject, or schedule.
 
 ## Knowledge metadata filters
 
+HR can preview and import a synthetic text-based PDF in the PostgreSQL demo.
+The preview displays extracted lines for selecting section headings; a section
+continues across physical pages until the next selected heading. The import
+re-extracts the same PDF and requires a matching preview fingerprint. Stored
+segments retain physical page, selected section and the SHA-256 of the original
+PDF bytes. The PDF itself is not retained. Segments are managed individually;
+duplicate imports are possible. Empty pages create no segment. OCR is not
+available in this path; mixed text and image-only pages are rejected. Extracted
+text may still omit visual content on pages with a text layer, so review it
+against the source. Uploads are limited to 5 MiB, 100 pages, 200,000 extracted
+characters, 5,000 preview lines and 100 resulting segments. The existing
+500-active-segment capacity applies atomically to each import.
+
 HR can optionally record a job ID and section for each synthetic text document.
 Users can filter extractive, experimental hybrid, and saved-conversation searches
 by exact job ID and section. Only currently authorized documents are considered;

@@ -8,6 +8,7 @@ let sessionGeneration = 0;
 let jobRevision = null;
 let conversationId = null;
 let conversationGeneration = 0;
+let pdfReview = null;
 class StaleSession extends Error {}
 function ensureCurrent(generation) { if (generation !== sessionGeneration) throw new StaleSession(); }
 
@@ -35,7 +36,8 @@ function signedOut() {
   $("slot-form").reset();
   $("hr-job-form").reset(); $("hr-job-id").disabled = false; jobRevision = null;
   for (const id of ["applications", "interviews", "notices", "submission-notices", "dashboard-results", "knowledge-results", "knowledge-documents", "hr-job-list"]) $(id).replaceChildren();
-  $("knowledge-form").reset(); $("knowledge-add").reset();
+  $("knowledge-form").reset(); $("knowledge-add").reset(); $("knowledge-pdf").reset();
+  pdfReview = null; $("knowledge-pdf-preview").replaceChildren(); $("knowledge-pdf-import").disabled = true;
   $("conversation-form").reset(); $("conversation-form").hidden = true;
   $("conversation-current").textContent = "No conversation selected.";
   $("conversation-list-results").replaceChildren(); $("conversation-turns").replaceChildren();
@@ -628,6 +630,7 @@ async function openWorkspace(account) {
   $("submission-notices-panel").hidden = user.role !== "hr";
   $("hr-jobs").hidden = user.role !== "hr";
   $("knowledge-add").hidden = user.role !== "hr";
+  $("knowledge-pdf").hidden = user.role !== "hr";
   $("knowledge-management").hidden = user.role !== "hr";
   for (const id of ["applications-panel", "interviews-panel", "notices-panel"]) $(id).hidden = user.role === "employee";
   $("welcome").textContent = `Welcome, ${user.display_name}`;
@@ -731,6 +734,45 @@ $("knowledge-add").addEventListener("submit", (event) => {
       job_id: $("knowledge-job-id").value.trim() || null, section: $("knowledge-section").value.trim() || null}));
     ensureCurrent(generation); $("knowledge-add").reset(); message('Synthetic document added.');
   });
+});
+$("knowledge-pdf-file").addEventListener('change', () => {
+  pdfReview = null; $("knowledge-pdf-preview").replaceChildren(); $("knowledge-pdf-import").disabled = true;
+});
+$("knowledge-pdf-preview-button").addEventListener('click', () => action($("knowledge-pdf-preview-button"), async () => {
+  const generation = sessionGeneration, file = $("knowledge-pdf-file").files[0];
+  if (!file) throw new Error('Select a PDF first.');
+  pdfReview = null; $("knowledge-pdf-import").disabled = true; $("knowledge-pdf-preview").replaceChildren();
+  const result = await api(`/api/knowledge/documents/pdf-preview?filename=${encodeURIComponent(file.name)}`, {method: 'POST', body: file});
+  ensureCurrent(generation);
+  if ($("knowledge-pdf-file").files[0] !== file) return;
+  const container = $("knowledge-pdf-preview");
+  for (const page of result.pages) {
+    const group = element('fieldset'); group.append(element('legend', `Page ${page.page}`));
+    page.lines.forEach((line, index) => {
+      const row = element('div');
+      if (line.trim() && line.trim().length <= 200 && !/[\x00-\x1f]/.test(line.trim())) {
+        const input = document.createElement('input'); input.type = 'checkbox'; input.dataset.page = page.page; input.dataset.line = index;
+        const label = element('label'); label.append(input, document.createTextNode(` ${line}`)); row.append(label);
+      } else row.textContent = line;
+      group.append(row);
+    });
+    container.append(group);
+  }
+  pdfReview = {file, digest: result.digest}; $("knowledge-pdf-import").disabled = false;
+}));
+$("knowledge-pdf").addEventListener('submit', event => {
+  event.preventDefault();
+  action(event.submitter, async () => {
+    const generation = sessionGeneration, review = pdfReview;
+    if (!review || $("knowledge-pdf-file").files[0] !== review.file) throw new Error('Preview the PDF first.');
+    const marks = [...$("knowledge-pdf-preview").querySelectorAll('input:checked')].map(input => ({page: Number(input.dataset.page), line: Number(input.dataset.line)}));
+    const params = new URLSearchParams({filename: review.file.name, title: $("knowledge-pdf-title").value, audience: $("knowledge-pdf-audience").value,
+      collection: $("knowledge-pdf-collection").value, digest: review.digest, marks: JSON.stringify(marks)});
+    if ($("knowledge-pdf-job").value.trim()) params.set('job_id', $("knowledge-pdf-job").value.trim());
+    const result = await api(`/api/knowledge/documents/pdf?${params}`, {method: 'POST', body: review.file});
+    ensureCurrent(generation); pdfReview = null; $("knowledge-pdf").reset(); $("knowledge-pdf-preview").replaceChildren();
+    $("knowledge-pdf-import").disabled = true; message(`Imported ${result.segments} reviewed text segments.`);
+  }).finally(() => { if (!pdfReview) $("knowledge-pdf-import").disabled = true; });
 });
 async function loadKnowledgeDocuments() {
   const generation = sessionGeneration;

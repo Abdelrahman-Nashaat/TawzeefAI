@@ -82,6 +82,15 @@
           <label>Collection <select id="knowledge-collection"><option value="handbook">Handbook</option><option value="job_description">Job descriptions</option><option value="past_hire_patterns">Past hire patterns (HR only)</option></select></label>
           <label>Page <input id="knowledge-page" type="number" min="1" max="100000"></label><label>Job ID <input id="knowledge-job-id" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*"></label><label>Section <input id="knowledge-section" maxlength="200"></label><button>Add document</button>
         </form>
+        <form id="knowledge-pdf" hidden><h3>Import synthetic PDF</h3>
+          <p>Review extracted text and select heading lines. Page numbers refer to physical PDF pages; extraction can omit visual content. OCR is unavailable here.</p>
+          <label>PDF <input id="knowledge-pdf-file" type="file" accept=".pdf,application/pdf" required></label>
+          <label>Title <input id="knowledge-pdf-title" maxlength="200" required></label>
+          <label>Audience <select id="knowledge-pdf-audience"><option value="public">Public</option><option value="staff">Staff</option><option value="hr">HR</option></select></label>
+          <label>Collection <select id="knowledge-pdf-collection"><option value="handbook">Handbook</option><option value="job_description">Job descriptions</option><option value="past_hire_patterns">Past hire patterns (HR only)</option></select></label>
+          <label>Job ID <input id="knowledge-pdf-job" maxlength="64" pattern="[a-z0-9]+(-[a-z0-9]+)*"></label>
+          <button type="button" id="knowledge-pdf-preview-button">Preview PDF</button><div id="knowledge-pdf-preview"></div><button id="knowledge-pdf-import" disabled>Import reviewed PDF</button>
+        </form>
         <div id="knowledge-management" hidden><button id="knowledge-list" type="button">Manage documents</button><div id="knowledge-documents"></div></div>
       </section>
       <section id="submission-notices-panel" hidden><h2>New application notices</h2><button id="load-submissions">View notices</button><div id="submission-notices"></div><button id="more-submissions" hidden>Load older notices</button></section>
