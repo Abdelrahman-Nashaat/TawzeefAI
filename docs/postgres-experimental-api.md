@@ -193,6 +193,10 @@ An application whose owner changes cannot use the former owner's reservation.
 On startup the experimental schema adds reservation columns; stop older server
 versions before upgrading. No invitations or external messages are sent.
 Booking is recorded locally; no email or calendar invitation is delivered.
+The candidate or HR can download a local iCalendar file for a scheduled booking
+and import it manually. The file is not synchronized; a previously saved file
+does not update after cancellation. Fractional-second interview times cannot be
+represented in the export and are rejected rather than rounded.
 Candidates may view their current persisted stage in the browser or via
 `GET /api/workflows/{id}/progress`. The stage excludes HR notes and scores;
 an interview becomes interviewed only after HR confirms completion.

@@ -590,6 +590,12 @@ function renderInterviews(interviews) {
     const card = element("article");
     card.append(element("p", `Application ${interview.application_id}: ${date(interview.start_at)} - ${date(interview.end_at)} | ${interview.interviewer}`));
     card.append(element("p", `Status: ${interview.completed ? "completed" : interview.status}`));
+    if (interview.status === "scheduled") {
+      const calendar = element("a", "Download calendar file");
+      calendar.href = `/api/interviews/${encodeURIComponent(interview.id)}/calendar`;
+      calendar.download = `interview-${interview.id}.ics`;
+      card.append(calendar, element("p", "A saved calendar file does not update if the interview changes or is cancelled."));
+    }
     if (interview.status === "scheduled" && !interview.completed && new Date(interview.start_at) > new Date()) {
       const suffix = user.role === "hr" ? "cancel" : "candidate-cancel";
       card.append(button("Cancel interview", async () => {

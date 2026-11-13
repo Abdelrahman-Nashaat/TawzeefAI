@@ -9,10 +9,11 @@ import json
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Query, Request
+from fastapi import Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, StrictInt
 
 from app.auth import User
+from app.interview_calendar import _fold, _instant, _text
 from app.postgres_offers import DDL as OFFER_DDL
 from app.postgres_offers import hire
 from app.postgres_offers import install_routes as install_offer_routes
@@ -310,6 +311,42 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=403, detail='Access denied')
             authorize_locked(db, request, user)
             return [dict(row) for row in rows]
+
+    @app.get('/api/interviews/{interview_id}/calendar')
+    def interview_calendar(interview_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
+        """Export one authorized active booking; this does not sync a calendar."""
+        with connect() as db:
+            authorize_locked(db, request, user)
+            if user.role not in ('candidate', 'hr'):
+                raise HTTPException(status_code=403, detail='Access denied')
+            row = db.execute('''SELECT i.id,i.application_id,i.candidate_id,i.status,i.start_at,i.end_at,
+                a.candidate_id AS application_owner,j.title,b.created_at,b.candidate_id AS booking_owner,
+                current_schema() AS schema_name
+                FROM interviews i JOIN applications a ON a.id=i.application_id
+                JOIN jobs j ON j.id=a.job_id JOIN candidate_interview_bookings b ON b.interview_id=i.id
+                WHERE i.id=%s FOR SHARE OF i,a,j,b''', (interview_id,)).fetchone()
+            if row is None or (user.role == 'candidate' and row['candidate_id'] != user.id):
+                raise HTTPException(status_code=404, detail='Interview not found')
+            if row['candidate_id'] != row['application_owner'] or row['candidate_id'] != row['booking_owner']:
+                raise HTTPException(status_code=409, detail='Interview ownership is inconsistent')
+            if row['status'] != 'scheduled':
+                raise HTTPException(status_code=409, detail='Cancelled interviews cannot be exported as active events')
+            start, end = _instant(row['start_at'].isoformat()), _instant(row['end_at'].isoformat())
+            if end <= start:
+                raise HTTPException(status_code=409, detail='Interview interval is invalid')
+            created = row['created_at']
+            stamp = _instant(created.replace(microsecond=0).isoformat())
+            uid = hashlib.sha256(f"{row['schema_name']}:{row['id']}:{created.isoformat()}".encode()).hexdigest()
+            lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//TawzeefAI//Local interviews//EN',
+                     'CALSCALE:GREGORIAN', 'BEGIN:VEVENT', f'UID:{uid}@tawzeefai.local', f'DTSTAMP:{stamp}',
+                     f'DTSTART:{start}', f'DTEND:{end}', f"SUMMARY:{_text('Interview: ' + row['title'])}",
+                     'END:VEVENT', 'END:VCALENDAR']
+            body = ('\r\n'.join(_fold(line) for line in lines) + '\r\n').encode('utf-8')
+            authorize_locked(db, request, user)
+            return Response(body, media_type='text/calendar', headers={
+                'Content-Disposition': f'attachment; filename="interview-{interview_id}.ics"',
+                'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+            })
 
     @app.post('/api/interviews/{interview_id}/complete')
     def complete_interview(interview_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
