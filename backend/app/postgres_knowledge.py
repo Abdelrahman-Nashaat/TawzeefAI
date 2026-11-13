@@ -44,12 +44,24 @@ def _has_cited_sentences(answer, sources):
     """
     if not _has_valid_citations(answer, sources):
         return False
-    boundary = re.compile(r'[.!?؟](?:[ \t]*\[[^\[\]\n]{1,128}\])*(?=\s|$)|\n+')
+    citation_pattern = r'\[[^\[\]\n]{1,128}\]'
+    # Preserve offsets but hide punctuation inside valid citation IDs. Split
+    # sentence terminators even when the next sentence lacks whitespace; a
+    # decimal point between digits is not itself a sentence boundary.
+    masked = re.sub(citation_pattern, lambda match: 'x' * len(match.group()), answer)
+    boundary = re.compile(r'(?<!\d)\.|\.(?!\d)|[!?؟。！？]|[\n\r\v\f\x85\u2028\u2029]+')
     chunks = []
     start = 0
-    for match in boundary.finditer(answer):
-        chunks.append(answer[start:match.end()])
-        start = match.end()
+    for match in boundary.finditer(masked):
+        if match.start() < start:
+            continue
+        end = match.end()
+        if match.group()[0] not in '\n\r\v\f\x85\u2028\u2029':
+            trailing = re.match(r'(?:[ \t]*' + citation_pattern + r')+', answer[end:])
+            if trailing:
+                end += trailing.end()
+        chunks.append(answer[start:end])
+        start = end
     chunks.append(answer[start:])
     substantive = False
     for chunk in chunks:
