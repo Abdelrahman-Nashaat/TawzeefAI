@@ -344,6 +344,20 @@ def create_postgres_app(*, seed_demo: bool, require_new_schema: bool = False, on
     def health():
         return {'status':'ok', 'mode':'postgres-experimental-recruitment'}
 
+    @app.get('/api/ready')
+    def ready():
+        """Check database connectivity and the expected demo schema marker."""
+        try:
+            with psycopg.connect(dsn, row_factory=dict_row, connect_timeout=3) as db:
+                db.execute("SET LOCAL statement_timeout = '2s'")
+                db.execute(sql.SQL('SET LOCAL search_path TO {}, pg_catalog').format(sql.Identifier(schema)))
+                versions = db.execute('SELECT version FROM metadata LIMIT 2').fetchall()
+                if len(versions) != 1 or versions[0]['version'] != _SCHEMA_VERSION:
+                    raise ValueError('Invalid schema marker')
+        except (psycopg.Error, ValueError):
+            return JSONResponse({'status': 'unavailable'}, status_code=503, headers={'Cache-Control': 'no-store'})
+        return JSONResponse({'status': 'ready'}, headers={'Cache-Control': 'no-store'})
+
     @app.post('/api/auth/login')
     def login(payload: Login, request: Request, response: Response):
         with connect() as db:

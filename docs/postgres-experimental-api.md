@@ -148,6 +148,12 @@ are implemented. A dedicated browser interface supports these actions and saved
 knowledge conversations. Calendar and email delivery remain unavailable
 in this mode.
 
+`GET /api/health` reports that the web process is responding. `GET /api/ready`
+also checks PostgreSQL connectivity and the expected schema-version marker; it
+returns HTTP 503 without database details if either check fails. The PostgreSQL
+Docker demo uses readiness for its container health check. This is not a full
+end-to-end test of every feature or external provider.
+
 HR can run a read-only LangGraph review from an application. Five deterministic
 specialists summarize parsed sections, the current audited rubric range, status,
 available slots and optional lexical policy sources. This immediate review does
