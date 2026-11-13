@@ -21,7 +21,7 @@ agent. HR approval revalidates current state and atomically records an advance
 and optional slot. A discarded in-progress review leaves its paused checkpoint
 in the synthetic demo database, but the closed draft cannot be continued.
 
-The HR demo can save a supervised review and reopen it after restart. The
+The original supervised-review path can also save a review and reopen it after restart. The
 database retains the policy question, reviewer, status and a fingerprint;
 it does not retain the graph output or source excerpts. Reopening recomputes
 the review, and acknowledgment requires the source, results and availability
@@ -39,9 +39,10 @@ database transaction as the HR action and audit, after rechecking current
 sources and authorization. Reviews made before checkpoint support retain their
 earlier application-level behavior. Individual checkpoints contain output
 digests rather than plaintext, but low-entropy outputs may be guessed from
-their hashes. The specialist nodes do not yet exchange intermediate results
+their hashes. In this original path the specialist nodes do not exchange intermediate results
 or provide autonomous planning. Their checkpoints are committed together
-when draft creation succeeds; a failure during creation restarts all stages.
+when draft creation succeeds; a failure during creation restarts all stages. The
+resumable variant described above persists stages separately.
 Use synthetic information
 only; questions and checkpoint records remain until the demo database is removed.
 
