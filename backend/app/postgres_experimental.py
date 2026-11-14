@@ -210,6 +210,8 @@ def create_postgres_app(*, seed_demo: bool, require_new_schema: bool = False, on
                     db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS slot_proposal jsonb')
                     db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS offer_details text')
                     db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS checkpoint_version integer NOT NULL DEFAULT 0')
+                    db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS adaptive_plan jsonb')
+                    db.execute('ALTER TABLE graph_review_drafts ADD COLUMN IF NOT EXISTS adaptive_plan_source text')
                     # Additive and idempotent for schemas created by earlier demo versions.
                     db.execute('''CREATE TABLE IF NOT EXISTS screening_history (
                         audit_event_id bigint PRIMARY KEY REFERENCES audit_events(id), score_json text NOT NULL)''')

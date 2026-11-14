@@ -1,5 +1,27 @@
 # Experimental PostgreSQL API
 
+An HR user can create an adaptive, resumable review with
+`POST /api/applications/{id}/adaptive-review-preparations`. This uses the same
+payload and HR approval actions as resumable review, with optional
+`"model_plan": true`. A validated plan chooses a bounded sequence of existing
+read-only parser, rubric-status, application-status, and availability stages;
+an explicitly supplied policy question adds the policy stage. The plan, source
+and completed stages are returned and persisted; each stage has its own
+transaction. Reopening uses the existing draft endpoint, and approval and
+discard use the existing resume endpoint. The model is opt-in, requires the
+PostgreSQL Groq configuration, and sees only bounded status facts; invalid
+or unavailable model plans use a labeled deterministic fallback. Decisions,
+slot creation and offers remain behind the existing explicit HR approval.
+
+This API is an incremental synthetic-data experiment, not full autonomous
+multi-agent behavior. Planning first reads matching and status; after selection,
+the safety snapshot recomputes the selected specialist outputs before each
+stage and approval. The matching specialist reads the current human rubric
+rather than generating a new score. The adaptive path currently has no dedicated
+browser control.
+Output is a review aid and the existing warnings about unverified matching,
+external model reliability, and sensitive data remain applicable.
+
 HR can check `GET /api/applications/{id}/duplicates` for up to 50 other
 applications with exactly identical, nonblank extracted résumé text across
 jobs. `truncated` signals additional matches. This compares extracted text,
