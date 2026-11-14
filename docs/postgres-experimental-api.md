@@ -219,6 +219,8 @@ is persisted before contacting the provider. HR may use `POST
 result. The read-only check can restore `confirmed` only if the original
 credential sees the exact matching private event. For an ambiguous removal the
 event version must also be unchanged. HR can then separately request removal.
+The HR browser offers this inspection for terminal uncertain outcomes after
+showing the event ID and times; it does not itself remove an event.
 A missing, changed, or inaccessible event remains uncertain; it does not prove
 absence. An in-flight or crash-stranded `sending` or `removing` state cannot be
 reconciled through this endpoint because a worker might still act. These cases

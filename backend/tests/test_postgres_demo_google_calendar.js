@@ -27,6 +27,7 @@ const fetch = async (path, options = {}) => {
     if (networkFailure && path.endsWith('/send')) throw new Error('network failed');
     if (path.endsWith('/send')) state = 'confirmed';
     if (path.endsWith('/remove')) state = 'removed';
+    if (path.endsWith('/reconcile')) state = 'confirmed';
     return response(delivery());
   }
   return response([]);
@@ -74,6 +75,13 @@ async function run() {
   await click('Check Google Calendar status');
   assert(find('The provider outcome is unresolved. Check the calendar and contact an administrator; do not assume the event was created or removed.'));
   assert(!find('Create Google Calendar event') && !find('Remove Google Calendar event'));
+  approve = false;
+  await click('Inspect uncertain Google Calendar event');
+  assert.equal(calls.length, 4);
+  approve = true;
+  await click('Inspect uncertain Google Calendar event');
+  assert.deepEqual(calls[4], { path: '/api/google/interviews/7/calendar/reconcile', method: 'POST', body: { confirmed: true, event_id: 'event123' } });
+  assert(find('Google Calendar state: confirmed'));
   state = 'pending';
   await click('Check Google Calendar status');
   networkFailure = true;

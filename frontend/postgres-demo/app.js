@@ -763,6 +763,10 @@ function googleCalendarControls(interview) {
     };
     if (delivery.state === "pending") rows.push(button("Create Google Calendar event", request("send", "Create")));
     if (delivery.state === "confirmed") rows.push(button("Remove Google Calendar event", request("remove", "Remove")));
+    if (["uncertain", "removal_uncertain"].includes(delivery.state)) {
+      rows.push(element("p", "Inspection checks whether the exact private event exists; a missing event remains unresolved."));
+      rows.push(button("Inspect uncertain Google Calendar event", request("reconcile", "Inspect")));
+    }
     details.replaceChildren(...rows);
   }
 
