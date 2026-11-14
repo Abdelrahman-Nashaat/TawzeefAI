@@ -261,6 +261,15 @@ the confirmation displays the recipient, subject, body and times. Gmail
 authorization must be configured separately from Calendar. No real Gmail
 delivery has been tested.
 
+On 14 November 2026, a real-browser test used a synthetic booking, an isolated
+PostgreSQL schema, and a fake Gmail dispatcher. HR reviewed the recipient,
+subject, message and times before confirming the simulated send; the UI then
+showed the confirmed state. The test manually set its synthetic record to
+`uncertain` and observed the unresolved warning with no send action. The
+candidate view showed the interview without HR Gmail controls. The test browser
+tab, server, temporary harness and isolated schema were cleaned up. No Google
+service was contacted and no email was sent; this does not verify live delivery.
+
 The service durably claims the request before the provider call. It never
 automatically retries. `sending` or `uncertain` blocks cancellation, withdrawal,
 and rejection because the confirmation may have been delivered. There is no
