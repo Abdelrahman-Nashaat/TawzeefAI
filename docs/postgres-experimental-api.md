@@ -21,8 +21,10 @@ This API is an incremental synthetic-data experiment, not full autonomous
 multi-agent behavior. Planning first reads matching and status; after selection,
 the safety snapshot recomputes the selected specialist outputs before each
 stage and approval. The matching specialist reads the current human rubric
-rather than generating a new score. The adaptive path currently has no dedicated
-browser control.
+rather than generating a new score. The HR browser offers deterministic and
+optional model-planned adaptive reviews. The model option asks for confirmation
+before sending bounded status facts, and the displayed plan identifies whether
+it came from the model or a deterministic fallback.
 Output is a review aid and the existing warnings about unverified matching,
 external model reliability, and sensitive data remain applicable.
 

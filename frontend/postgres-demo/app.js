@@ -448,7 +448,20 @@ function renderApplications(applications, jobs) {
             : `Saved proposal ${result.id}. Reopen to review and approve or discard.`));
         }).finally(() => { proposeSlot.disabled = resumableSlot.disabled = reserveSlot.disabled = false; });
       });
-      card.append(button("Start resumable review", async () => {
+      async function startAdaptiveReview(modelPlan) {
+        ensureCurrent(draftGeneration);
+        if (modelPlan && !window.confirm("Send only the application stage and assessment status to Groq to choose review steps? Use synthetic data only.")) return;
+        ensureCurrent(draftGeneration);
+        const view = ++draftViewGeneration;
+        const generation = sessionGeneration;
+        const result = await api(`/api/applications/${application.id}/adaptive-review-preparations`,
+          jsonPost({policy_question: graphQuestion.value, model_plan: modelPlan}));
+        ensureDraftView(generation, view); graphQuestion.value = "";
+        draftPanel.replaceChildren(element("p", `Adaptive review ${result.id} started. Plan: ${result.plan.join(", ")}. Source: ${result.plan_source}. Open saved reviews to continue preparation.`));
+      }
+      card.append(button("Start adaptive review", () => startAdaptiveReview(false)),
+        button("Start AI-planned adaptive review", () => startAdaptiveReview(true)),
+        button("Start resumable review", async () => {
         ensureCurrent(draftGeneration);
         const view = ++draftViewGeneration;
         const generation = sessionGeneration;
@@ -494,6 +507,7 @@ function renderApplications(applications, jobs) {
             const opened = await api(`/api/graph-review-drafts/${draft.id}`);
             ensureDraftView(current, viewGeneration);
             const view = element("div");
+            if (opened.plan) view.append(element("p", `Adaptive plan: ${opened.plan.join(", ")}. Source: ${opened.plan_source}.`));
             view.append(element("pre", opened.stale ? "Sources or availability changed; start a new review." : JSON.stringify(opened.result, null, 2)));
             if (!opened.stale && opened.slot) {
               view.append(element("p", `Proposed private slot (UTC): ${opened.slot.start_at} to ${opened.slot.end_at}; interviewer: ${opened.slot.interviewer}`),
