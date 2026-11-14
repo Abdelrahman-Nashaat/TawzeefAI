@@ -1,0 +1,1047 @@
+{
+  "created_utc": "2026-11-14T03:10:01.077649+00:00",
+  "dataset": "fictional-rag-postgres-development-2",
+  "dataset_sha256": "228e2cf3706ca6ea052fe19f7572f8b6c18d7ce73f93623281fb8bda73c77862",
+  "model_sha256_expected": "dd476dd0c2514e9b9be83aeb3853fac0763e0bdf4a71645407587d77c48a2d88",
+  "tokenizer_sha256_expected": "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39",
+  "runtime_sha256": {
+    "rag_pg_demo_evaluation.py": "5922cd66a29470c7d470dfe58b6a921cfa1766dbacd5a2d584b1558e1aa4542e",
+    "postgres_experimental.py": "783a42e5293a47b3b3945c318698a5df6c96142464d5cca72274febe31550c3d",
+    "postgres_knowledge.py": "f50dc6e804edd3e29784e57b93dda7b6a31a6b6d62bacfaf302ecc2969c738d6",
+    "knowledge.py": "57327b9e66e6491b120143706456d1db655c0c171d4b8b120049c3c7dc1982a5",
+    "semantic_experiment.py": "2e821ea2036b96c0e4e7f43acfca74372ddc7a62cafbe77db8781bdcf69c13bf",
+    "embedding_identity.py": "07ded30e2184381c780e17516052d59604ed635b5d1ad08e02443e2133d9e87a"
+  },
+  "notice": "Synthetic development diagnostic; excerpts and suggestions do not prove answer correctness.",
+  "summary": {
+    "lexical": {
+      "answerable_cases": 11,
+      "expected_in_excerpts": 9,
+      "expected_at_first_excerpt": 9,
+      "expected_in_suggestions": 0,
+      "unsupported_cases": 8,
+      "unsupported_abstentions": 8,
+      "unsupported_with_suggestions": 0,
+      "authorization_violations": 0,
+      "filter_violations": 0,
+      "citation_violations": 0,
+      "http_errors": 0
+    },
+    "hybrid": {
+      "answerable_cases": 11,
+      "expected_in_excerpts": 9,
+      "expected_at_first_excerpt": 9,
+      "expected_in_suggestions": 2,
+      "unsupported_cases": 8,
+      "unsupported_abstentions": 8,
+      "unsupported_with_suggestions": 1,
+      "authorization_violations": 0,
+      "filter_violations": 0,
+      "citation_violations": 0,
+      "http_errors": 0
+    }
+  },
+  "cases": [
+    {
+      "id": "en-leave",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "en",
+      "expected": {
+        "title": "Annual leave EN",
+        "page": 2
+      },
+      "http_status": 200,
+      "elapsed_ms": 221.7,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-2",
+          "title": "Annual leave EN",
+          "page": 2,
+          "text": "Employees receive 21 working days of annual leave per calendar year.",
+          "collection": "handbook"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "en-leave",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "en",
+      "expected": {
+        "title": "Annual leave EN",
+        "page": 2
+      },
+      "http_status": 200,
+      "elapsed_ms": 643.6,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-2-p1",
+          "title": "Annual leave EN",
+          "page": 2,
+          "text": "Employees receive 21 working days of annual leave per calendar year.",
+          "collection": "handbook"
+        }
+      ],
+      "suggestions": [
+        {
+          "id": "db-doc-4-p1",
+          "title": "الإجازة السنوية",
+          "page": 2,
+          "text": "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام.",
+          "collection": "handbook"
+        },
+        {
+          "id": "db-doc-5-p1",
+          "title": "Remote policy",
+          "page": 1,
+          "text": "Employees may work remotely two days each week with manager approval.",
+          "collection": "handbook"
+        }
+      ]
+    },
+    {
+      "id": "ar-leave",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "ar",
+      "expected": {
+        "title": "الإجازة السنوية",
+        "page": 2
+      },
+      "http_status": 200,
+      "elapsed_ms": 158.6,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-4",
+          "title": "الإجازة السنوية",
+          "page": 2,
+          "text": "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام.",
+          "collection": "handbook"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "ar-leave",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "ar",
+      "expected": {
+        "title": "الإجازة السنوية",
+        "page": 2
+      },
+      "http_status": 200,
+      "elapsed_ms": 253.5,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-4-p1",
+          "title": "الإجازة السنوية",
+          "page": 2,
+          "text": "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام.",
+          "collection": "handbook"
+        }
+      ],
+      "suggestions": [
+        {
+          "id": "db-doc-2-p1",
+          "title": "Annual leave EN",
+          "page": 2,
+          "text": "Employees receive 21 working days of annual leave per calendar year.",
+          "collection": "handbook"
+        }
+      ]
+    },
+    {
+      "id": "en-remote",
+      "mode": "lexical",
+      "role": "employee",
+      "language": "en",
+      "expected": {
+        "title": "Remote policy",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 69.5,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-5",
+          "title": "Remote policy",
+          "page": 1,
+          "text": "Employees may work remotely two days each week with manager approval.",
+          "collection": "handbook"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "en-remote",
+      "mode": "hybrid",
+      "role": "employee",
+      "language": "en",
+      "expected": {
+        "title": "Remote policy",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 147.0,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-5-p1",
+          "title": "Remote policy",
+          "page": 1,
+          "text": "Employees may work remotely two days each week with manager approval.",
+          "collection": "handbook"
+        }
+      ],
+      "suggestions": [
+        {
+          "id": "db-doc-2-p1",
+          "title": "Annual leave EN",
+          "page": 2,
+          "text": "Employees receive 21 working days of annual leave per calendar year.",
+          "collection": "handbook"
+        },
+        {
+          "id": "db-doc-4-p1",
+          "title": "الإجازة السنوية",
+          "page": 2,
+          "text": "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام.",
+          "collection": "handbook"
+        }
+      ]
+    },
+    {
+      "id": "en-interview",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "en",
+      "expected": {
+        "title": "Interview schedule",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 384.9,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "en-interview",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "en",
+      "expected": {
+        "title": "Interview schedule",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 199.5,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": true,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": [
+        {
+          "id": "db-doc-7-p1",
+          "title": "Interview schedule",
+          "page": 1,
+          "text": "Interviews are held at the office on Mondays.",
+          "collection": "handbook"
+        }
+      ]
+    },
+    {
+      "id": "ar-probation",
+      "mode": "lexical",
+      "role": "employee",
+      "language": "ar",
+      "expected": {
+        "title": "Probation",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 102.5,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "ar-probation",
+      "mode": "hybrid",
+      "role": "employee",
+      "language": "ar",
+      "expected": {
+        "title": "Probation",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 198.7,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": true,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": [
+        {
+          "id": "db-doc-4-p1",
+          "title": "الإجازة السنوية",
+          "page": 2,
+          "text": "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام.",
+          "collection": "handbook"
+        },
+        {
+          "id": "db-doc-6-p1",
+          "title": "Probation",
+          "page": 1,
+          "text": "The probation period for a newly hired employee lasts three months.",
+          "collection": "handbook"
+        }
+      ]
+    },
+    {
+      "id": "staff-expense",
+      "mode": "lexical",
+      "role": "employee",
+      "language": "en",
+      "expected": {
+        "title": "Staff expenses",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 96.1,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-8",
+          "title": "Staff expenses",
+          "page": 1,
+          "text": "STAFF_ONLY_317: Employees must submit receipts to claim travel expense reimbursement.",
+          "collection": "handbook"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "staff-expense",
+      "mode": "hybrid",
+      "role": "employee",
+      "language": "en",
+      "expected": {
+        "title": "Staff expenses",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 153.3,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-8-p1",
+          "title": "Staff expenses",
+          "page": 1,
+          "text": "STAFF_ONLY_317: Employees must submit receipts to claim travel expense reimbursement.",
+          "collection": "handbook"
+        }
+      ],
+      "suggestions": [
+        {
+          "id": "db-doc-5-p1",
+          "title": "Remote policy",
+          "page": 1,
+          "text": "Employees may work remotely two days each week with manager approval.",
+          "collection": "handbook"
+        }
+      ]
+    },
+    {
+      "id": "hr-allocation",
+      "mode": "lexical",
+      "role": "hr",
+      "language": "en",
+      "expected": {
+        "title": "HR allocation",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 81.1,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-9",
+          "title": "HR allocation",
+          "page": 1,
+          "text": "HR_ONLY_924: The confidential recruitment allocation is 44000 fictional credits.",
+          "collection": "handbook"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "hr-allocation",
+      "mode": "hybrid",
+      "role": "hr",
+      "language": "en",
+      "expected": {
+        "title": "HR allocation",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 192.1,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-9-p1",
+          "title": "HR allocation",
+          "page": 1,
+          "text": "HR_ONLY_924: The confidential recruitment allocation is 44000 fictional credits.",
+          "collection": "handbook"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "candidate-staff-restricted",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 92.0,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "candidate-staff-restricted",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 168.0,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "employee-hr-restricted",
+      "mode": "lexical",
+      "role": "employee",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 103.4,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "employee-hr-restricted",
+      "mode": "hybrid",
+      "role": "employee",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 141.9,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "candidate-hr-restricted",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "ar",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 127.8,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "candidate-hr-restricted",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "ar",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 139.4,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "en-no-parental-policy",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 120.4,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "en-no-parental-policy",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 204.7,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": [
+        {
+          "id": "db-doc-2-p1",
+          "title": "Annual leave EN",
+          "page": 2,
+          "text": "Employees receive 21 working days of annual leave per calendar year.",
+          "collection": "handbook"
+        },
+        {
+          "id": "db-doc-6-p1",
+          "title": "Probation",
+          "page": 1,
+          "text": "The probation period for a newly hired employee lasts three months.",
+          "collection": "handbook"
+        },
+        {
+          "id": "db-doc-4-p1",
+          "title": "الإجازة السنوية",
+          "page": 2,
+          "text": "الإجازة السنوية للموظفين هي ٢١ يوم عمل كل عام.",
+          "collection": "handbook"
+        }
+      ]
+    },
+    {
+      "id": "ar-no-annual-bonus",
+      "mode": "lexical",
+      "role": "employee",
+      "language": "ar",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 172.0,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "ar-no-annual-bonus",
+      "mode": "hybrid",
+      "role": "employee",
+      "language": "ar",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 192.2,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "en-no-health-premium",
+      "mode": "lexical",
+      "role": "hr",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 213.0,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "en-no-health-premium",
+      "mode": "hybrid",
+      "role": "hr",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 694.2,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "data-job-responsibilities",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "en",
+      "expected": {
+        "title": "Data engineer responsibilities",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 104.0,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-11",
+          "title": "Data engineer responsibilities",
+          "page": 1,
+          "text": "Data engineers build Python pipelines and maintain SQL warehouse ingestion.",
+          "collection": "job_description",
+          "job_id": "data-engineer",
+          "section": "responsibilities"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "data-job-responsibilities",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "en",
+      "expected": {
+        "title": "Data engineer responsibilities",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 183.0,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-11-p1",
+          "title": "Data engineer responsibilities",
+          "page": 1,
+          "text": "Data engineers build Python pipelines and maintain SQL warehouse ingestion.",
+          "collection": "job_description",
+          "job_id": "data-engineer",
+          "section": "responsibilities"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "backend-job-responsibilities",
+      "mode": "lexical",
+      "role": "employee",
+      "language": "en",
+      "expected": {
+        "title": "Backend engineer responsibilities",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 178.0,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-12",
+          "title": "Backend engineer responsibilities",
+          "page": 1,
+          "text": "Backend engineers build Python services and maintain SQL API transactions.",
+          "collection": "job_description",
+          "job_id": "backend-engineer",
+          "section": "responsibilities"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "backend-job-responsibilities",
+      "mode": "hybrid",
+      "role": "employee",
+      "language": "en",
+      "expected": {
+        "title": "Backend engineer responsibilities",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 401.4,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-12-p1",
+          "title": "Backend engineer responsibilities",
+          "page": 1,
+          "text": "Backend engineers build Python services and maintain SQL API transactions.",
+          "collection": "job_description",
+          "job_id": "backend-engineer",
+          "section": "responsibilities"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "data-qualifications",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "en",
+      "expected": {
+        "title": "Data engineer qualifications",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 92.9,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-14",
+          "title": "Data engineer qualifications",
+          "page": 1,
+          "text": "Data engineer applicants should know Python pipelines and SQL warehouse ingestion.",
+          "collection": "job_description",
+          "job_id": "data-engineer",
+          "section": "qualifications"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "data-qualifications",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "en",
+      "expected": {
+        "title": "Data engineer qualifications",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 147.6,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-14-p1",
+          "title": "Data engineer qualifications",
+          "page": 1,
+          "text": "Data engineer applicants should know Python pipelines and SQL warehouse ingestion.",
+          "collection": "job_description",
+          "job_id": "data-engineer",
+          "section": "qualifications"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "hr-data-hiring-pattern",
+      "mode": "lexical",
+      "role": "hr",
+      "language": "en",
+      "expected": {
+        "title": "Data engineer hiring patterns",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 331.5,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "pg-doc-13",
+          "title": "Data engineer hiring patterns",
+          "page": 1,
+          "text": "Past data engineer hires demonstrated Python pipelines and SQL warehouse ingestion experience.",
+          "collection": "past_hire_patterns",
+          "job_id": "data-engineer",
+          "section": "patterns"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "hr-data-hiring-pattern",
+      "mode": "hybrid",
+      "role": "hr",
+      "language": "en",
+      "expected": {
+        "title": "Data engineer hiring patterns",
+        "page": 1
+      },
+      "http_status": 200,
+      "elapsed_ms": 269.9,
+      "abstained": false,
+      "expected_in_excerpts": true,
+      "expected_at_first_excerpt": true,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [
+        {
+          "id": "db-doc-13-p1",
+          "title": "Data engineer hiring patterns",
+          "page": 1,
+          "text": "Past data engineer hires demonstrated Python pipelines and SQL warehouse ingestion experience.",
+          "collection": "past_hire_patterns",
+          "job_id": "data-engineer",
+          "section": "patterns"
+        }
+      ],
+      "suggestions": []
+    },
+    {
+      "id": "candidate-data-hiring-pattern-restricted",
+      "mode": "lexical",
+      "role": "candidate",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 177.3,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "candidate-data-hiring-pattern-restricted",
+      "mode": "hybrid",
+      "role": "candidate",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 143.2,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "hr-backend-hiring-pattern-absent",
+      "mode": "lexical",
+      "role": "hr",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 445.9,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    },
+    {
+      "id": "hr-backend-hiring-pattern-absent",
+      "mode": "hybrid",
+      "role": "hr",
+      "language": "en",
+      "expected": null,
+      "http_status": 200,
+      "elapsed_ms": 136.8,
+      "abstained": true,
+      "expected_in_excerpts": false,
+      "expected_at_first_excerpt": false,
+      "expected_in_suggestions": false,
+      "authorization_violation": false,
+      "filter_violation": false,
+      "citation_violation": false,
+      "excerpts": [],
+      "suggestions": []
+    }
+  ]
+}

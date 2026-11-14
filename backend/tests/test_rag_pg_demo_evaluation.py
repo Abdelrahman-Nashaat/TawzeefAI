@@ -51,3 +51,39 @@ def test_restricted_chunk_of_long_page_in_model_input_is_a_violation():
     case = {'id': 'x', 'role': 'candidate', 'language': 'en', 'expected': None}
     result = analyze(case, 'hybrid', Response({'mode': 'abstain', 'sources': []}), docs, 0.1, [chunk])
     assert result['authorization_violation']
+
+
+def test_filter_violations_in_returned_sources_and_model_input():
+    docs = [
+        {'title': 'Data', 'active': True, 'audience': 'public', 'collection': 'job_description',
+         'job_id': 'data', 'section': 'qualifications', 'pages': ['Data engineering experience.']},
+        {'title': 'Backend', 'active': True, 'audience': 'public', 'collection': 'job_description',
+         'job_id': 'backend', 'section': 'qualifications', 'pages': ['Backend engineering experience.']},
+        {'title': 'Data duties', 'active': True, 'audience': 'public', 'collection': 'job_description',
+         'job_id': 'data', 'section': 'duties', 'pages': ['Data engineering duties.']},
+    ]
+    case = {'id': 'filtered', 'role': 'candidate', 'language': 'en', 'expected': None,
+            'collection': 'job_description', 'job_id': 'data', 'section': 'qualifications'}
+    response = Response({'mode': 'abstain', 'sources': [], 'suggestions': [
+        {'title': 'Backend', 'page': 1, 'text': 'Backend engineering experience.',
+         'collection': 'job_description', 'job_id': 'backend', 'section': 'qualifications'}]})
+    result = analyze(case, 'hybrid', response, docs, 0.1, ['Data engineering duties.'])
+    assert result['filter_violation'] and not result['authorization_violation']
+    assert summarize([result])['hybrid']['filter_violations'] == 1
+    embedded_only = analyze(case, 'hybrid', Response({'mode': 'abstain', 'sources': []}), docs, 0.1,
+                            ['Data engineering duties.'])
+    assert embedded_only['filter_violation']
+    good = analyze(case, 'hybrid', Response({'mode': 'extractive', 'sources': [
+        {'title': 'Data', 'page': 1, 'text': 'Data engineering experience.',
+         'collection': 'job_description', 'job_id': 'data', 'section': 'qualifications'}]}), docs, 0.1,
+        ['Data engineering experience.'])
+    assert not good['filter_violation'] and not good['authorization_violation']
+
+
+def test_public_past_hire_pattern_is_still_restricted():
+    docs = [{'title': 'Patterns', 'active': True, 'audience': 'public',
+             'collection': 'past_hire_patterns', 'pages': ['Past hire details.']}]
+    case = {'id': 'restricted', 'role': 'candidate', 'language': 'en', 'expected': None}
+    result = analyze(case, 'hybrid', Response({'mode': 'abstain', 'sources': []}), docs, 0.1,
+                     ['Past hire details.'])
+    assert result['authorization_violation']

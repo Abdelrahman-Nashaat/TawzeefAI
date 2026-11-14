@@ -62,6 +62,7 @@ def summarize(results):
             'unsupported_abstentions': sum(case['abstained'] for case in negatives),
             'unsupported_with_suggestions': sum(bool(case['suggestions']) for case in negatives),
             'authorization_violations': sum(case['authorization_violation'] for case in cases),
+            'filter_violations': sum(case['filter_violation'] for case in cases),
             'citation_violations': sum(case['citation_violation'] for case in cases),
             'http_errors': sum(case['http_status'] != 200 for case in cases),
         }
@@ -75,17 +76,30 @@ def analyze(case, mode, response, documents, elapsed, embedded=()):
     all_returned = excerpts + suggestions
     def matches(source):
         return case['expected'] is not None and all(source.get(key) == value for key, value in case['expected'].items())
-    violation = any(source.get('title') not in by_title or
-                    not by_title[source['title']]['active'] or
-                    by_title[source['title']]['audience'] not in AUDIENCES[case['role']]
+    def authorized(doc):
+        return (doc['active'] and doc['audience'] in AUDIENCES[case['role']] and
+                (doc.get('collection', 'handbook') != 'past_hire_patterns' or case['role'] == 'hr'))
+
+    def matches_filters(doc):
+        return all(case.get(key) is None or doc.get(key, 'handbook' if key == 'collection' else None) == case[key]
+                   for key in ('collection', 'job_id', 'section'))
+
+    def chunks(predicate):
+        return {source.text for index, doc in enumerate(documents) if predicate(doc)
+                for page in doc['pages']
+                for source in _document_passages({'id': index, 'title': doc['title'], 'text': page})}
+
+    violation = any(source.get('title') not in by_title or not authorized(by_title[source['title']])
                     for source in all_returned)
-    forbidden_chunks = {
-        source.text for index, doc in enumerate(documents)
-        if not doc['active'] or doc['audience'] not in AUDIENCES[case['role']]
-        for page in doc['pages']
-        for source in _document_passages({'id': index, 'title': doc['title'], 'text': page})
-    }
+    forbidden_chunks = chunks(lambda doc: not authorized(doc))
     violation |= any(text in forbidden_chunks for text in embedded)
+    filtered_out = chunks(lambda doc: authorized(doc) and not matches_filters(doc))
+    filter_violation = any(
+        source.get('title') in by_title and (
+            not matches_filters(by_title[source['title']]) or
+            any(source.get(key) != case[key] for key in ('collection', 'job_id', 'section')
+                if case.get(key) is not None)) for source in all_returned)
+    filter_violation |= any(text in filtered_out for text in embedded)
     citation = False
     for source in all_returned:
         doc = by_title.get(source.get('title'))
@@ -100,7 +114,7 @@ def analyze(case, mode, response, documents, elapsed, embedded=()):
             'expected_in_excerpts': any(map(matches, excerpts)),
             'expected_at_first_excerpt': bool(excerpts and matches(excerpts[0])),
             'expected_in_suggestions': any(map(matches, suggestions)),
-            'authorization_violation': violation, 'citation_violation': citation,
+            'authorization_violation': violation, 'filter_violation': filter_violation, 'citation_violation': citation,
             'excerpts': excerpts, 'suggestions': suggestions}
 
 
@@ -122,6 +136,9 @@ def run(dsn, model_dir):
         if expected:
             doc = by_title.get(expected['title'])
             if (not doc or not doc['active'] or doc['audience'] not in AUDIENCES[case['role']] or
+                    (doc.get('collection', 'handbook') == 'past_hire_patterns' and case['role'] != 'hr') or
+                    any(case.get(key) is not None and doc.get(key, 'handbook' if key == 'collection' else None) != case[key]
+                        for key in ('collection', 'job_id', 'section')) or
                     type(expected['page']) is not int or not 1 <= expected['page'] <= len(doc['pages'])):
                 raise ValueError('Invalid or inaccessible expected source')
     model = RecordingModel(LocalE5(model_dir))
@@ -158,7 +175,8 @@ def run(dsn, model_dir):
                     for page, text in enumerate(doc['pages'], 1):
                         created = client.post('/api/knowledge/documents/text', json={
                             'title': doc['title'], 'text': text, 'audience': doc['audience'],
-                            'collection': 'handbook', 'page': page})
+                            'collection': doc.get('collection', 'handbook'), 'page': page,
+                            **{key: doc[key] for key in ('job_id', 'section') if key in doc}})
                         if created.status_code != 201:
                             raise RuntimeError('Synthetic document creation failed')
                         if not doc['active']:
@@ -171,7 +189,8 @@ def run(dsn, model_dir):
                         model.passages.clear()
                         started = time.perf_counter()
                         response = client.post('/api/knowledge/answer', json={
-                            'question': case['question'], 'experimental_hybrid': mode == 'hybrid'})
+                            'question': case['question'], 'experimental_hybrid': mode == 'hybrid',
+                            **{key: case[key] for key in ('collection', 'job_id', 'section') if key in case}})
                         results.append(analyze(case, mode, response, documents, time.perf_counter() - started,
                                                model.passages))
         finally:
@@ -205,7 +224,7 @@ def main():
     report = run(dsn, args.model_dir)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if any(group[key] for group in report['summary'].values()
-           for key in ('authorization_violations', 'citation_violations', 'http_errors')):
+           for key in ('authorization_violations', 'filter_violations', 'citation_violations', 'http_errors')):
         raise SystemExit(1)
 
 
