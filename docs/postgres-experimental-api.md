@@ -255,7 +255,7 @@ body and times for review. HR can reopen this with `GET` on the same endpoint.
 The sender account is not shown or bound to the draft. HR must separately verify
 which account is authorized before enabling Gmail; reauthorization could change it.
 To make one send attempt, HR calls `POST` on the endpoint with `/send` appended
-and supplies `{"confirmed":true,"delivery_id":<reviewed id>,"recipient":"<reviewed address>"}`.
+and supplies `{"confirmed":true,"delivery_id":<reviewed id>,"recipient":"<reviewed address>","generation":<reviewed generation>}`.
 The HR browser provides separate preparation, review, status and send controls;
 the confirmation displays the recipient, subject, body and times. Gmail
 authorization must be configured separately from Calendar. No real Gmail
@@ -278,8 +278,16 @@ investigation. A confirmed message does not block local cancellation, and that
 cancellation **does not send an update**: HR must separately notify the recipient.
 Cancellation responses report whether a prior confirmation was sent and always
 report that no cancellation email was sent; they do not disclose the recipient.
-No cancellation email is implemented for this path. A rejected or stale draft
-cannot be corrected or retried here. A source change observed during a provider
+No cancellation email is implemented for this path. HR may explicitly revise a
+pending or definitively rejected draft at `/email/revise` with the reviewed
+delivery ID, expected generation, independently verified recipient, and
+`confirmed: true`. This archives the previous draft and creates a new pending
+generation without sending; HR must review its returned text and separately
+confirm the send. Old or missing generation values cannot send a revised draft.
+The browser offers the same action. Sending, uncertain, and confirmed deliveries
+cannot be revised, and an interview changed since draft creation still requires
+manual investigation. Draft history contains recipients and message content;
+use synthetic data only. A source change observed during a provider
 call is flagged; a change reversed during the call might be missed. The feature
 does not provide production-grade delivery, recipient verification, or recovery.
 

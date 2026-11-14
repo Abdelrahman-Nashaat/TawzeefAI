@@ -805,7 +805,7 @@ function googleEmailControls(interview) {
       element("p", `Subject: ${delivery.subject}`), element("pre", delivery.body)];
     if (delivery.context_changed) rows.push(element("p", "The interview context changed during delivery. Review the interview and message."));
     if (["sending", "uncertain"].includes(delivery.state)) rows.push(element("p", "Delivery is unresolved. Do not assume the email was sent or retry it; contact an administrator."));
-    if (delivery.state === "rejected") rows.push(element("p", "The attempt was rejected and cannot be retried here."));
+    if (delivery.state === "rejected") rows.push(element("p", "The attempt was rejected. You may review and revise this draft before a new send attempt."));
     if (delivery.state === "confirmed") rows.push(element("p", "Confirmation sent. Cancelling the interview will not send a cancellation email."));
     if (delivery.state === "pending") rows.push(button("Send reviewed Gmail confirmation", async () => {
       const generation = sessionGeneration;
@@ -815,7 +815,7 @@ function googleEmailControls(interview) {
       const view = ++revision;
       details.replaceChildren(element("p", "Sending. If the result is unknown, check status before doing anything else."));
       try {
-        const result = await api(`${endpoint}/send`, jsonPost({confirmed:true,delivery_id:delivery.id,recipient:delivery.recipient}));
+        const result = await api(`${endpoint}/send`, jsonPost({confirmed:true,delivery_id:delivery.id,recipient:delivery.recipient,generation:delivery.generation}));
         ensureCurrent(generation);
         if (view === revision) show(result);
       } catch (error) {
@@ -823,6 +823,27 @@ function googleEmailControls(interview) {
         throw error;
       }
     }));
+    if (["pending", "rejected"].includes(delivery.state)) {
+      const reviseLabel = element("label", "Correct recipient (verify independently) ");
+      const revisedRecipient = element("input"); revisedRecipient.type = "email"; revisedRecipient.maxLength = 254;
+      revisedRecipient.value = delivery.recipient; reviseLabel.append(revisedRecipient);
+      rows.push(reviseLabel, button("Revise Gmail confirmation draft", async () => {
+        const generation = sessionGeneration;
+        if (!window.confirm(`Revise this ${delivery.state} draft for ${revisedRecipient.value}? No email will be sent. Verify the recipient independently.`)) return;
+        ensureCurrent(generation);
+        const view = ++revision;
+        details.replaceChildren(element("p", "Revising draft…"));
+        try {
+          const result = await api(`${endpoint}/revise`, jsonPost({confirmed:true,delivery_id:delivery.id,
+            expected_generation:delivery.generation,recipient:revisedRecipient.value}));
+          ensureCurrent(generation);
+          if (view === revision) show(result);
+        } catch (error) {
+          if (generation === sessionGeneration && view === revision) details.replaceChildren(element("p", "Unable to revise draft. Check email status before trying again."));
+          throw error;
+        }
+      }));
+    }
     details.replaceChildren(...rows);
   }
   async function load(prepare) {
