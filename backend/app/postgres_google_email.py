@@ -253,6 +253,9 @@ def install_routes(app, connect, authenticate, authorize_locked, guard):
                 authorized(db, request, user)
         except HTTPException:
             with connect() as db:
+                # Serialize this state transition with investigation reports,
+                # cancellation and draft revisions, just like provider results.
+                guard(db)
                 db.execute("UPDATE pg_email_deliveries SET state='rejected',updated_at=clock_timestamp() WHERE id=%s AND state='sending'", (row['id'],))
                 _audit(db, row, user.id, 'google_email_preflight_rejected')
             raise
