@@ -172,6 +172,21 @@ def _suggested_step_v4(state):
     return _suggested_step(state)
 
 
+def _suggested_step_v6(state):
+    """Recommend only a review action, using defaults for unselected stages."""
+    if state['application_status'] == 'withdrawn':
+        return 'review_closed_application'
+    return _suggested_step_v4(state)
+
+
+def _adaptive_plan_facts(result):
+    """Reconstruct the bounded state to check the completed checkpoint."""
+    return {'application_status': result['status']['application_status'],
+            'interview_status': result['status']['latest_interview'],
+            'matching_status': result.get('matching', {}).get('status', 'unavailable'),
+            'available_slots': bool(result.get('scheduling', {}).get('slots', []))}
+
+
 def _approval_graph(db, draft=None, expected=None):
     """Only identifiers and a digest enter checkpoint storage, never excerpts.
 
@@ -203,7 +218,7 @@ def _approval_graph(db, draft=None, expected=None):
                 # Share the saver's cursor lock so psycopg pipeline operations
                 # and domain reads cannot overlap on that connection.
                 with saver.lock:
-                    result = specialist({})
+                    result = specialist(state if draft['checkpoint_version'] == 6 else {})
                 if expected is not None and result != {name if name != 'parser' else 'parsed': expected[name if name != 'parser' else 'parsed']}:
                     raise HTTPException(status_code=409, detail='Review changed while preparing; try again')
                 encoded = json.dumps(result, sort_keys=True, ensure_ascii=False, separators=(',', ':'), default=str)
@@ -225,6 +240,25 @@ def _approval_graph(db, draft=None, expected=None):
                     elif name == 'policy':
                         update['suggested_step'] = (_suggested_step_v4(state) if draft['checkpoint_version'] in (4, 5)
                                                     else _suggested_step(state))
+                elif draft['checkpoint_version'] == 6:
+                    prior = names.index(name)
+                    if any(previous + '_digest' not in state for previous in names[:prior]):
+                        raise RuntimeError('A previous adaptive stage is missing')
+                    if name == 'matching':
+                        update['matching_status'] = result['matching']['status']
+                    elif name == 'status':
+                        update['application_status'] = result['status']['application_status']
+                        update['interview_status'] = result['status']['latest_interview']
+                    elif name == 'scheduling':
+                        update['available_slots'] = bool(result['scheduling']['slots'])
+                    if name == names[-1]:
+                        # Status is required in every validated plan. Missing
+                        # optional stages contribute explicitly conservative defaults.
+                        combined = {'matching_status': 'unavailable', 'available_slots': False,
+                                    'interview_status': None, **state, **update}
+                        if 'application_status' not in combined:
+                            raise RuntimeError('Adaptive plan is missing application status')
+                        update['suggested_step'] = _suggested_step_v6(combined)
                 return update
             graph.add_node(name, record)
         graph.add_edge(START, names[0])
@@ -328,6 +362,14 @@ def _resume_approval(db, draft, reviewed, current_result=None):
                              else _suggested_step(plan_state))
             if state.values.get('suggested_step') != expected_step:
                 raise HTTPException(status_code=409, detail='Specialist plan differs from the reviewed result')
+        elif draft['checkpoint_version'] == 6:
+            facts = _adaptive_plan_facts(current_result)
+            for name, key in (('status', 'application_status'), ('status', 'interview_status'),
+                              ('matching', 'matching_status'), ('scheduling', 'available_slots')):
+                if name in _stages(draft) and (key not in state.values or state.values[key] != facts[key]):
+                    raise HTTPException(status_code=409, detail='Adaptive specialist state differs from the reviewed result')
+            if state.values.get('suggested_step') != _suggested_step_v6(facts):
+                raise HTTPException(status_code=409, detail='Adaptive plan differs from the reviewed result')
     result = graph.invoke(Command(resume=reviewed), config, durability='sync')
     if result.get('reviewed') is not reviewed or result.get('__interrupt__'):
         raise RuntimeError('The review did not finish correctly')

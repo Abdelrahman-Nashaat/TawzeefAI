@@ -12,6 +12,10 @@ discard use the existing resume endpoint. The model is opt-in, requires the
 PostgreSQL Groq configuration, and sees only bounded status facts; invalid
 or unavailable model plans use a labeled deterministic fallback. Decisions,
 slot creation and offers remain behind the existing explicit HR approval.
+The last selected stage combines the completed stages' bounded status facts
+into a lifecycle-specific next review suggestion. The suggestion is persisted,
+shown when reopened, and rechecked against the current review at approval; it
+does not itself execute an action or establish that a candidate qualifies.
 
 This API is an incremental synthetic-data experiment, not full autonomous
 multi-agent behavior. Planning first reads matching and status; after selection,
