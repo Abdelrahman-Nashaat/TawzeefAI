@@ -160,8 +160,39 @@ jobs, application submission and listing, HR keyword screening and advancement,
 local candidate interview booking, cancellation, explicit HR completion, local
 cancellation notices, and offers with candidate response and explicit HR hire
 are implemented. A dedicated browser interface supports these actions and saved
-knowledge conversations. Calendar and email delivery remain unavailable
-in this mode.
+knowledge conversations. The separate Calendar API flow described below is
+available only in an explicitly enabled Windows process; email delivery remains
+unavailable in this mode.
+
+### Explicit experimental Google Calendar delivery
+
+Synthetic-only use: set `TAWZEEF_ENABLE_GOOGLE=1` in a Windows process with
+Calendar authorization stored as described in [Google integration](google-integration.md).
+It is disabled by default and is unavailable in the Linux container. Booking
+does not contact Google. No browser controls are provided for this PostgreSQL
+flow yet. HR may call the following endpoints after booking a future interview:
+
+1. `POST /api/google/interviews/{id}/calendar` with `{"confirmed":true}`
+   prepares a durable local draft and returns its event ID and exact times.
+2. `POST /api/google/interviews/{id}/calendar/send` with
+   `{"confirmed":true,"event_id":"<reviewed event ID>"}` makes one attempt
+   to create a private event without attendees, using the existing Google adapter.
+3. `POST /api/google/interviews/{id}/calendar/remove` with the same reviewed
+   event ID makes one conditional removal attempt. It checks the original
+   credential binding and recorded event version before provider removal.
+   Removing the event does not cancel the local interview.
+
+HR can inspect status with `GET /api/google/interviews/{id}/calendar`. A claim
+is persisted before contacting the provider. `sending`, `uncertain`, `removing`
+and `removal_uncertain` may require manual reconciliation and cannot be retried
+through these endpoints; a process crash or lost response can leave them there.
+Confirmed or unresolved events block candidate and HR cancellation, withdrawal,
+and rejection until removal succeeds. No automatic provider retry occurs.
+An observed context change during the call is flagged, although changes that are
+reversed during the call may escape this snapshot check. An access revocation
+after the final pre-call check cannot stop an already-started request. This is
+not a production-ready synchronization or recovery system. Gmail and invitations
+are not sent. No live Google Calendar test of this PostgreSQL flow has been run.
 
 `GET /api/health` reports that the web process is responding. `GET /api/ready`
 also checks PostgreSQL connectivity and the expected schema-version marker; it

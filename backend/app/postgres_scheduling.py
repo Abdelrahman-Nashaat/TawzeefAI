@@ -1,7 +1,8 @@
 """Local scheduling for the experimental PostgreSQL-only demo.
 
 All writes use one transaction-scoped advisory lock to serialize slot and
-interview conflict checks. No external calendar or message is sent.
+interview conflict checks. Booking itself does not contact external services;
+the separately enabled Calendar delivery routes require explicit HR action.
 """
 
 import hashlib
@@ -14,6 +15,9 @@ from pydantic import BaseModel, Field, StrictBool, StrictInt
 
 from app.auth import User
 from app.interview_calendar import _fold, _instant, _text
+from app.postgres_google_calendar import DDL as GOOGLE_CALENDAR_DDL
+from app.postgres_google_calendar import cancellation_blocked
+from app.postgres_google_calendar import install_routes as install_google_calendar_routes
 from app.postgres_offers import DDL as OFFER_DDL
 from app.postgres_offers import hire
 from app.postgres_offers import install_routes as install_offer_routes
@@ -86,7 +90,7 @@ DDL = (
 )
 
 
-DDL += OFFER_DDL
+DDL += OFFER_DDL + GOOGLE_CALENDAR_DDL
 
 
 class Advance(BaseModel):
@@ -100,10 +104,12 @@ class Withdrawal(BaseModel):
 
 
 def install_routes(app, connect, authenticate, authorize_locked):
-    """Install only local, explicit HR/candidate actions in this demo mode."""
+    """Install local scheduling and separately reviewed Calendar actions."""
     def guard(db):
         # All scheduling writes take this lock before querying availability.
         db.execute("SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext('tawzeef-scheduling-v1'))")
+
+    install_google_calendar_routes(app, connect, authenticate, authorize_locked, guard)
 
     def withdraw_finalized_slots(db, application_id, actor_id):
         rows = db.execute('''UPDATE interview_slots SET withdrawn=true
@@ -147,6 +153,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=409, detail='Contact HR about the interview in progress')
             if any(offer['recipient_id'] != user.id for offer in offers) or any(interview['candidate_id'] != user.id for interview in interviews):
                 raise HTTPException(status_code=409, detail='Application ownership is inconsistent')
+            if any(cancellation_blocked(db, interview['id']) for interview in interviews):
+                raise HTTPException(status_code=409, detail='Contact HR to reconcile the Google Calendar event')
             for offer in offers:
                 db.execute("UPDATE job_offers SET status='withdrawn',responded_at=clock_timestamp() WHERE id=%s", (offer['id'],))
                 db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'offer_withdrawn',%s)",
@@ -229,6 +237,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 for interview in interviews:
                     if interview['candidate_id'] != row['candidate_id']:
                         raise HTTPException(status_code=409, detail='Interview ownership changed')
+                    if cancellation_blocked(db, interview['id']):
+                        raise HTTPException(status_code=409, detail='Reconcile the Google Calendar event first')
                     db.execute("UPDATE interviews SET status='cancelled' WHERE id=%s", (interview['id'],))
                     db.execute('INSERT INTO hr_interview_cancellations(interview_id,candidate_id) VALUES (%s,%s)', (interview['id'], row['candidate_id']))
                     db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'interview_cancelled',%s)",
@@ -475,6 +485,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
         if (row['status'] != 'scheduled' or row['completed'] or row['start_at'] <= datetime.now(UTC)
                 or (by_candidate and row['application_status'] != 'advanced')):
             raise HTTPException(status_code=409, detail='Interview cannot be cancelled')
+        if cancellation_blocked(db, interview_id):
+            raise HTTPException(status_code=409, detail='Reconcile the Google Calendar event first')
         updated = db.execute('''UPDATE interviews SET status='cancelled' WHERE id=%s
             RETURNING id,application_id,candidate_id,start_at,end_at,interviewer,status,completed''', (interview_id,)).fetchone()
         table = 'candidate_interview_cancellations' if by_candidate else 'hr_interview_cancellations'
