@@ -174,6 +174,29 @@ async function showRubric(application, container) {
   cv.readOnly = true; cv.value = source.resume_text; cv.rows = 12;
   cv.setAttribute("aria-label", "Partially masked CV for evidence selection");
   panel.append(cv);
+  const semanticResults = element("div");
+  panel.append(button("Suggest local skill evidence", async () => {
+    ensureCurrent(generation);
+    if (!window.confirm("Use a local model on this partially masked synthetic CV to suggest evidence for job skills? Masking is incomplete; suggestions are unverified.")) return;
+    ensureCurrent(generation);
+    semanticResults.replaceChildren(element("p", "Checking local evidence suggestions…"));
+    let result;
+    try {
+      result = await api(`/api/applications/${application.id}/semantic-skill-suggestions`, jsonPost({confirmed:true}));
+      ensureCurrent(generation);
+      if (result.source_digest !== source.source_digest) throw new Error("The CV or job changed; reopen the rubric.");
+    } catch (error) {
+      if (generation === sessionGeneration) semanticResults.replaceChildren(element("p", "Suggestions unavailable. Reopen the rubric and try again."));
+      throw error;
+    }
+    const rows = [element("p", result.notice)];
+    for (const criterion of result.criteria) {
+      rows.push(element("p", `${criterion.category}: ${criterion.label}`));
+      if (!criterion.candidates.length) rows.push(element("p", "No suggestion; this does not prove absence."));
+      for (const item of criterion.candidates) rows.push(element("p", `${item.retrieval_method}: ${item.excerpt}`));
+    }
+    semanticResults.replaceChildren(...rows);
+  }), semanticResults);
   const form = element("form");
   const categories = [["mandatory_skills", "Mandatory skills (40%)"], ["preferred_skills", "Preferred skills (15%)"], ["experience", "Experience (20%)"], ["projects", "Projects (15%)"], ["education", "Education (10%)"]];
   const fields = [];

@@ -4,9 +4,9 @@ import json
 from typing import Annotated, Literal
 
 from fastapi import Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
-from app.auth import User
+from app.auth import COOKIE_NAME, User, token_digest
 from app.blind import redact_resume
 
 WEIGHTS = {'mandatory_skills': 40, 'preferred_skills': 15, 'experience': 20, 'projects': 15, 'education': 10}
@@ -56,6 +56,11 @@ class Comparison(BaseModel):
         return self
 
 
+class SemanticRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    confirmed: StrictBool
+
+
 def _source(db, application_id):
     row = db.execute('''SELECT a.id,a.status,a.resume_text,j.id AS job_id,j.required_skills,j.preferred_skills,
         j.responsibilities,j.title FROM applications a JOIN jobs j ON j.id=a.job_id
@@ -73,7 +78,68 @@ def _source(db, application_id):
     return row, masked, digest
 
 
+def _inference_revisions(db, request, application_id):
+    """Reject even change-and-restore mutations while inference runs.
+
+    Both source rows are already locked by _source, and authorize_locked holds
+    the session and user rows. PostgreSQL xmin changes on each row update.
+    """
+    row = db.execute('''SELECT a.xmin::text AS application_revision, j.xmin::text AS job_revision,
+        s.xmin::text AS session_revision, u.xmin::text AS user_revision
+        FROM applications a JOIN jobs j ON j.id=a.job_id
+        JOIN sessions s ON s.token_hash=%s JOIN users u ON u.id=s.user_id WHERE a.id=%s''',
+        (token_digest(request.cookies.get(COOKIE_NAME, '')), application_id)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=409, detail='Review context changed')
+    return dict(row)
+
+
 def install_routes(app, connect, authenticate, authorize_locked):
+    @app.post('/api/applications/{application_id}/semantic-skill-suggestions')
+    def semantic_skill_suggestions(application_id: int, payload: SemanticRequest, request: Request,
+                                   user: Annotated[User, Depends(authenticate)]):
+        """Find local evidence leads without writing scores or assessments."""
+        if not payload.confirmed:
+            raise HTTPException(status_code=422, detail='Explicit review is required')
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+            row, masked, digest = _source(db, application_id)
+            criteria = []
+            try:
+                for field, category in (('required_skills', 'mandatory_skills'),
+                                        ('preferred_skills', 'preferred_skills')):
+                    values = json.loads(row[field])
+                    if (not isinstance(values, list) or len(values) > 20 or
+                            any(not isinstance(value, str) or not value.strip() or len(value) > 80 for value in values)):
+                        raise ValueError('Invalid skills')
+                    criteria.extend({'category': category, 'label': value} for value in values)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail='Invalid job skills for semantic review') from None
+            if not criteria:
+                raise HTTPException(status_code=409, detail='No job skills are configured')
+            authorize_locked(db, request, user, 'hr')
+            revisions = _inference_revisions(db, request, application_id)
+        # Inference is local, bounded and serialized by the shared semantic
+        # screening implementation. Do not hold locks across model execution.
+        from app.semantic_screening import suggest
+        try:
+            suggestions = suggest(masked, criteria)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail='Experimental semantic screening is unavailable') from exc
+        with connect() as db:
+            authorize_locked(db, request, user, 'hr')
+            _, current, current_digest = _source(db, application_id)
+            if (current_digest != digest or current != masked or
+                    _inference_revisions(db, request, application_id) != revisions):
+                raise HTTPException(status_code=409, detail='Source or job changed; request fresh suggestions')
+            authorize_locked(db, request, user, 'hr')
+            return {'source_digest': digest, 'criteria': suggestions,
+                    'notice': ('Local unverified evidence leads only. Similarity and keyword mentions do not prove '
+                               'qualifications; missing suggestions do not prove absence. Masking is incomplete; '
+                               'review the full source. No score or decision was created.')}
+
     @app.get('/api/applications/{application_id}/interview-guide')
     def interview_guide(application_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
         """Suggest job-related questions from the latest current human rubric."""

@@ -1,5 +1,16 @@
 # Experimental PostgreSQL API
 
+HR can request local skill-evidence suggestions from the rubric view, or with
+`POST /api/applications/{id}/semantic-skill-suggestions` and
+`{"confirmed":true}`. Set `TAWZEEF_ENABLE_SEMANTIC_SCREENING=1` and
+`TAWZEEF_EMBEDDING_MODEL_DIR` to the pinned model directory to enable it; see
+`local-semantic-experiment.md` for model setup. The
+endpoint releases the database while inference runs and rejects the result if
+the source, job, account, or session changes. It does not persist scores or
+make decisions. Similarity is an unverified lead, and incomplete masking may
+leave identifying information in excerpts; use synthetic data only. A missing
+suggestion does not prove a skill is absent.
+
 An HR user can create an adaptive, resumable review with
 `POST /api/applications/{id}/adaptive-review-preparations`. This uses the same
 payload and HR approval actions as resumable review, with optional
