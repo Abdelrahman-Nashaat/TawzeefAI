@@ -292,9 +292,17 @@ service was contacted and no email was sent; this does not verify live delivery.
 
 The service durably claims the request before the provider call. It never
 automatically retries. `sending` or `uncertain` blocks cancellation, withdrawal,
-and rejection because the confirmation may have been delivered. There is no
-in-app reconciliation or retry, so a crash or ambiguous response needs operator
-investigation. A confirmed message does not block local cancellation, and that
+and rejection because the confirmation may have been delivered. HR can open
+an investigation in the browser or use `GET` and `POST` on
+`/api/google/interviews/{id}/email/investigation` to record bounded, timestamped
+operator reports of investigation, a reported message found or not found, and
+escalation. Each report identifies the delivery generation, observed state and
+HR actor; it is not independent evidence and does not change delivery state,
+unblock cancellation, or permit another send. The API requires an explicitly
+confirmed report with the delivery ID and expected generation and state, and
+returns at most 100 events. There is no in-app provider reconciliation or retry
+for an ambiguous response: the Gmail send-only permission cannot verify a
+message, and a worker in `sending` might still act. A confirmed message does not block local cancellation, and that
 cancellation **does not send an update**: HR must separately notify the recipient.
 Cancellation responses report whether a prior confirmation was sent and always
 report that no cancellation email was sent; they do not disclose the recipient.

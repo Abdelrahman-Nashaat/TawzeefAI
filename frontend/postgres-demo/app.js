@@ -801,13 +801,49 @@ function googleEmailControls(interview) {
   label.append(recipient);
   const endpoint = `/api/google/interviews/${encodeURIComponent(interview.id)}/email`;
   let revision = 0;
+  async function investigate(delivery) {
+    const generation = sessionGeneration, view = ++revision;
+    async function render() {
+      const result = await api(`${endpoint}/investigation`);
+      ensureCurrent(generation);
+      if (view !== revision) return;
+      if (result.delivery_id !== delivery.id || result.generation !== delivery.generation || result.state !== delivery.state) {
+        details.replaceChildren(element("p", "Delivery state changed. Check email status again."));
+        return;
+      }
+      const rows = [element("p", `Investigation for delivery ${result.delivery_id}, generation ${result.generation}, state ${result.state}.`),
+        element("p", "These are unverified operator reports. They do not establish delivery, release the cancellation block, or permit retry."),
+        element("p", "Check the appropriate mailbox and contact an administrator. A sending worker may still be active.")];
+      const labels = {
+        investigating: "Investigation started",
+        reported_message_found: "Operator reports finding a message",
+        reported_message_not_found: "Operator reports finding no message",
+        escalated: "Escalation recorded"
+      };
+      for (const event of result.events) rows.push(element("p", `${event.created_at} · ${labels[event.observation] || "Unknown report"} · HR ${event.actor_id} · ${event.observed_state}`));
+      for (const [observation, label] of Object.entries(labels)) rows.push(button(`Record: ${label}`, async () => {
+        ensureCurrent(generation);
+        if (!window.confirm(`Record "${label}" as an unverified operator report? This does not change delivery status or permit retry.`)) return;
+        ensureCurrent(generation);
+        await api(`${endpoint}/investigation`, jsonPost({confirmed:true,delivery_id:delivery.id,
+          expected_generation:delivery.generation,expected_state:delivery.state,observation}));
+        ensureCurrent(generation);
+        if (view === revision) await render();
+      }));
+      details.replaceChildren(...rows);
+    }
+    await render();
+  }
   function show(delivery) {
     const rows = [element("p", `Email state: ${delivery.state}`),
       element("p", `Recipient (unverified): ${delivery.recipient}`),
       element("p", `Start: ${delivery.start_at}`), element("p", `End: ${delivery.end_at}`),
       element("p", `Subject: ${delivery.subject}`), element("pre", delivery.body)];
     if (delivery.context_changed) rows.push(element("p", "The interview context changed during delivery. Review the interview and message."));
-    if (["sending", "uncertain"].includes(delivery.state)) rows.push(element("p", "Delivery is unresolved. Do not assume the email was sent or retry it; contact an administrator."));
+    if (["sending", "uncertain"].includes(delivery.state)) {
+      rows.push(element("p", "Delivery is unresolved. Do not assume the email was sent or retry it; contact an administrator."));
+      rows.push(button("Open delivery investigation", () => investigate(delivery)));
+    }
     if (delivery.state === "rejected") rows.push(element("p", "The attempt was rejected. You may review and revise this draft before a new send attempt."));
     if (delivery.state === "confirmed") rows.push(element("p", "Confirmation sent. Cancelling the interview will not send a cancellation email."));
     if (delivery.state === "pending") rows.push(button("Send reviewed Gmail confirmation", async () => {
