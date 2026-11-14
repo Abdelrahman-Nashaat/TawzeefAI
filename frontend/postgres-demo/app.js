@@ -792,6 +792,62 @@ function googleCalendarControls(interview) {
   return panel;
 }
 
+function googleEmailControls(interview) {
+  const panel = element("div"), details = element("div"), label = element("label", "Recipient email (verify independently) ");
+  const recipient = element("input"); recipient.type = "email"; recipient.maxLength = 254;
+  label.append(recipient);
+  const endpoint = `/api/google/interviews/${encodeURIComponent(interview.id)}/email`;
+  let revision = 0;
+  function show(delivery) {
+    const rows = [element("p", `Email state: ${delivery.state}`),
+      element("p", `Recipient (unverified): ${delivery.recipient}`),
+      element("p", `Start: ${delivery.start_at}`), element("p", `End: ${delivery.end_at}`),
+      element("p", `Subject: ${delivery.subject}`), element("pre", delivery.body)];
+    if (delivery.context_changed) rows.push(element("p", "The interview context changed during delivery. Review the interview and message."));
+    if (["sending", "uncertain"].includes(delivery.state)) rows.push(element("p", "Delivery is unresolved. Do not assume the email was sent or retry it; contact an administrator."));
+    if (delivery.state === "rejected") rows.push(element("p", "The attempt was rejected and cannot be retried here."));
+    if (delivery.state === "confirmed") rows.push(element("p", "Confirmation sent. Cancelling the interview will not send a cancellation email."));
+    if (delivery.state === "pending") rows.push(button("Send reviewed Gmail confirmation", async () => {
+      const generation = sessionGeneration;
+      const text = `Send this email to ${delivery.recipient}?\nRecipient is unverified; the sender account is not bound to this draft.\nStart: ${delivery.start_at}\nEnd: ${delivery.end_at}\nSubject: ${delivery.subject}\n\n${delivery.body}`;
+      if (!window.confirm(text)) return;
+      ensureCurrent(generation);
+      const view = ++revision;
+      details.replaceChildren(element("p", "Sending. If the result is unknown, check status before doing anything else."));
+      try {
+        const result = await api(`${endpoint}/send`, jsonPost({confirmed:true,delivery_id:delivery.id,recipient:delivery.recipient}));
+        ensureCurrent(generation);
+        if (view === revision) show(result);
+      } catch (error) {
+        if (generation === sessionGeneration && view === revision) details.replaceChildren(element("p", "The send failed or its result is unknown. Check email status; do not retry blindly."));
+        throw error;
+      }
+    }));
+    details.replaceChildren(...rows);
+  }
+  async function load(prepare) {
+    const generation = sessionGeneration;
+    if (prepare && !window.confirm(`Prepare an email for ${recipient.value}? Verify the recipient independently; it is not linked to the candidate account.`)) return;
+    ensureCurrent(generation);
+    const view = ++revision;
+    details.replaceChildren(element("p", prepare ? "Preparing email review…" : "Checking email status…"));
+    try {
+      const result = await api(endpoint, prepare ? jsonPost({confirmed:true,recipient:recipient.value}) : {});
+      ensureCurrent(generation);
+      if (view === revision) { recipient.value = ""; show(result); }
+    } catch (error) {
+      if (generation === sessionGeneration && view === revision) details.replaceChildren(element("p", "Unable to load email status. Review the error and check status again."));
+      throw error;
+    }
+  }
+  panel.append(element("p", "Gmail: the recipient is unverified and the sender account is not bound to this draft. Verify both independently. Synthetic data only."));
+  if (interview.status === "scheduled" && !interview.completed && new Date(interview.start_at) > new Date()) {
+    panel.append(label, button("Prepare Gmail confirmation review", () => load(true)));
+  }
+  panel.append(button("Check Gmail confirmation status", () => load(false)), details);
+  return panel;
+}
+
 function renderInterviews(interviews) {
   const target = $("interviews"); target.replaceChildren();
   if (!interviews.length) target.append(element("p", "No interviews yet."));
@@ -799,7 +855,7 @@ function renderInterviews(interviews) {
     const card = element("article");
     card.append(element("p", `Application ${interview.application_id}: ${date(interview.start_at)} - ${date(interview.end_at)} | ${interview.interviewer}`));
     card.append(element("p", `Status: ${interview.completed ? "completed" : interview.status}`));
-    if (user.role === "hr") card.append(googleCalendarControls(interview));
+    if (user.role === "hr") card.append(googleCalendarControls(interview), googleEmailControls(interview));
     if (interview.status === "scheduled") {
       const calendar = element("a", "Download calendar file");
       calendar.href = `/api/interviews/${encodeURIComponent(interview.id)}/calendar`;

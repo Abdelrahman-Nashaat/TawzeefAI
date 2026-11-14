@@ -256,8 +256,10 @@ The sender account is not shown or bound to the draft. HR must separately verify
 which account is authorized before enabling Gmail; reauthorization could change it.
 To make one send attempt, HR calls `POST` on the endpoint with `/send` appended
 and supplies `{"confirmed":true,"delivery_id":<reviewed id>,"recipient":"<reviewed address>"}`.
-No browser controls are provided yet. Gmail authorization must be configured
-separately from Calendar. No real Gmail delivery has been tested.
+The HR browser provides separate preparation, review, status and send controls;
+the confirmation displays the recipient, subject, body and times. Gmail
+authorization must be configured separately from Calendar. No real Gmail
+delivery has been tested.
 
 The service durably claims the request before the provider call. It never
 automatically retries. `sending` or `uncertain` blocks cancellation, withdrawal,
