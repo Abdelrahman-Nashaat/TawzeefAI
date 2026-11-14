@@ -220,7 +220,15 @@ An observed context change during the call is flagged, although changes that are
 reversed during the call may escape this snapshot check. An access revocation
 after the final pre-call check cannot stop an already-started request. This is
 not a production-ready synchronization or recovery system. Gmail and invitations
-are not sent. No live Google Calendar test of this PostgreSQL flow has been run.
+are not sent by this flow.
+
+On 14 November 2026, a single synthetic booking was tested with the PostgreSQL
+Calendar endpoints and an authorized Google account. HR prepared and confirmed a
+private event with no attendees; Google returned a confirmed creation. The
+application then verified the event and removed it using the bound credential and
+conditional event version. Removal returned `removed`, and the isolated test
+schema was deleted. No email was sent. This one successful path does not verify
+Gmail, ambiguous-outcome recovery, or production readiness.
 
 `GET /api/health` reports that the web process is responding. `GET /api/ready`
 also checks PostgreSQL connectivity and the expected schema-version marker; it
