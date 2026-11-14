@@ -169,8 +169,10 @@ unavailable in this mode.
 Synthetic-only use: set `TAWZEEF_ENABLE_GOOGLE=1` in a Windows process with
 Calendar authorization stored as described in [Google integration](google-integration.md).
 It is disabled by default and is unavailable in the Linux container. Booking
-does not contact Google. No browser controls are provided for this PostgreSQL
-flow yet. HR may call the following endpoints after booking a future interview:
+does not contact Google. HR can prepare and inspect an event in the interview
+card, review its event ID and exact times, and explicitly confirm creation or
+removal. The browser displays unresolved outcomes and requires a status check
+after a failed request. HR may also call these endpoints after booking a future interview:
 
 1. `POST /api/google/interviews/{id}/calendar` with `{"confirmed":true}`
    prepares a durable local draft and returns its event ID and exact times.

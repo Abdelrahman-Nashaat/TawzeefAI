@@ -711,6 +711,69 @@ function renderApplications(applications, jobs) {
   }
 }
 
+function googleCalendarControls(interview) {
+  const panel = element("div");
+  const details = element("div");
+  const endpoint = `/api/google/interviews/${encodeURIComponent(interview.id)}/calendar`;
+  let revision = 0;
+
+  function showDelivery(delivery) {
+    const rows = [element("p", `Google Calendar state: ${delivery.state}`),
+      element("p", `Event ID: ${delivery.event_id}`),
+      element("p", `Start: ${delivery.start_at}`), element("p", `End: ${delivery.end_at}`)];
+    if (delivery.context_changed) rows.push(element("p", "The interview context changed during delivery. Review the event and interview."));
+    if (["sending", "uncertain", "removing", "removal_uncertain"].includes(delivery.state)) {
+      rows.push(element("p", "The provider outcome is unresolved. Check the calendar and contact an administrator; do not assume the event was created or removed."));
+    }
+    if (delivery.state === "rejected") rows.push(element("p", "The attempt was rejected. This delivery cannot be retried here."));
+    if (delivery.state === "removed") rows.push(element("p", "The event was removed. The local interview is still scheduled unless separately cancelled."));
+    const request = (suffix, verb) => async () => {
+      const generation = sessionGeneration;
+      const reviewed = `${verb} Google Calendar event ${delivery.event_id}?\nStart: ${delivery.start_at}\nEnd: ${delivery.end_at}\nThis does not send an email or cancel the local interview.`;
+      if (!window.confirm(reviewed)) return;
+      ensureCurrent(generation);
+      const view = ++revision;
+      // A network failure may follow an accepted provider action. Hide action
+      // buttons until HR explicitly reloads the authoritative delivery state.
+      details.replaceChildren(element("p", "Request in progress. If it fails, check the delivery status before taking further action."));
+      try {
+        const updated = await api(`${endpoint}/${suffix}`, jsonPost({ confirmed: true, event_id: delivery.event_id }));
+        ensureCurrent(generation);
+        if (view === revision) showDelivery(updated);
+      } catch (error) {
+        if (generation === sessionGeneration && view === revision) {
+          details.replaceChildren(element("p", "The request failed or its result is unknown. Check Google Calendar status before taking further action."));
+        }
+        throw error;
+      }
+    };
+    if (delivery.state === "pending") rows.push(button("Create Google Calendar event", request("send", "Create")));
+    if (delivery.state === "confirmed") rows.push(button("Remove Google Calendar event", request("remove", "Remove")));
+    details.replaceChildren(...rows);
+  }
+
+  const load = (prepare) => async () => {
+    const generation = sessionGeneration, view = ++revision;
+    details.replaceChildren(element("p", prepare ? "Preparing calendar review…" : "Checking calendar status…"));
+    try {
+      const result = await api(endpoint, prepare ? jsonPost({ confirmed: true }) : {});
+      ensureCurrent(generation);
+      if (view === revision) showDelivery(result);
+    } catch (error) {
+      if (generation === sessionGeneration && view === revision) {
+        details.replaceChildren(element("p", "Unable to load calendar status. Review the error and try checking the status again."));
+      }
+      throw error;
+    }
+  };
+  panel.append(element("p", "Google Calendar: explicit HR review only. No invitations or emails are sent."));
+  if (interview.status === "scheduled" && !interview.completed && new Date(interview.start_at) > new Date()) {
+    panel.append(button("Prepare Google Calendar review", load(true)));
+  }
+  panel.append(button("Check Google Calendar status", load(false)), details);
+  return panel;
+}
+
 function renderInterviews(interviews) {
   const target = $("interviews"); target.replaceChildren();
   if (!interviews.length) target.append(element("p", "No interviews yet."));
@@ -718,6 +781,7 @@ function renderInterviews(interviews) {
     const card = element("article");
     card.append(element("p", `Application ${interview.application_id}: ${date(interview.start_at)} - ${date(interview.end_at)} | ${interview.interviewer}`));
     card.append(element("p", `Status: ${interview.completed ? "completed" : interview.status}`));
+    if (user.role === "hr") card.append(googleCalendarControls(interview));
     if (interview.status === "scheduled") {
       const calendar = element("a", "Download calendar file");
       calendar.href = `/api/interviews/${encodeURIComponent(interview.id)}/calendar`;
