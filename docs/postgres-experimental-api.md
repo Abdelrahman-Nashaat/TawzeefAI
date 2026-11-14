@@ -1,5 +1,12 @@
 # Experimental PostgreSQL API
 
+HR can check `GET /api/applications/{id}/duplicates` for up to 50 other
+applications with exactly identical, nonblank extracted résumé text across
+jobs. `truncated` signals additional matches. This compares extracted text,
+not original files or approximate content; it is not evidence of fraud and
+does not make hiring decisions. The scan is intended only for the small
+synthetic demo and is not optimized for production-scale data.
+
 HR can also start a **resumable review** or advancement proposal from the
 browser. This variant commits each of five specialist stages separately. The
 review can be reopened after interruption and continued from the next stage;

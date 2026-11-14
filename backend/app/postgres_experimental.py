@@ -42,6 +42,7 @@ from app.document_text import MAX_FILE_BYTES, DocumentTextError, extract_documen
 from app.postgres_audit import install_routes as install_audit_routes
 from app.postgres_conversations import DDL as CONVERSATION_DDL
 from app.postgres_conversations import install_routes as install_conversation_routes
+from app.postgres_duplicates import install_routes as install_duplicate_routes
 from app.postgres_feedback import DDL as FEEDBACK_DDL
 from app.postgres_feedback import install_routes as install_feedback_routes
 from app.postgres_graph_review import DDL as GRAPH_DRAFT_DDL
@@ -519,6 +520,7 @@ def create_postgres_app(*, seed_demo: bool, require_new_schema: bool = False, on
         finally:
             _SCREEN_WORKERS.release()
 
+    install_duplicate_routes(app, connect, authenticate, authorize_locked)
     install_rubric_routes(app, connect, authenticate, authorize_locked)
     install_audit_routes(app, connect, authenticate, authorize_locked)
     install_job_routes(app, connect, authenticate, authorize_locked)
