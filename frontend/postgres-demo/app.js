@@ -369,6 +369,22 @@ function renderApplications(applications, jobs) {
       moreAudit.hidden = true;
       auditPanel.append(element("p", "Event metadata only; assessment details are not shown."), auditRows, moreAudit);
       card.append(button("View audit timeline", () => loadAudit(false)), auditPanel);
+      const duplicatesPanel = element("div");
+      let duplicatesGeneration = 0;
+      card.append(button("Check exact CV duplicates", async () => {
+        const generation = sessionGeneration, view = ++duplicatesGeneration;
+        duplicatesPanel.replaceChildren(element("p", "Checking…"));
+        const result = await api(`/api/applications/${application.id}/duplicates`);
+        ensureCurrent(generation);
+        if (view !== duplicatesGeneration) return;
+        const rows = [element("p", "Only identical extracted CV text is checked. A match is not proof of fraud.")];
+        if (!result.matches.length) rows.push(element("p", "No exact matches found."));
+        for (const match of result.matches) {
+          rows.push(element("p", `Application ${match.application_id} · Candidate ${match.candidate_id} · Job ${match.job_id} · ${match.status}`));
+        }
+        if (result.truncated) rows.push(element("p", "Only the first 50 matches are shown."));
+        duplicatesPanel.replaceChildren(...rows);
+      }), duplicatesPanel);
       const graphForm = element("form");
       const graphLabel = element("label", "Optional policy question ");
       const graphQuestion = element("input");
