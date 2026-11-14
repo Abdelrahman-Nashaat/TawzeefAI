@@ -227,6 +227,8 @@ def create_postgres_app(*, seed_demo: bool, require_new_schema: bool = False, on
     if os.environ.get('TAWZEEF_ENABLE_GOOGLE') == '1':
         from app.postgres_google_calendar import configure as configure_google_calendar
         configure_google_calendar(app)
+        if os.environ.get('TAWZEEF_POSTGRES_ENABLE_GMAIL') == '1':
+            app.state.google_email_preflight = app.state.google_preflight
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=['localhost', '127.0.0.1', '[::1]', 'testserver'])
 
     # This interface calls only this application's PostgreSQL API. The main

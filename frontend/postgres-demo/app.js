@@ -317,11 +317,11 @@ function renderApplications(applications, jobs) {
     if (user.role === "candidate") {
       if (["submitted", "advanced", "offered"].includes(application.status)) {
         card.append(button("Withdraw application", async () => {
-          if (!window.confirm("Withdraw this application? Future interviews and unanswered offers will be cancelled locally. Contact HR if you have accepted an offer.")) return;
+          if (!window.confirm("Withdraw this application? Future interviews and unanswered offers will be cancelled locally. No cancellation email will be sent. Contact HR if you have accepted an offer.")) return;
           const generation = sessionGeneration;
-          await api(`/api/applications/${application.id}/withdraw`, jsonPost({confirmed: true}));
+          const result = await api(`/api/applications/${application.id}/withdraw`, jsonPost({confirmed: true}));
           ensureCurrent(generation); await refresh(); ensureCurrent(generation);
-          message("Application withdrawn locally. No email or calendar update was sent.");
+          message(result.confirmation_email_sent ? "Application withdrawn locally. A prior confirmation email was sent; no cancellation email or calendar update was sent. Contact HR." : "Application withdrawn locally. No email or calendar update was sent.");
         }));
       }
       const progress = element("p");
@@ -627,7 +627,7 @@ function renderApplications(applications, jobs) {
         const reject = element("button", "Reject application");
         reject.type = "submit";
         rejectionForm.append(reasonLabel,
-          element("p", "Rejecting cancels future interviews and withdraws any pending offer."), reject);
+          element("p", "Rejecting cancels future interviews and withdraws any pending offer. It does not send a cancellation email; notify the recipient separately."), reject);
         rejectionForm.addEventListener("submit", (event) => {
           event.preventDefault();
           action(event.submitter, async () => {
@@ -635,9 +635,9 @@ function renderApplications(applications, jobs) {
             const note = reason.value.trim();
             if (!note) throw new Error("Enter a reason for rejection.");
             if (note.length > 2000) throw new Error("The rejection reason is too long.");
-            await api(`/api/applications/${application.id}/decision`, jsonPost({ decision: "reject", note }));
+            const result = await api(`/api/applications/${application.id}/decision`, jsonPost({ decision: "reject", note }));
             ensureCurrent(generation); reason.value = ""; await refresh(); ensureCurrent(generation);
-            message("Application rejected by HR.");
+            message(result.confirmation_email_sent ? "Application rejected. A prior confirmation email was sent; no cancellation email was sent. Notify the recipient separately." : "Application rejected by HR. No cancellation email was sent.");
           });
         });
         card.append(rejectionForm);
@@ -809,9 +809,11 @@ function renderInterviews(interviews) {
     if (interview.status === "scheduled" && !interview.completed && new Date(interview.start_at) > new Date()) {
       const suffix = user.role === "hr" ? "cancel" : "candidate-cancel";
       card.append(button("Cancel interview", async () => {
+        if (!window.confirm("Cancel this interview locally? No cancellation email will be sent. Contact the other party separately.")) return;
         const generation = sessionGeneration;
-        await api(`/api/interviews/${interview.id}/${suffix}`, { method: "POST" });
-        ensureCurrent(generation); await refresh(); ensureCurrent(generation); message("Interview cancelled locally.");
+        const result = await api(`/api/interviews/${interview.id}/${suffix}`, { method: "POST" });
+        ensureCurrent(generation); await refresh(); ensureCurrent(generation);
+        message(result.confirmation_email_sent ? "Interview cancelled locally. A prior confirmation email was sent; no cancellation email was sent. Contact the other party." : "Interview cancelled locally. No cancellation email was sent.");
       }));
     }
     if (user.role === "hr" && interview.status === "scheduled" && !interview.completed && new Date(interview.end_at) <= new Date()) {

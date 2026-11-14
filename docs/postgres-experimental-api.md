@@ -189,8 +189,8 @@ local candidate interview booking, cancellation, explicit HR completion, local
 cancellation notices, and offers with candidate response and explicit HR hire
 are implemented. A dedicated browser interface supports these actions and saved
 knowledge conversations. The separate Calendar API flow described below is
-available only in an explicitly enabled Windows process; email delivery remains
-unavailable in this mode.
+available only in an explicitly enabled Windows process. A separate, explicitly
+reviewed Gmail confirmation API is also available as described below.
 
 ### Explicit experimental Google Calendar delivery
 
@@ -240,6 +240,37 @@ application then verified the event and removed it using the bound credential an
 conditional event version. Removal returned `removed`, and the isolated test
 schema was deleted. No email was sent. This one successful path does not verify
 Gmail, ambiguous-outcome recovery, or production readiness.
+
+### Explicit experimental Gmail confirmation
+
+This synthetic-only API requires both the Windows-only `TAWZEEF_ENABLE_GOOGLE=1`
+and the separate `TAWZEEF_POSTGRES_ENABLE_GMAIL=1` opt-ins. Both are disabled by
+default; enabling Calendar alone does not enable Gmail. Booking does not send
+email. HR may prepare a draft with
+`POST /api/google/interviews/{id}/email` and JSON
+`{"confirmed":true,"recipient":"candidate@example.com"}`. The address is
+entered by HR and **is not verified against the candidate's account**; HR must
+verify it independently. The response contains the exact recipient, subject,
+body and times for review. HR can reopen this with `GET` on the same endpoint.
+The sender account is not shown or bound to the draft. HR must separately verify
+which account is authorized before enabling Gmail; reauthorization could change it.
+To make one send attempt, HR calls `POST` on the endpoint with `/send` appended
+and supplies `{"confirmed":true,"delivery_id":<reviewed id>,"recipient":"<reviewed address>"}`.
+No browser controls are provided yet. Gmail authorization must be configured
+separately from Calendar. No real Gmail delivery has been tested.
+
+The service durably claims the request before the provider call. It never
+automatically retries. `sending` or `uncertain` blocks cancellation, withdrawal,
+and rejection because the confirmation may have been delivered. There is no
+in-app reconciliation or retry, so a crash or ambiguous response needs operator
+investigation. A confirmed message does not block local cancellation, and that
+cancellation **does not send an update**: HR must separately notify the recipient.
+Cancellation responses report whether a prior confirmation was sent and always
+report that no cancellation email was sent; they do not disclose the recipient.
+No cancellation email is implemented for this path. A rejected or stale draft
+cannot be corrected or retried here. A source change observed during a provider
+call is flagged; a change reversed during the call might be missed. The feature
+does not provide production-grade delivery, recipient verification, or recovery.
 
 `GET /api/health` reports that the web process is responding. `GET /api/ready`
 also checks PostgreSQL connectivity and the expected schema-version marker; it

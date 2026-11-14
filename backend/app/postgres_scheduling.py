@@ -18,6 +18,10 @@ from app.interview_calendar import _fold, _instant, _text
 from app.postgres_google_calendar import DDL as GOOGLE_CALENDAR_DDL
 from app.postgres_google_calendar import cancellation_blocked
 from app.postgres_google_calendar import install_routes as install_google_calendar_routes
+from app.postgres_google_email import DDL as GOOGLE_EMAIL_DDL
+from app.postgres_google_email import cancellation_blocked as email_cancellation_blocked
+from app.postgres_google_email import confirmation_sent as email_confirmation_sent
+from app.postgres_google_email import install_routes as install_google_email_routes
 from app.postgres_offers import DDL as OFFER_DDL
 from app.postgres_offers import hire
 from app.postgres_offers import install_routes as install_offer_routes
@@ -90,7 +94,7 @@ DDL = (
 )
 
 
-DDL += OFFER_DDL + GOOGLE_CALENDAR_DDL
+DDL += OFFER_DDL + GOOGLE_CALENDAR_DDL + GOOGLE_EMAIL_DDL
 
 
 class Advance(BaseModel):
@@ -110,6 +114,10 @@ def install_routes(app, connect, authenticate, authorize_locked):
         db.execute("SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext('tawzeef-scheduling-v1'))")
 
     install_google_calendar_routes(app, connect, authenticate, authorize_locked, guard)
+    install_google_email_routes(app, connect, authenticate, authorize_locked, guard)
+
+    def external_cancellation_blocked(db, interview_id):
+        return cancellation_blocked(db, interview_id) or email_cancellation_blocked(db, interview_id)
 
     def withdraw_finalized_slots(db, application_id, actor_id):
         rows = db.execute('''UPDATE interview_slots SET withdrawn=true
@@ -153,8 +161,9 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=409, detail='Contact HR about the interview in progress')
             if any(offer['recipient_id'] != user.id for offer in offers) or any(interview['candidate_id'] != user.id for interview in interviews):
                 raise HTTPException(status_code=409, detail='Application ownership is inconsistent')
-            if any(cancellation_blocked(db, interview['id']) for interview in interviews):
-                raise HTTPException(status_code=409, detail='Contact HR to reconcile the Google Calendar event')
+            if any(external_cancellation_blocked(db, interview['id']) for interview in interviews):
+                raise HTTPException(status_code=409, detail='Contact HR to reconcile Google delivery')
+            sent = any(email_confirmation_sent(db, interview['id']) for interview in interviews)
             for offer in offers:
                 db.execute("UPDATE job_offers SET status='withdrawn',responded_at=clock_timestamp() WHERE id=%s", (offer['id'],))
                 db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'offer_withdrawn',%s)",
@@ -178,7 +187,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 WHERE id=ANY(%s) AND start_at<=clock_timestamp() LIMIT 1''',
                 ([interview['id'] for interview in interviews],)).fetchone():
                 raise HTTPException(status_code=409, detail='Contact HR about the interview in progress')
-            return {'id': application_id, 'status': 'withdrawn'}
+            return {'id': application_id, 'status': 'withdrawn', 'confirmation_email_sent': sent,
+                    'cancellation_email_sent': False}
 
     @app.get('/api/hr/application-withdrawals')
     def application_withdrawals(request: Request, user: Annotated[User, Depends(authenticate)],
@@ -234,11 +244,12 @@ def install_routes(app, connect, authenticate, authorize_locked):
                     db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'offer_withdrawn',%s)",
                                (application_id, user.id, json.dumps({'offer_id': offer['id']})))
                 interviews = db.execute("SELECT id,candidate_id FROM interviews WHERE application_id=%s AND status='scheduled' AND start_at>clock_timestamp() FOR UPDATE", (application_id,)).fetchall()
+                sent = any(email_confirmation_sent(db, interview['id']) for interview in interviews)
                 for interview in interviews:
                     if interview['candidate_id'] != row['candidate_id']:
                         raise HTTPException(status_code=409, detail='Interview ownership changed')
-                    if cancellation_blocked(db, interview['id']):
-                        raise HTTPException(status_code=409, detail='Reconcile the Google Calendar event first')
+                    if external_cancellation_blocked(db, interview['id']):
+                        raise HTTPException(status_code=409, detail='Reconcile Google delivery first')
                     db.execute("UPDATE interviews SET status='cancelled' WHERE id=%s", (interview['id'],))
                     db.execute('INSERT INTO hr_interview_cancellations(interview_id,candidate_id) VALUES (%s,%s)', (interview['id'], row['candidate_id']))
                     db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'interview_cancelled',%s)",
@@ -248,6 +259,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'decision',%s)",
                            (application_id, user.id, json.dumps({'decision': 'reject', 'note': payload.note.strip()}, ensure_ascii=False)))
                 result = application_view(db.execute('SELECT * FROM applications WHERE id=%s', (application_id,)).fetchone(), user)
+                result['confirmation_email_sent'] = sent
+                result['cancellation_email_sent'] = False
                 authorize_locked(db, request, user, 'hr')
                 return result
             if row['status'] != 'submitted':
@@ -485,8 +498,9 @@ def install_routes(app, connect, authenticate, authorize_locked):
         if (row['status'] != 'scheduled' or row['completed'] or row['start_at'] <= datetime.now(UTC)
                 or (by_candidate and row['application_status'] != 'advanced')):
             raise HTTPException(status_code=409, detail='Interview cannot be cancelled')
-        if cancellation_blocked(db, interview_id):
-            raise HTTPException(status_code=409, detail='Reconcile the Google Calendar event first')
+        if external_cancellation_blocked(db, interview_id):
+            raise HTTPException(status_code=409, detail='Reconcile Google delivery first')
+        sent = email_confirmation_sent(db, interview_id)
         updated = db.execute('''UPDATE interviews SET status='cancelled' WHERE id=%s
             RETURNING id,application_id,candidate_id,start_at,end_at,interviewer,status,completed''', (interview_id,)).fetchone()
         table = 'candidate_interview_cancellations' if by_candidate else 'hr_interview_cancellations'
@@ -496,7 +510,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
         reason = 'candidate_cancelled' if by_candidate else 'hr_cancelled'
         db.execute("INSERT INTO audit_events(application_id,actor_id,action,details) VALUES (%s,%s,'interview_cancelled',%s)",
                    (row['application_id'], user.id, json.dumps({'interview_id': interview_id, 'reason': reason})))
-        return dict(updated)
+        return {**dict(updated), 'confirmation_email_sent': sent, 'cancellation_email_sent': False}
 
     @app.post('/api/interviews/{interview_id}/cancel')
     def hr_cancel(interview_id: int, request: Request, user: Annotated[User, Depends(authenticate)]):
