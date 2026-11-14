@@ -38,6 +38,13 @@ in the adaptive-review request.
 When the preview is requested, the server adds parsing and matching to the
 validated plan if the planner omitted them; the displayed source names the
 planner used before these required additions.
+One synthetic counterfactual test changes two labeled name and gender fields
+while holding a résumé's evidence constant. The two keyword previews matched,
+and the test did not find its exact synthetic identity or evidence strings in
+the three LangGraph checkpoint storage tables. This narrow test does not cover
+unlabeled identifiers, proxies, all document formats, or other protected fields;
+it does not establish fairness or complete privacy. Checkpoint digests may be
+guessable, and the HR preview itself can still contain identifying information.
 Output is a review aid and the existing warnings about unverified matching,
 external model reliability, and sensitive data remain applicable.
 
