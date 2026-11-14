@@ -14,6 +14,7 @@ const document = {getElementById(id){if(!ids.has(id))ids.set(id,new Node());retu
 const response = data => ({status:200,ok:true,json:async()=>data});
 const sent = [];
 let consent = false;
+let ready = false;
 const fetch = async (path, options={}) => {
   if(path==='/api/auth/me') return {status:401,ok:false,json:async()=>({})};
   if(path==='/api/applications/7/adaptive-review-preparations') {
@@ -21,7 +22,7 @@ const fetch = async (path, options={}) => {
     return response({id:12,plan:['parser','status'],plan_source:sent.at(-1).model_plan ? 'deterministic_fallback' : 'deterministic'});
   }
   if(path==='/api/applications/7/graph-review-drafts') return response([{id:12,status:'pending'}]);
-  if(path==='/api/graph-review-drafts/12') return response({status:'pending',stale:false,intent:'review',result:{},plan:['parser','status'],plan_source:'deterministic',preparation:{ready:false,completed:['parser'],next:'status'}});
+  if(path==='/api/graph-review-drafts/12') return response({status:'pending',stale:false,intent:'review',result:{},plan:['parser','status'],plan_source:'deterministic',preparation:{ready,completed:ready?['parser','status']:['parser'],next:ready?'human_review':'status',suggested_step:'review_rubric'}});
   return response([]);
 };
 const context=vm.createContext({document,fetch,window:{confirm:()=>consent},URLSearchParams,console,Date,Error,Promise,setTimeout});
@@ -48,5 +49,10 @@ async function run(){
   await click('Open review');
   assert(find('Adaptive plan: parser, status. Source: deterministic.'));
   assert(find('Preparation complete: parser. Next: status.'));
+  ready=true;
+  await click('Open saved reviews');
+  await click('Open review');
+  assert(find("Suggested next step: Review the applicant's assessment. HR must decide."));
+  assert(!find('Ask AI for a review suggestion'));
 }
 run().catch(error=>{console.error(error);process.exitCode=1;});

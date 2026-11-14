@@ -551,7 +551,7 @@ function renderApplications(applications, jobs) {
                   review_application_status: "Review the application status"
                 };
                 view.append(element("p", `Suggested next step: ${labels[opened.preparation.suggested_step] || "Review the application"}. HR must decide.`));
-                view.append(button("Ask AI for a review suggestion", async () => {
+                if (!opened.plan) view.append(button("Ask AI for a review suggestion", async () => {
                   ensureDraftView(current, viewGeneration);
                   if (!window.confirm("Send only the application stage, assessment status, interview status, and slot availability to Groq? Use synthetic data only.")) return;
                   const result = await api(`/api/graph-review-drafts/${draft.id}/ai-suggestion`, {method: "POST"});
