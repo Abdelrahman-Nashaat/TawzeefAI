@@ -76,6 +76,29 @@ def create_calendar_event(session, *, event_id: str, start: str, end: str) -> di
                  expected_id=event_id, require_etag=True)
 
 
+def inspect_calendar_event(session, *, event_id: str, start: str, end: str) -> dict:
+    """Find our exact private event; absence or a mismatch proves nothing."""
+    if not isinstance(event_id, str) or not _EVENT_ID.fullmatch(event_id):
+        raise ValueError('Invalid Google Calendar event ID')
+    start, end = _times(start, end)
+    try:
+        response = session.request('GET', f'{CALENDAR_URL}/{event_id}', timeout=20, allow_redirects=False)
+        if response.status_code != 200:
+            return {'status': 'uncertain'}
+        event = response.json()
+        actual_start, actual_end = _times(event['start']['dateTime'], event['end']['dateTime'])
+        etag = event.get('etag')
+        if (event.get('id') != event_id or not isinstance(etag, str) or not _ETAG.fullmatch(etag)
+                or event.get('summary') != CALENDAR_SUMMARY or event.get('status') != 'confirmed'
+                or event.get('visibility') != 'private' or event.get('attendees')
+                or not _calendar_time_matches(actual_start, start) or not _calendar_time_matches(actual_end, end)
+                or event['extendedProperties']['private']['tawzeefai_delivery'] != event_id):
+            return {'status': 'uncertain'}
+        return {'status': 'confirmed', 'event_id': event_id, 'etag': etag}
+    except (requests.RequestException, OSError, TimeoutError, ValueError, TypeError, KeyError, AttributeError):
+        return {'status': 'uncertain'}
+
+
 def remove_calendar_event(session, *, event_id: str, etag: str, start: str, end: str) -> dict:
     """Verify our exact event before a single conditional delete.
 

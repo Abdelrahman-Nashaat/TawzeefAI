@@ -178,6 +178,55 @@ def install_routes(app, connect, authenticate, authorize_locked, guard):
             authorized(db, request, user)
             return _public(get(db, interview_id))
 
+    @app.post('/api/google/interviews/{interview_id}/calendar/reconcile')
+    def reconcile(interview_id: int, payload: Confirm, request: Request, user: Annotated[User, Depends(authenticate)]):
+        """Only recover a terminal ambiguous result when our exact event exists."""
+        if not payload.confirmed or not payload.event_id:
+            raise HTTPException(status_code=422, detail='Confirm the reviewed event ID')
+        with connect() as db:
+            authorized(db, request, user)
+            row = get(db, interview_id)
+            if (row['state'] not in ('uncertain', 'removal_uncertain') or row['event_id'] != payload.event_id
+                    or not isinstance(row['binding'], str) or not _BINDING.fullmatch(row['binding'])):
+                raise HTTPException(status_code=409, detail='A terminal uncertain delivery is required')
+            authorized(db, request, user)
+        preflight = getattr(app.state, 'google_calendar_inspection_preflight', None)
+        if not callable(preflight):
+            raise HTTPException(status_code=503, detail='Calendar inspection is not configured')
+        try:
+            inspect = preflight()
+            if not callable(inspect) or getattr(inspect, 'google_credential_binding', None) != row['binding']:
+                raise ValueError('Calendar identity changed')
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail='Original Google Calendar authorization unavailable') from exc
+        with connect() as db:
+            authorized(db, request, user)
+            guard(db)
+            current = get(db, interview_id)
+            if any(current[k] != row[k] for k in ('state', 'event_id', 'binding', 'etag')):
+                raise HTTPException(status_code=409, detail='Calendar delivery changed')
+            authorized(db, request, user)
+        try:
+            result = inspect(event_id=row['event_id'], start=row['start_at'].isoformat(), end=row['end_at'].isoformat())
+        except Exception:  # noqa: BLE001 - leave the durable outcome unchanged on any inspection failure.
+            result = None
+        etag = result.get('etag') if isinstance(result, dict) else None
+        verified = (isinstance(result, dict) and result.get('status') == 'confirmed'
+                    and result.get('event_id') == row['event_id'] and isinstance(etag, str)
+                    and bool(_ETAG.fullmatch(etag))
+                    and (row['state'] != 'removal_uncertain' or etag == row['etag']))
+        with connect() as db:
+            authorized(db, request, user)
+            guard(db)
+            current = get(db, interview_id)
+            if any(current[k] != row[k] for k in ('state', 'event_id', 'binding', 'etag')):
+                raise HTTPException(status_code=409, detail='Calendar delivery changed')
+            if verified:
+                db.execute("UPDATE pg_calendar_deliveries SET state='confirmed',etag=%s,updated_at=clock_timestamp() WHERE id=%s", (etag, row['id']))
+                _audit(db, row, user.id, 'google_calendar_reconciled_existing')
+            authorized(db, request, user)
+            return _public(get(db, interview_id))
+
     @app.post('/api/google/interviews/{interview_id}/calendar/remove')
     def remove(interview_id: int, payload: Confirm, request: Request, user: Annotated[User, Depends(authenticate)]):
         if not payload.confirmed or not payload.event_id:
@@ -237,6 +286,11 @@ def install_routes(app, connect, authenticate, authorize_locked, guard):
 def configure(app):
     if sys.platform != 'win32':
         raise RuntimeError('Google local integration requires Windows Credential Manager')
-    from app.google_dispatch import prepare_calendar_removal, prepare_dispatch
+    from app.google_dispatch import (
+        prepare_calendar_inspection,
+        prepare_calendar_removal,
+        prepare_dispatch,
+    )
     app.state.google_preflight = prepare_dispatch
     app.state.google_calendar_removal_preflight = prepare_calendar_removal
+    app.state.google_calendar_inspection_preflight = prepare_calendar_inspection

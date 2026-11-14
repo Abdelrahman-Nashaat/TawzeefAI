@@ -213,9 +213,16 @@ after a failed request. HR may also call these endpoints after booking a future 
    Removing the event does not cancel the local interview.
 
 HR can inspect status with `GET /api/google/interviews/{id}/calendar`. A claim
-is persisted before contacting the provider. `sending`, `uncertain`, `removing`
-and `removal_uncertain` may require manual reconciliation and cannot be retried
-through these endpoints; a process crash or lost response can leave them there.
+is persisted before contacting the provider. HR may use `POST
+/api/google/interviews/{id}/calendar/reconcile` with the reviewed event ID and
+`confirmed: true` to inspect a terminal `uncertain` or `removal_uncertain`
+result. The read-only check can restore `confirmed` only if the original
+credential sees the exact matching private event. For an ambiguous removal the
+event version must also be unchanged. HR can then separately request removal.
+A missing, changed, or inaccessible event remains uncertain; it does not prove
+absence. An in-flight or crash-stranded `sending` or `removing` state cannot be
+reconciled through this endpoint because a worker might still act. These cases
+need manual investigation, and cannot be retried through these endpoints.
 Confirmed or unresolved events block candidate and HR cancellation, withdrawal,
 and rejection until removal succeeds. No automatic provider retry occurs.
 An observed context change during the call is flagged, although changes that are

@@ -56,3 +56,14 @@ def prepare_calendar_removal():
 
     remove.google_credential_binding = binding
     return remove
+
+
+def prepare_calendar_inspection():
+    session = _authorized_session('calendar')
+    binding = _binding(session)
+
+    def inspect(*, event_id: str, start: str, end: str):
+        return google_services.inspect_calendar_event(session, event_id=event_id, start=start, end=end)
+
+    inspect.google_credential_binding = binding
+    return inspect
