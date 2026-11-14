@@ -41,9 +41,12 @@ async function run(){
   await click('Start adaptive review');
   assert.deepEqual(sent[0],{policy_question:'',model_plan:false});
   assert(find('Adaptive review 12 started. Plan: parser, status. Source: deterministic. Open saved reviews to continue preparation.'));
+  const preview = find('Include local keyword-matching preview in adaptive review ').children[0];
+  preview.checked=true;
   consent=true;
   await click('Start AI-planned adaptive review');
   assert.equal(sent[1].model_plan,true);
+  assert.equal(sent[1].keyword_preview,true);
   assert(find('Adaptive review 12 started. Plan: parser, status. Source: deterministic_fallback. Open saved reviews to continue preparation.'));
   await click('Open saved reviews');
   await click('Open review');

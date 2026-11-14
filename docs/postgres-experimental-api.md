@@ -25,6 +25,19 @@ rather than generating a new score. The HR browser offers deterministic and
 optional model-planned adaptive reviews. The model option asks for confirmation
 before sending bounded status facts, and the displayed plan identifies whether
 it came from the model or a deterministic fallback.
+HR can optionally include a local keyword-matching preview in an adaptive review.
+The matching specialist applies the same conservative keyword tool used by the
+separate screening endpoint to the masked synthetic résumé and returns evidence
+leads for HR. This is not a verified qualification, a weighted rubric, or an
+assessment; it does not save a screen or make a decision. Masking is incomplete
+and excerpts may still identify the person. The preview is recomputed for source
+checks and no résumé excerpts are placed in the checkpoint. Existing reviews
+retain their earlier behavior; a current human rubric remains required for an
+advance proposal. The same feature is available using `"keyword_preview": true`
+in the adaptive-review request.
+When the preview is requested, the server adds parsing and matching to the
+validated plan if the planner omitted them; the displayed source names the
+planner used before these required additions.
 Output is a review aid and the existing warnings about unverified matching,
 external model reliability, and sensitive data remain applicable.
 

@@ -21,6 +21,7 @@ from app.postgres_ai_planner import allowed_actions, request_plan
 from app.postgres_feedback import current_review
 from app.postgres_offers import present_offer, validate_offer
 from app.postgres_rubric import _source
+from app.recruitment import normalize, score_resume
 from app.resume_structure import structure_resume
 from app.slots import SlotCreate
 
@@ -56,6 +57,7 @@ class ReviewReply(BaseModel):
 class AdaptiveDraftRequest(DraftRequest):
     model_config = ConfigDict(extra='forbid')
     model_plan: StrictBool = False
+    keyword_preview: StrictBool = False
 
 
 DDL = '''CREATE TABLE IF NOT EXISTS graph_review_drafts (
@@ -84,11 +86,11 @@ def _bind_proposal(digest, slot, offer_details):
     return _fingerprint(bound, 'present_offer', offer_details) if offer_details is not None else bound
 
 
-def _snapshot(db, application_id, question, *, all_collections=False, stages=None):
+def _snapshot(db, application_id, question, *, all_collections=False, stages=None, keyword_preview=False):
     row, _, digest = _source(db, application_id)
     owner = db.execute('SELECT candidate_id FROM applications WHERE id=%s', (application_id,)).fetchone()['candidate_id']
     latest = db.execute('SELECT max(audit_event_id) AS id FROM hr_rubric_history WHERE application_id=%s', (application_id,)).fetchone()['id']
-    result = review_graph(db, application_id, question, all_collections=all_collections, stages=stages)
+    result = review_graph(db, application_id, question, all_collections=all_collections, stages=stages, keyword_preview=keyword_preview)
     return result, _fingerprint(digest, [owner, row['status'], latest], result), latest
 
 
@@ -140,7 +142,7 @@ def _adaptive_steps(result, intent, question, *, model):
 
 
 def _stages(draft):
-    if draft['checkpoint_version'] != 6:
+    if draft['checkpoint_version'] not in (6, 7):
         return list(_STAGES)
     plan = draft['adaptive_plan']
     if (not isinstance(plan, list) or not plan or len(plan) > len(_STAGES)
@@ -207,7 +209,8 @@ def _approval_graph(db, draft=None, expected=None):
         # source when the reviewer merely discards an obsolete draft.
         nodes = ([(name, specialist) for name, specialist in _specialist_nodes(
                     db, draft['application_id'], draft['question'],
-                    all_collections=draft['checkpoint_version'] >= 5) if name in names]
+                    all_collections=draft['checkpoint_version'] >= 5,
+                    keyword_preview=draft['checkpoint_version'] == 7) if name in names]
                  if expected is not None else [(name, None) for name in names])
         for name, specialist in nodes:
             def record(state, specialist=specialist, name=name):
@@ -218,7 +221,7 @@ def _approval_graph(db, draft=None, expected=None):
                 # Share the saver's cursor lock so psycopg pipeline operations
                 # and domain reads cannot overlap on that connection.
                 with saver.lock:
-                    result = specialist(state if draft['checkpoint_version'] == 6 else {})
+                    result = specialist(state if draft['checkpoint_version'] in (6, 7) else {})
                 if expected is not None and result != {name if name != 'parser' else 'parsed': expected[name if name != 'parser' else 'parsed']}:
                     raise HTTPException(status_code=409, detail='Review changed while preparing; try again')
                 encoded = json.dumps(result, sort_keys=True, ensure_ascii=False, separators=(',', ':'), default=str)
@@ -240,7 +243,7 @@ def _approval_graph(db, draft=None, expected=None):
                     elif name == 'policy':
                         update['suggested_step'] = (_suggested_step_v4(state) if draft['checkpoint_version'] in (4, 5)
                                                     else _suggested_step(state))
-                elif draft['checkpoint_version'] == 6:
+                elif draft['checkpoint_version'] in (6, 7):
                     prior = names.index(name)
                     if any(previous + '_digest' not in state for previous in names[:prior]):
                         raise RuntimeError('A previous adaptive stage is missing')
@@ -291,7 +294,7 @@ def _preparation_state(db, draft):
     if (state.values.get('draft_id') != draft['id'] or
             state.values.get('fingerprint') != draft['fingerprint'] or
             state.values.get('intent') != draft['intent'] or
-            (draft['checkpoint_version'] == 6 and state.values.get('plan') != names) or
+            (draft['checkpoint_version'] in (6, 7) and state.values.get('plan') != names) or
             len(state.next) != 1 or state.next[0] not in (*names, 'human_review')):
         raise HTTPException(status_code=409, detail='Review preparation checkpoint is unavailable or inconsistent')
     completed = [name for name in names if name + '_digest' in state.values]
@@ -313,7 +316,7 @@ def _advance_preparation(db, draft, expected, *, initial=False):
     config = _approval_config(draft['id'])
     if initial:
         input_value = {'draft_id': draft['id'], 'fingerprint': draft['fingerprint'], 'intent': draft['intent']}
-        if draft['checkpoint_version'] == 6:
+        if draft['checkpoint_version'] in (6, 7):
             input_value['plan'] = _stages(draft)
     else:
         before = _preparation_state(db, draft)
@@ -338,14 +341,14 @@ def _resume_approval(db, draft, reviewed, current_result=None):
             state.values.get('intent') != draft['intent'] or
             len(state.interrupts) != 1):
         raise HTTPException(status_code=409, detail='Review checkpoint is unavailable or inconsistent')
-    if draft['checkpoint_version'] in (2, 3, 4, 5, 6) and any(
+    if draft['checkpoint_version'] in (2, 3, 4, 5, 6, 7) and any(
         not isinstance(state.values.get(name + '_digest'), str)
         or len(state.values[name + '_digest']) != 64
         for name in _stages(draft)
     ):
         raise HTTPException(status_code=409, detail='Specialist checkpoints are unavailable or inconsistent')
-    if draft['checkpoint_version'] in (2, 3, 4, 5, 6) and reviewed:
-        if draft['checkpoint_version'] == 6 and state.values.get('plan') != _stages(draft):
+    if draft['checkpoint_version'] in (2, 3, 4, 5, 6, 7) and reviewed:
+        if draft['checkpoint_version'] in (6, 7) and state.values.get('plan') != _stages(draft):
             raise HTTPException(status_code=409, detail='Adaptive plan differs from the checkpoint')
         for name in _stages(draft):
             key = 'parsed' if name == 'parser' else name
@@ -362,7 +365,7 @@ def _resume_approval(db, draft, reviewed, current_result=None):
                              else _suggested_step(plan_state))
             if state.values.get('suggested_step') != expected_step:
                 raise HTTPException(status_code=409, detail='Specialist plan differs from the reviewed result')
-        elif draft['checkpoint_version'] == 6:
+        elif draft['checkpoint_version'] in (6, 7):
             facts = _adaptive_plan_facts(current_result)
             for name, key in (('status', 'application_status'), ('status', 'interview_status'),
                               ('matching', 'matching_status'), ('scheduling', 'available_slots')):
@@ -375,7 +378,7 @@ def _resume_approval(db, draft, reviewed, current_result=None):
         raise RuntimeError('The review did not finish correctly')
 
 
-def _specialist_nodes(db, application_id, question, *, all_collections=False):
+def _specialist_nodes(db, application_id, question, *, all_collections=False, keyword_preview=False):
     """Build specialists over the caller's already authorized transaction."""
     row, masked, digest = _source(db, application_id)
     owner = db.execute('SELECT candidate_id FROM applications WHERE id=%s', (application_id,)).fetchone()['candidate_id']
@@ -391,8 +394,23 @@ def _specialist_nodes(db, application_id, question, *, all_collections=False):
         assessment = db.execute('''SELECT audit_event_id FROM hr_rubric_history
             WHERE application_id=%s ORDER BY audit_event_id DESC LIMIT 1''', (application_id,)).fetchone()
         bounds = current_review(db, application_id, assessment['audit_event_id'], digest) if assessment else None
-        return {'matching': {'status': 'current' if bounds else 'unavailable',
-                             'range': list(bounds) if bounds else None}}
+        result = {'status': 'current' if bounds else 'unavailable',
+                  'range': list(bounds) if bounds else None}
+        if keyword_preview:
+            try:
+                job = {key: json.loads(row[key]) for key in ('required_skills', 'preferred_skills')}
+                if any(not isinstance(values, list) or len(values) > 20 or
+                       any(not isinstance(value, str) or len(value) > 80 for value in values)
+                       for values in job.values()):
+                    raise ValueError('Invalid skills')
+                if len(normalize(row['resume_text'])) > 16000 or len(normalize(masked)) > 16000:
+                    raise ValueError('Resume exceeds work limit')
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail='Source exceeds keyword preview limits') from None
+            result['keyword_preview'] = score_resume(job, row['resume_text'])
+            result['preview_notice'] = ('Read-only heuristic preview, not a human assessment, verified qualification or hiring decision. '
+                                        'Masked excerpts may still contain identifying information.')
+        return {'matching': result}
 
     def status(_state):
         interview = db.execute('''SELECT completed FROM interviews WHERE application_id=%s
@@ -459,10 +477,10 @@ def _specialist_nodes(db, application_id, question, *, all_collections=False):
             ('scheduling', scheduling), ('policy', policy)]
 
 
-def review_graph(db, application_id, question, *, all_collections=False, stages=None):
+def review_graph(db, application_id, question, *, all_collections=False, stages=None, keyword_preview=False):
     graph = StateGraph(ReviewState)
     names = list(_STAGES) if stages is None else stages
-    for name, node in _specialist_nodes(db, application_id, question, all_collections=all_collections):
+    for name, node in _specialist_nodes(db, application_id, question, all_collections=all_collections, keyword_preview=keyword_preview):
         if name in names:
             graph.add_node(name, node)
     graph.add_edge(START, names[0])
@@ -563,6 +581,11 @@ def install_routes(app, connect, authenticate, authorize_locked):
         try:
             try:
                 plan, source = _adaptive_steps(result, payload.intent, payload.policy_question, model=payload.model_plan)
+                if payload.keyword_preview:
+                    if 'parser' not in plan:
+                        plan.insert(0, 'parser')
+                    if 'matching' not in plan:
+                        plan.insert(plan.index('parser') + 1, 'matching')
             except (ValueError, TypeError):
                 raise HTTPException(status_code=503, detail='Adaptive planning is unavailable') from None
         finally:
@@ -578,7 +601,7 @@ def install_routes(app, connect, authenticate, authorize_locked):
             if current_digest != digest or preflight != result:
                 raise HTTPException(status_code=409, detail='Review changed; start again')
             current, digest, event_id = _snapshot(db, application_id, payload.policy_question,
-                                                  all_collections=True, stages=plan)
+                                                  all_collections=True, stages=plan, keyword_preview=payload.keyword_preview)
             if payload.intent == 'advance' and (current['status']['application_status'] != 'submitted'
                                                 or current['matching']['status'] != 'current' or event_id is None):
                 raise HTTPException(status_code=409, detail='A submitted application and current HR rubric review are required')
@@ -592,9 +615,9 @@ def install_routes(app, connect, authenticate, authorize_locked):
             digest = _bind_proposal(digest, slot, payload.offer_details)
             draft = db.execute('''INSERT INTO graph_review_drafts(application_id,owner_id,question,fingerprint,intent,status,
                 slot_proposal,offer_details,checkpoint_version,adaptive_plan,adaptive_plan_source)
-                VALUES (%s,%s,%s,%s,%s,'pending',%s::jsonb,%s,6,%s::jsonb,%s) RETURNING *''',
+                VALUES (%s,%s,%s,%s,%s,'pending',%s::jsonb,%s,%s,%s::jsonb,%s) RETURNING *''',
                 (application_id, user.id, payload.policy_question, digest, payload.intent,
-                 json.dumps(slot) if slot else None, payload.offer_details, json.dumps(plan), source)).fetchone()
+                 json.dumps(slot) if slot else None, payload.offer_details, 7 if payload.keyword_preview else 6, json.dumps(plan), source)).fetchone()
             progress = _advance_preparation(db, draft, current, initial=True)
             authorize_locked(db, request, user, 'hr')
             return {'id': draft['id'], 'status': 'pending', 'plan': plan, 'plan_source': source,
@@ -609,11 +632,12 @@ def install_routes(app, connect, authenticate, authorize_locked):
                                (draft_id, user.id)).fetchone()
             if not draft:
                 raise HTTPException(status_code=404, detail='Review not found')
-            if draft['status'] != 'pending' or draft['checkpoint_version'] not in (3, 4, 5, 6):
+            if draft['status'] != 'pending' or draft['checkpoint_version'] not in (3, 4, 5, 6, 7):
                 raise HTTPException(status_code=409, detail='Review cannot be prepared')
             result, digest, _ = _snapshot(db, draft['application_id'], draft['question'],
                                           all_collections=draft['checkpoint_version'] >= 5,
-                                          stages=_stages(draft) if draft['checkpoint_version'] == 6 else None)
+                                          stages=_stages(draft) if draft['checkpoint_version'] in (6, 7) else None,
+                                          keyword_preview=draft['checkpoint_version'] == 7)
             if _bind_proposal(digest, draft['slot_proposal'], draft['offer_details']) != draft['fingerprint']:
                 raise HTTPException(status_code=409, detail='Review changed; discard it and start again')
             state = _preparation_state(db, draft)
@@ -711,7 +735,8 @@ def install_routes(app, connect, authenticate, authorize_locked):
             try:
                 result, digest, _ = _snapshot(db, draft['application_id'], draft['question'],
                                               all_collections=draft['checkpoint_version'] >= 5,
-                                              stages=_stages(draft) if draft['checkpoint_version'] == 6 else None)
+                                              stages=_stages(draft) if draft['checkpoint_version'] in (6, 7) else None,
+                                              keyword_preview=draft['checkpoint_version'] == 7)
             except HTTPException as exc:
                 if exc.status_code not in (404, 422):
                     raise
@@ -722,9 +747,9 @@ def install_routes(app, connect, authenticate, authorize_locked):
             if digest != draft['fingerprint']:
                 return {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'stale': True}
             response = {'id': draft_id, 'status': draft['status'], 'intent': draft['intent'], 'slot': draft['slot_proposal'], 'offer_details': draft['offer_details'], 'stale': False, 'result': result}
-            if draft['checkpoint_version'] in (3, 4, 5, 6) and draft['status'] == 'pending':
+            if draft['checkpoint_version'] in (3, 4, 5, 6, 7) and draft['status'] == 'pending':
                 response['preparation'] = _preparation_progress(_preparation_state(db, draft))
-                if draft['checkpoint_version'] == 6:
+                if draft['checkpoint_version'] in (6, 7):
                     response['plan'] = _stages(draft)
                     response['plan_source'] = draft['adaptive_plan_source']
                     visible = {'parsed' if name == 'parser' else name for name in response['preparation']['completed']}
@@ -744,13 +769,14 @@ def install_routes(app, connect, authenticate, authorize_locked):
                 raise HTTPException(status_code=404, detail='Review not found')
             if draft['status'] != 'pending':
                 raise HTTPException(status_code=409, detail='Review is already closed')
-            if (draft['checkpoint_version'] in (3, 4, 5, 6) and payload.reviewed and
+            if (draft['checkpoint_version'] in (3, 4, 5, 6, 7) and payload.reviewed and
                     not _preparation_progress(_preparation_state(db, draft))['ready']):
                 raise HTTPException(status_code=409, detail='Finish review preparation before approval')
             if payload.reviewed:
                 result, digest, event_id = _snapshot(db, draft['application_id'], draft['question'],
                                                     all_collections=draft['checkpoint_version'] >= 5,
-                                                    stages=_stages(draft) if draft['checkpoint_version'] == 6 else None)
+                                                    stages=_stages(draft) if draft['checkpoint_version'] in (6, 7) else None,
+                                                    keyword_preview=draft['checkpoint_version'] == 7)
                 digest = _bind_proposal(digest, draft['slot_proposal'], draft['offer_details'])
                 if digest != draft['fingerprint']:
                     raise HTTPException(status_code=409, detail='Review changed; start a new review')
@@ -785,9 +811,9 @@ def install_routes(app, connect, authenticate, authorize_locked):
                         target_application_id,target_candidate_id) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
                         (slot.start_at, slot.end_at, slot.interviewer, key, user.id, draft['application_id'], candidate_id)).fetchone()
                     db.execute("INSERT INTO slot_audit_events(slot_id,actor_id,action) VALUES (%s,%s,'created_private')", (created['id'], user.id))
-            if draft['checkpoint_version'] not in (0, 1, 2, 3, 4, 5, 6):
+            if draft['checkpoint_version'] not in (0, 1, 2, 3, 4, 5, 6, 7):
                 raise HTTPException(status_code=409, detail='Unsupported review checkpoint version')
-            if draft['checkpoint_version'] in (1, 2) or (draft['checkpoint_version'] in (3, 4, 5, 6) and payload.reviewed):
+            if draft['checkpoint_version'] in (1, 2) or (draft['checkpoint_version'] in (3, 4, 5, 6, 7) and payload.reviewed):
                 _resume_approval(db, draft, payload.reviewed, result if payload.reviewed else None)
             status = 'reviewed' if payload.reviewed else 'discarded'
             db.execute('UPDATE graph_review_drafts SET status=%s WHERE id=%s', (status, draft_id))

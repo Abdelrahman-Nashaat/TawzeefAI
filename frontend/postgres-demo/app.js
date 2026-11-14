@@ -389,10 +389,12 @@ function renderApplications(applications, jobs) {
       const graphLabel = element("label", "Optional policy question ");
       const graphQuestion = element("input");
       graphQuestion.maxLength = 2000; graphLabel.append(graphQuestion);
+      const previewLabel = element("label", "Include local keyword-matching preview in adaptive review ");
+      const previewOption = element("input"); previewOption.type = "checkbox"; previewLabel.append(previewOption);
       const graphSubmit = element("button", "Run read-only specialist review");
       graphSubmit.type = "submit";
       const graphOutput = element("pre");
-      graphForm.append(graphLabel, graphSubmit, graphOutput);
+      graphForm.append(graphLabel, previewLabel, graphSubmit, graphOutput);
       graphForm.addEventListener("submit", (event) => {
         event.preventDefault();
         const generation = sessionGeneration;
@@ -455,7 +457,8 @@ function renderApplications(applications, jobs) {
         const view = ++draftViewGeneration;
         const generation = sessionGeneration;
         const result = await api(`/api/applications/${application.id}/adaptive-review-preparations`,
-          jsonPost({policy_question: graphQuestion.value, model_plan: modelPlan}));
+          jsonPost({policy_question: graphQuestion.value, model_plan: modelPlan,
+            ...(previewOption.checked ? {keyword_preview: true} : {})}));
         ensureDraftView(generation, view); graphQuestion.value = "";
         draftPanel.replaceChildren(element("p", `Adaptive review ${result.id} started. Plan: ${result.plan.join(", ")}. Source: ${result.plan_source}. Open saved reviews to continue preparation.`));
       }
