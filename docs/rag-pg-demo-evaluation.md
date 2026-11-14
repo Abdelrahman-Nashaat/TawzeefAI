@@ -71,3 +71,36 @@ expected excerpts for 9 of 11 answerable cases and abstained for all 8 unsupport
 cases. Hybrid produced suggestions for one unsupported question. No access,
 filter, citation, or HTTP violations were detected. These results are synthetic,
 not a held-out benchmark or proof that generated answers are correct.
+
+## Two missed excerpts and exploratory title comparison
+
+In the expanded run, both misses were abstentions under the lexical support gate.
+The interview question asks for a day, while the English source names Mondays;
+the Arabic probation question and its English source have no lexical overlap.
+Hybrid search returned each correct page as an **unverified suggestion**. In the
+probation case, an unrelated annual-leave suggestion appeared first.
+
+An **exploratory, unvalidated, unshipped** offline comparison on 2026-11-14
+embedded each full fixture page either alone or with its title prepended. With the
+pinned local E5 model and this same non-held-out fixture, expected pages ranked
+first for 10/11 versus 11/11 answerable questions, and in the top three for
+11/11 in both variants. The probation page moved from second to first. However,
+at an exploratory cosine threshold of 0.80, at least one page scored above the
+threshold for 3/8 unsupported questions without titles versus 4/8 with titles.
+For example, an unrelated annual-leave page appeared for a health-premium
+question only in the title variant. These are similarity scores, not verified
+answers or a measurement of false-answer rates.
+
+To reproduce the comparison from `backend/`, with the pinned model already
+present locally, run:
+
+```powershell
+uv run --locked --extra semantic python diagnose_rag_title_embeddings.py --model-dir ../.tooling/multilingual-e5-small
+```
+
+The script reads only the synthetic fixture and model files, applies fixture role
+and metadata filters in Python, and prints ranked page matches and scores. It
+does not call the PostgreSQL endpoint or reproduce its passage splitting, cache,
+lexical gate, or three-result limit; its threshold counts therefore are not directly
+comparable to endpoint suggestions. It does not establish authorization safety
+or answer entailment. The title variant was not integrated into retrieval.
